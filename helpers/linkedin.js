@@ -12,41 +12,69 @@ function getHeaders(csrf, cookieObj) {
   };
 }
 
+
 async function fetchLinkedInProfile(profileId, customCookies = null) {
-  const url = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`;
-
-  // Use provided cookies or fall back to default ones
-  const cookiesToUse = customCookies || defaultCookies;
-
+  const profileViewUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`;
+  const contactInfoUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`;
+  
+  
   // Build cookies object properly
   const cookies = {
-    JSESSIONID: customCookies?.jsession || defaultCookies.JSESSIONID,
-    li_at: customCookies?.li_at || defaultCookies.li_at,
+    JSESSIONID: customCookies?.jsession || "ajax:8767151925238686570",
+    li_at: customCookies?.li_at || "AQEDASyb8_4Dn7z0AAABl2LysiAAAAGYT9ZH-k4AhMjoJtNwVZtohs347zdb8N7EZ6nzNRfELAbl8nkqmlpfLMFAFiLuiMM1jQt_1i-GIHoUj90uxi4Udqa-MwUfB2hJ5YNDd49oWNUwJNdL9x0bxCnk",
   };
-
+  
   const csrfToken = cookies.JSESSIONID.replace(/"/g, "");
   const headers = getHeaders(csrfToken, cookies);
-
-  console.log("Using cookies:", cookies);
-  console.log("Headers:", headers);
-
+  
+  
   try {
-    const res = await fetch(url, {
-      headers,
-      credentials: "include",
-    });
-
-    if (!res.ok) {
-      throw new Error(`LinkedIn fetch error: ${res.status}`);
+    // Fetch both endpoints simultaneously
+    const [profileViewResponse, contactInfoResponse] = await Promise.all([
+      fetch(profileViewUrl, {
+        headers,
+        credentials: "include",
+      }),
+      fetch(contactInfoUrl, {
+        headers,
+        credentials: "include",
+      })
+    ]);
+    console.log(contactInfoResponse,'contactInfoResponse')
+    // Check if both requests were successful
+    if (!profileViewResponse.ok) {
+      throw new Error(`LinkedIn profile view fetch error: ${profileViewResponse.status}`);
     }
-
-    return await res.json();
+    
+    if (!contactInfoResponse.ok) {
+      throw new Error(`LinkedIn contact info fetch error: ${contactInfoResponse.status}`);
+    }
+    
+    // Parse both responses
+    const [profileViewData, contactInfoData] = await Promise.all([
+      profileViewResponse.json(),
+      contactInfoResponse.json()
+    ]);
+    
+    // Combine the responses
+    const combinedResponse = {
+      profileView: profileViewData,
+      contactInfo: contactInfoData,
+      // You can also merge specific fields if needed
+      combined: {
+        ...profileViewData,
+        contactInfo: contactInfoData
+      }
+    };
+    
+    console.log("✅ Successfully fetched both profile view and contact info");
+    return combinedResponse;
+    
   } catch (err) {
     console.error("❌ Error:", err.message);
     return { error: err.message };
   }
 }
-
 module.exports = {
   fetchLinkedInProfile,
 };

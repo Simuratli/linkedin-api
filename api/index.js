@@ -95,7 +95,7 @@ app.post("/update-contacts-post", async (req, res) => {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
 
-          const convertedProfile = transformToCreateUserRequest(profileData);
+          const convertedProfile = transformToCreateUserRequest(profileData,endpoint, token);
           const updateUrl = `${clientEndpoint}/contacts(${contact.contactid})`;
 
           const updateResponse = await createDataverse(

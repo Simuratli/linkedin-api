@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node api/index.js",
+    "dev": "node server.js",
     "format": "npx prettier . --write"
   },
   "keywords": [],
