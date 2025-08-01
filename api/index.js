@@ -40,18 +40,14 @@ app.post("/update-contacts-post", async (req, res) => {
     if (!jsessionid || !accessToken || !crmUrl || !li_at) {
       return res.status(400).json({
         success: false,
-        message:
-          "Missing required parameters: li_at, accessToken, and endpoint are required",
+        message: "Missing required parameters: li_at, accessToken, and endpoint are required",
       });
     }
 
     const clientEndpoint = `${crmUrl}/api/data/v9.2`;
     const dataverseToken = accessToken;
 
-    const response = await getDataverse(
-      `${clientEndpoint}/contacts`,
-      dataverseToken
-    );
+    const response = await getDataverse(`${clientEndpoint}/contacts`, dataverseToken);
 
     if (!response || !response.value) {
       return res.status(400).json({
@@ -64,35 +60,35 @@ app.post("/update-contacts-post", async (req, res) => {
     const errors = [];
 
     const contacts = response.value.filter((c) => !!c.uds_linkedin);
-    const BATCH_SIZE = 10;
-    const WAIT_BETWEEN_BATCHES_MS = 30000; // 60 seconds
+    
+    // Smaller batches with longer waits for better stealth
+    const BATCH_SIZE = 5; // Reduced from 10
+    const WAIT_BETWEEN_BATCHES_MS = 45000; // Increased to 45 seconds
     const contactBatches = chunkArray(contacts, BATCH_SIZE);
+
+    console.log(`📊 Processing ${contacts.length} contacts in ${contactBatches.length} batches`);
 
     for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
       const batch = contactBatches[batchIndex];
+      
+      console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length}`);
 
-      console.log(`Processing batch ${batchIndex + 1} of ${contactBatches.length}`);
-
-      const promises = batch.map(async (contact) => {
+      // Process batch with controlled concurrency
+      const batchPromises = batch.map(async (contact) => {
         try {
-          await sleep(2000);
           const match = contact.uds_linkedin.match(/\/in\/([^\/]+)/);
           const profileId = match ? match[1] : null;
-          console.log(profileId,'profileId')
 
           if (!profileId) {
-            throw new Error(
-              `Invalid LinkedIn URL format for contact ${contact.contactid}`
-            );
+            throw new Error(`Invalid LinkedIn URL format for contact ${contact.contactid}`);
           }
 
           const customCookies = {
             li_at: li_at,
-            jsession: jsessionid || '"ajax:8767151925238686570"',
+            jsession: jsessionid || generateSessionId(),
           };
 
           const profileData = await fetchLinkedInProfile(profileId, customCookies);
-          console.log(profileData,'profileData')
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
@@ -114,9 +110,9 @@ app.post("/update-contacts-post", async (req, res) => {
             profileId: profileId,
             response: updateResponse,
           });
-          
+
         } catch (error) {
-          console.error(`Error processing contact ${contact.contactid}:`, error);
+          console.error(`❌ Error processing contact ${contact.contactid}:`, error.message);
           errors.push({
             contactId: contact.contactid,
             success: false,
@@ -125,12 +121,19 @@ app.post("/update-contacts-post", async (req, res) => {
         }
       });
 
-      await Promise.allSettled(promises);
+      await Promise.allSettled(batchPromises);
 
+      // Longer wait between batches with some randomization
       if (batchIndex < contactBatches.length - 1) {
-        console.log(`Waiting ${WAIT_BETWEEN_BATCHES_MS / 1000}s before next batch...`);
-        await sleep(WAIT_BETWEEN_BATCHES_MS);
+        const waitTime = WAIT_BETWEEN_BATCHES_MS + getRandomDelay(-10000, 20000);
+        console.log(`⏳ Waiting ${waitTime / 1000}s before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
       }
+
+      // Progress update
+      const processed = (batchIndex + 1) * BATCH_SIZE;
+      const total = contacts.length;
+      console.log(`📈 Progress: ${Math.min(processed, total)}/${total} contacts processed`);
     }
 
     res.status(200).json({
@@ -140,12 +143,14 @@ app.post("/update-contacts-post", async (req, res) => {
         totalContacts: response.value.length,
         updated: updateResults.length,
         failed: errors.length,
+        successRate: `${((updateResults.length / contacts.length) * 100).toFixed(1)}%`
       },
       updates: updateResults,
       errors: errors.length > 0 ? errors : undefined,
     });
+
   } catch (error) {
-    console.error("Error in /update-contacts-post:", error);
+    console.error("❌ Error in /update-contacts-post:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -153,7 +158,6 @@ app.post("/update-contacts-post", async (req, res) => {
     });
   }
 });
-
 // Test route
 app.get("/simuratli", async (req, res) => {
   const profileId = "simuratli";
