@@ -3,7 +3,7 @@ const cors = require("cors");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const { fetchLinkedInProfile } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
-const { sleep , chunkArray} = require("../helpers/delay");
+const { sleep , chunkArray, getRandomDelay} = require("../helpers/delay");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
