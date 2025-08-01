@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-   "scripts": {
-    "start": "node api/index.js"
+  "scripts": {
+    "start": "node api/index.js",
+    "format": "npx prettier . --write"
   },
   "keywords": [],
   "author": "Simuratli",
@@ -12,5 +13,8 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
   }
 }
