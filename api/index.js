@@ -113,6 +113,7 @@ app.post("/update-contacts-post", async (req, res) => {
             profileId: profileId,
             response: updateResponse,
           });
+          await sleep(1000);
         } catch (error) {
           console.error(`Error processing contact ${contact.contactid}:`, error);
           errors.push({
