@@ -3,7 +3,7 @@ const cors = require("cors");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const { fetchLinkedInProfile } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
-const { sleep , chunkArray, getRandomDelay} = require("../helpers/delay");
+const { sleep , chunkArray} = require("../helpers/delay");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -40,7 +40,8 @@ app.post("/update-contacts-post", async (req, res) => {
     if (!jsessionid || !accessToken || !crmUrl || !li_at) {
       return res.status(400).json({
         success: false,
-        message: "Missing required parameters: li_at, accessToken, and endpoint are required",
+        message:
+          "Missing required parameters: li_at, accessToken, and endpoint are required",
       });
     }
 
@@ -64,30 +65,26 @@ app.post("/update-contacts-post", async (req, res) => {
 
     const contacts = response.value.filter((c) => !!c.uds_linkedin);
     const BATCH_SIZE = 10;
-    const WAIT_BETWEEN_BATCHES_MS = 10000; // 60 seconds
+    const WAIT_BETWEEN_BATCHES_MS = 30000; // 60 seconds
     const contactBatches = chunkArray(contacts, BATCH_SIZE);
 
     for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
       const batch = contactBatches[batchIndex];
-      console.log(`Processing batch ${batchIndex + 1}/${contactBatches.length}`);
 
-      // Process each contact in batch WITH individual delays
-      for (const contact of batch) {
+      console.log(`Processing batch ${batchIndex + 1} of ${contactBatches.length}`);
+
+      const promises = batch.map(async (contact) => {
         try {
+          await sleep(2000);
           const match = contact.uds_linkedin.match(/\/in\/([^\/]+)/);
           const profileId = match ? match[1] : null;
+          console.log(profileId,'profileId')
 
           if (!profileId) {
-            errors.push({
-              contactId: contact.contactid,
-              success: false,
-              error: "Invalid LinkedIn URL format"
-            });
-            continue;
+            throw new Error(
+              `Invalid LinkedIn URL format for contact ${contact.contactid}`
+            );
           }
-
-          // Delay before each LinkedIn request
-          await sleep(getRandomDelay());
 
           const customCookies = {
             li_at: li_at,
@@ -95,13 +92,11 @@ app.post("/update-contacts-post", async (req, res) => {
           };
 
           const profileData = await fetchLinkedInProfile(profileId, customCookies);
+          console.log(profileData,'profileData')
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
-
-          // Small delay before Dataverse update
-          await sleep(1000);
 
           const convertedProfile = transformToCreateUserRequest(profileData, clientEndpoint, accessToken);
           const updateUrl = `${clientEndpoint}/contacts(${contact.contactid})`;
@@ -119,7 +114,7 @@ app.post("/update-contacts-post", async (req, res) => {
             profileId: profileId,
             response: updateResponse,
           });
-
+          
         } catch (error) {
           console.error(`Error processing contact ${contact.contactid}:`, error);
           errors.push({
@@ -127,15 +122,13 @@ app.post("/update-contacts-post", async (req, res) => {
             success: false,
             error: error.message,
           });
-          
-          // Longer delay after errors
-          await sleep(getRandomDelay(5000, 10000));
         }
-      }
+      });
 
-      // Wait between batches (unless it's the last batch)
+      await Promise.allSettled(promises);
+
       if (batchIndex < contactBatches.length - 1) {
-        console.log(`Waiting ${WAIT_BETWEEN_BATCHES_MS/1000} seconds before next batch...`);
+        console.log(`Waiting ${WAIT_BETWEEN_BATCHES_MS / 1000}s before next batch...`);
         await sleep(WAIT_BETWEEN_BATCHES_MS);
       }
     }
