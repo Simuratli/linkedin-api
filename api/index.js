@@ -3,6 +3,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // SIMPLIFIED CORS setup for Chrome Extensions
+app.use(cors());
 app.use((req, res, next) => {
   // Allow all origins for development (you can restrict this later)
   res.header('Access-Control-Allow-Origin', '*');
