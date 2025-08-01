@@ -63,7 +63,7 @@ app.post("/update-contacts-post", async (req, res) => {
     const errors = [];
 
     const contacts = response.value.filter((c) => !!c.uds_linkedin);
-    const BATCH_SIZE = 60;
+    const BATCH_SIZE = 20;
     const WAIT_BETWEEN_BATCHES_MS = 60000; // 90 seconds
     const contactBatches = chunkArray(contacts, BATCH_SIZE);
 
@@ -129,7 +129,7 @@ app.post("/update-contacts-post", async (req, res) => {
           });
           
           // Longer delay after errors
-          await sleep(getRandomDelay(2000, 40000));
+          await sleep(getRandomDelay(5000, 10000));
         }
       }
 
