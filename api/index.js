@@ -63,8 +63,8 @@ app.post("/update-contacts-post", async (req, res) => {
     const errors = [];
 
     const contacts = response.value.filter((c) => !!c.uds_linkedin);
-    const BATCH_SIZE = 20;
-    const WAIT_BETWEEN_BATCHES_MS = 60000; // 90 seconds
+    const BATCH_SIZE = 10;
+    const WAIT_BETWEEN_BATCHES_MS = 60000; // 60 seconds
     const contactBatches = chunkArray(contacts, BATCH_SIZE);
 
     for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
