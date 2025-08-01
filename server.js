@@ -231,7 +231,7 @@ app.get("/update-contacts", async (req, res) => {
 });
 
 app.get("/simuratli", async (req, res) => {
-  const data = await fetchLinkedInProfile("safar-rufullayev-77bb8218a");
+  const data = await fetchLinkedInProfile("samir-kerimov-6aa873a4");
   const newdata = await transformToCreateUserRequest(data, endpoint, token);
   res.json(newdata);
 });

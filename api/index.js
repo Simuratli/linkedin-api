@@ -77,6 +77,7 @@ app.post("/update-contacts-post", async (req, res) => {
         try {
           const match = contact.uds_linkedin.match(/\/in\/([^\/]+)/);
           const profileId = match ? match[1] : null;
+          console.log(profileId,'profileId')
 
           if (!profileId) {
             throw new Error(
@@ -90,6 +91,7 @@ app.post("/update-contacts-post", async (req, res) => {
           };
 
           const profileData = await fetchLinkedInProfile(profileId, customCookies);
+          console.log(profileData,'profileData')
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
