@@ -3,6 +3,7 @@ const cors = require("cors");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const { fetchLinkedInProfile } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
+const { sleep , chunkArray} = require("../helpers/delay");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -34,8 +35,6 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 app.post("/update-contacts-post", async (req, res) => {
   try {
-    console.log("Request Body:", req.body);
-
     const { li_at, accessToken, crmUrl, jsessionid } = req.body;
 
     if (!jsessionid || !accessToken || !crmUrl || !li_at) {
@@ -47,11 +46,11 @@ app.post("/update-contacts-post", async (req, res) => {
     }
 
     const clientEndpoint = `${crmUrl}/api/data/v9.2`;
-
     const dataverseToken = accessToken;
+
     const response = await getDataverse(
       `${clientEndpoint}/contacts`,
-      dataverseToken,
+      dataverseToken
     );
 
     if (!response || !response.value) {
@@ -64,66 +63,69 @@ app.post("/update-contacts-post", async (req, res) => {
     const updateResults = [];
     const errors = [];
 
-    for (const contact of response.value) {
-      try {
-        if (!contact.uds_linkedin) {
-          console.log(`No LinkedIn URL for contact ${contact.contactid}`);
-          continue;
-        }
+    const contacts = response.value.filter((c) => !!c.uds_linkedin);
+    const BATCH_SIZE = 60;
+    const WAIT_BETWEEN_BATCHES_MS = 60000; // 60 seconds
+    const contactBatches = chunkArray(contacts, BATCH_SIZE);
 
-        const match = contact.uds_linkedin.match(/\/in\/([^\/]+)/);
-        const profileId = match ? match[1] : null;
+    for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
+      const batch = contactBatches[batchIndex];
 
-        if (!profileId) {
-          console.log(
-            `Invalid LinkedIn URL format for contact ${contact.contactid}`,
+      console.log(`Processing batch ${batchIndex + 1} of ${contactBatches.length}`);
+
+      const promises = batch.map(async (contact) => {
+        try {
+          const match = contact.uds_linkedin.match(/\/in\/([^\/]+)/);
+          const profileId = match ? match[1] : null;
+
+          if (!profileId) {
+            throw new Error(
+              `Invalid LinkedIn URL format for contact ${contact.contactid}`
+            );
+          }
+
+          const customCookies = {
+            li_at: li_at,
+            jsession: jsessionid || '"ajax:8767151925238686570"',
+          };
+
+          const profileData = await fetchLinkedInProfile(profileId, customCookies);
+
+          if (profileData.error) {
+            throw new Error(`LinkedIn API error: ${profileData.error}`);
+          }
+
+          const convertedProfile = transformToCreateUserRequest(profileData);
+          const updateUrl = `${clientEndpoint}/contacts(${contact.contactid})`;
+
+          const updateResponse = await createDataverse(
+            updateUrl,
+            dataverseToken,
+            convertedProfile,
+            "PATCH"
           );
-          continue;
+
+          updateResults.push({
+            contactId: contact.contactid,
+            success: true,
+            profileId: profileId,
+            response: updateResponse,
+          });
+        } catch (error) {
+          console.error(`Error processing contact ${contact.contactid}:`, error);
+          errors.push({
+            contactId: contact.contactid,
+            success: false,
+            error: error.message,
+          });
         }
+      });
 
-        // Use the cookies from the request
-        const customCookies = {
-          li_at: li_at,
-          jsession: jsessionid || '"ajax:8767151925238686570"', // fallback to default if not provided
-        };
+      await Promise.allSettled(promises);
 
-        console.log(
-          `Fetching profile for ${profileId} with cookies:`,
-          customCookies,
-        );
-
-        const profileData = await fetchLinkedInProfile(
-          profileId,
-          customCookies,
-        );
-
-        if (profileData.error) {
-          throw new Error(`LinkedIn API error: ${profileData.error}`);
-        }
-
-        const convertedProfile = transformToCreateUserRequest(profileData);
-
-        const updateUrl = `${clientEndpoint}/contacts(${contact.contactid})`;
-        const updateResponse = await createDataverse(
-          updateUrl,
-          dataverseToken,
-          convertedProfile,
-          "PATCH",
-        );
-
-        updateResults.push({
-          contactId: contact.contactid,
-          success: true,
-          profileId: profileId,
-          response: updateResponse,
-        });
-      } catch (error) {
-        console.error(`Error processing contact ${contact.contactid}:`, error);
-        errors.push({
-          contactId: contact.contactid,
-          success: false,
-          error: error.message,
-        });
+      if (batchIndex < contactBatches.length - 1) {
+        console.log(`Waiting ${WAIT_BETWEEN_BATCHES_MS / 1000}s before next batch...`);
+        await sleep(WAIT_BETWEEN_BATCHES_MS);
       }
     }
 
