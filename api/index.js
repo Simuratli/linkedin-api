@@ -11,23 +11,23 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // File paths for persistent storage
-const DATA_DIR = path.join(__dirname, 'data');
-const JOBS_FILE = path.join(DATA_DIR, 'processing_jobs.json');
-const USER_SESSIONS_FILE = path.join(DATA_DIR, 'user_sessions.json');
+const DATA_DIR = path.join(__dirname, "data");
+const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
+const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
   } catch (error) {
-    console.error('Error creating data directory:', error);
+    console.error("Error creating data directory:", error);
   }
 };
 
 // Load/Save processing jobs
 const loadJobs = async () => {
   try {
-    const data = await fs.readFile(JOBS_FILE, 'utf8');
+    const data = await fs.readFile(JOBS_FILE, "utf8");
     return JSON.parse(data);
   } catch (error) {
     return {};
@@ -38,14 +38,14 @@ const saveJobs = async (jobs) => {
   try {
     await fs.writeFile(JOBS_FILE, JSON.stringify(jobs, null, 2));
   } catch (error) {
-    console.error('Error saving jobs:', error);
+    console.error("Error saving jobs:", error);
   }
 };
 
 // Load/Save user sessions
 const loadUserSessions = async () => {
   try {
-    const data = await fs.readFile(USER_SESSIONS_FILE, 'utf8');
+    const data = await fs.readFile(USER_SESSIONS_FILE, "utf8");
     return JSON.parse(data);
   } catch (error) {
     return {};
@@ -56,7 +56,7 @@ const saveUserSessions = async (sessions) => {
   try {
     await fs.writeFile(USER_SESSIONS_FILE, JSON.stringify(sessions, null, 2));
   } catch (error) {
-    console.error('Error saving user sessions:', error);
+    console.error("Error saving user sessions:", error);
   }
 };
 
@@ -66,7 +66,13 @@ const generateJobId = () => {
 };
 
 // Token refresh helper
-const refreshAccessToken = async (refreshToken, clientId, tenantId, crmUrl, verifier) => {
+const refreshAccessToken = async (
+  refreshToken,
+  clientId,
+  tenantId,
+  crmUrl,
+  verifier
+) => {
   try {
     const response = await fetch(
       `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
@@ -77,37 +83,43 @@ const refreshAccessToken = async (refreshToken, clientId, tenantId, crmUrl, veri
         },
         credentials: "omit",
         body: `client_id=${clientId}&scope=${crmUrl}/.default&grant_type=refresh_token&refresh_token=${refreshToken}&redirect_uri=http://localhost:5678&code_verifier=${verifier}`,
-      },
+      }
     );
-    
+
     const data = await response.json();
-    
+
     if (response.ok && data.access_token) {
-      console.log('✅ Token refreshed successfully');
+      console.log("✅ Token refreshed successfully");
       return data;
     } else {
-      throw new Error(data.error_description || 'Token refresh failed');
+      throw new Error(data.error_description || "Token refresh failed");
     }
   } catch (error) {
-    console.error('❌ Token refresh error:', error.message);
+    console.error("❌ Token refresh error:", error.message);
     throw error;
   }
 };
 
 // Enhanced API call helper with token refresh
-const callDataverseWithRefresh = async (url, token, method = 'GET', body = null, refreshData = null) => {
+const callDataverseWithRefresh = async (
+  url,
+  token,
+  method = "GET",
+  body = null,
+  refreshData = null
+) => {
   try {
-    if (method === 'GET') {
+    if (method === "GET") {
       return await getDataverse(url, token);
     } else {
       return await createDataverse(url, token, body, method);
     }
   } catch (error) {
-    console.log('🔍 API call failed, checking if token refresh needed...');
-    
-    if (error.message.includes('401') && refreshData) {
+    console.log("🔍 API call failed, checking if token refresh needed...");
+
+    if (error.message.includes("401") && refreshData) {
       try {
-        console.log('🔄 Attempting token refresh...');
+        console.log("🔄 Attempting token refresh...");
         const newTokenData = await refreshAccessToken(
           refreshData.refreshToken,
           refreshData.clientId,
@@ -115,19 +127,24 @@ const callDataverseWithRefresh = async (url, token, method = 'GET', body = null,
           refreshData.crmUrl,
           refreshData.verifier
         );
-        
-        console.log('🔄 Retrying API call with refreshed token...');
-        if (method === 'GET') {
+
+        console.log("🔄 Retrying API call with refreshed token...");
+        if (method === "GET") {
           return await getDataverse(url, newTokenData.access_token);
         } else {
-          return await createDataverse(url, newTokenData.access_token, body, method);
+          return await createDataverse(
+            url,
+            newTokenData.access_token,
+            body,
+            method
+          );
         }
       } catch (refreshError) {
-        console.error('❌ Token refresh failed:', refreshError.message);
-        throw new Error('TOKEN_REFRESH_FAILED: ' + refreshError.message);
+        console.error("❌ Token refresh failed:", refreshError.message);
+        throw new Error("TOKEN_REFRESH_FAILED: " + refreshError.message);
       }
     }
-    
+
     throw error;
   }
 };
@@ -136,8 +153,14 @@ const callDataverseWithRefresh = async (url, token, method = 'GET', body = null,
 app.use(cors());
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.header(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+  );
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin"
+  );
   res.header("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") {
@@ -156,30 +179,38 @@ ensureDataDir();
 // New endpoint to start/resume processing
 app.post("/start-processing", async (req, res) => {
   try {
-    const { 
-      li_at, 
-      accessToken, 
-      refreshToken, 
-      clientId, 
-      tenantId, 
-      verifier, 
-      crmUrl, 
+    const {
+      li_at,
+      accessToken,
+      refreshToken,
+      clientId,
+      tenantId,
+      verifier,
+      crmUrl,
       jsessionid,
       userId, // Unique identifier for the user (could be email, userID, etc.)
-      resume = false // Whether to resume existing job
+      resume = false, // Whether to resume existing job
     } = req.body;
 
     if (!userId || !jsessionid || !accessToken || !crmUrl || !li_at) {
       return res.status(400).json({
         success: false,
-        message: "Missing required parameters: userId, li_at, accessToken, crmUrl, and jsessionid are required",
+        message:
+          "Missing required parameters: userId, li_at, accessToken, crmUrl, and jsessionid are required",
       });
     }
 
     const clientEndpoint = `${crmUrl}/api/data/v9.2`;
-    const refreshData = refreshToken && clientId && tenantId && verifier ? {
-      refreshToken, clientId, tenantId, crmUrl, verifier
-    } : null;
+    const refreshData =
+      refreshToken && clientId && tenantId && verifier
+        ? {
+            refreshToken,
+            clientId,
+            tenantId,
+            crmUrl,
+            verifier,
+          }
+        : null;
 
     // Load existing jobs and user sessions
     const jobs = await loadJobs();
@@ -194,16 +225,28 @@ app.post("/start-processing", async (req, res) => {
       existingJob = jobs[jobId];
     }
 
+    if (existingJob && existingJob.status === "processing") {
+      return res.status(200).json({
+        success: false,
+        message: "Job already in progress",
+        jobId,
+        status: existingJob.status,
+        processedCount: existingJob.processedCount,
+        totalContacts: existingJob.totalContacts,
+        canResume: true,
+      });
+    }
+
     if (!existingJob) {
       // Create new job
       jobId = generateJobId();
-      
+
       // Get all contacts
       const response = await callDataverseWithRefresh(
-        `${clientEndpoint}/contacts`, 
-        accessToken, 
-        'GET', 
-        null, 
+        `${clientEndpoint}/contacts`,
+        accessToken,
+        "GET",
+        null,
         refreshData
       );
 
@@ -220,24 +263,24 @@ app.post("/start-processing", async (req, res) => {
         jobId,
         userId,
         totalContacts: contacts.length,
-        contacts: contacts.map(c => ({
+        contacts: contacts.map((c) => ({
           contactId: c.contactid,
           linkedinUrl: c.uds_linkedin,
-          status: 'pending' // pending, processing, completed, failed
+          status: "pending", // pending, processing, completed, failed
         })),
         processedCount: 0,
         successCount: 0,
         failureCount: 0,
-        status: 'pending', // pending, processing, paused, completed, failed
+        status: "pending", // pending, processing, paused, completed, failed
         createdAt: new Date().toISOString(),
         lastProcessedAt: null,
-        errors: []
+        errors: [],
       };
 
       jobs[jobId] = existingJob;
       userSessions[userId] = {
         currentJobId: jobId,
-        lastActivity: new Date().toISOString()
+        lastActivity: new Date().toISOString(),
       };
 
       await saveJobs(jobs);
@@ -255,7 +298,7 @@ app.post("/start-processing", async (req, res) => {
       crmUrl,
       li_at,
       jsessionid,
-      lastActivity: new Date().toISOString()
+      lastActivity: new Date().toISOString(),
     };
     await saveUserSessions(userSessions);
 
@@ -268,9 +311,8 @@ app.post("/start-processing", async (req, res) => {
       jobId,
       totalContacts: existingJob.totalContacts,
       processedCount: existingJob.processedCount,
-      status: existingJob.status
+      status: existingJob.status,
     });
-
   } catch (error) {
     console.error("❌ Error in /start-processing:", error);
     res.status(500).json({
@@ -286,20 +328,20 @@ const processJobInBackground = async (jobId) => {
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
   const job = jobs[jobId];
-  
-  if (!job || job.status === 'completed') {
+
+  if (!job || job.status === "completed") {
     return;
   }
 
   const userSession = userSessions[job.userId];
-  
+
   if (!userSession) {
     console.error(`❌ No user session found for job ${jobId}`);
     return;
   }
 
   try {
-    job.status = 'processing';
+    job.status = "processing";
     job.lastProcessedAt = new Date().toISOString();
     await saveJobs(jobs);
 
@@ -307,31 +349,35 @@ const processJobInBackground = async (jobId) => {
     const WAIT_BETWEEN_BATCHES_MS = 45000;
 
     // Get pending contacts
-    const pendingContacts = job.contacts.filter(c => c.status === 'pending');
+    const pendingContacts = job.contacts.filter((c) => c.status === "pending");
     const contactBatches = chunkArray(pendingContacts, BATCH_SIZE);
 
-    console.log(`📊 Processing ${pendingContacts.length} remaining contacts in ${contactBatches.length} batches for job ${jobId}`);
+    console.log(
+      `📊 Processing ${pendingContacts.length} remaining contacts in ${contactBatches.length} batches for job ${jobId}`
+    );
 
     for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
       const batch = contactBatches[batchIndex];
-      
+
       // Check if user session is still valid (user might have disconnected)
       const currentUserSessions = await loadUserSessions();
       const currentUserSession = currentUserSessions[job.userId];
-      
+
       if (!currentUserSession || !currentUserSession.accessToken) {
         console.log(`⏸️ Pausing job ${jobId} - user session invalid`);
-        job.status = 'paused';
-        await saveJobs({ ...await loadJobs(), [jobId]: job });
+        job.status = "paused";
+        await saveJobs({ ...(await loadJobs()), [jobId]: job });
         return;
       }
 
-      console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`);
+      console.log(
+        `🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`
+      );
 
       const batchPromises = batch.map(async (contact) => {
         try {
-          contact.status = 'processing';
-          
+          contact.status = "processing";
+
           const match = contact.linkedinUrl.match(/\/in\/([^\/]+)/);
           const profileId = match ? match[1] : null;
 
@@ -344,27 +390,32 @@ const processJobInBackground = async (jobId) => {
             jsession: currentUserSession.jsessionid,
           };
 
-          const profileData = await fetchLinkedInProfile(profileId, customCookies);
+          const profileData = await fetchLinkedInProfile(
+            profileId,
+            customCookies
+          );
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
 
           const convertedProfile = transformToCreateUserRequest(
-            profileData, 
-            `${currentUserSession.crmUrl}/api/data/v9.2`, 
+            profileData,
+            `${currentUserSession.crmUrl}/api/data/v9.2`,
             currentUserSession.accessToken
           );
 
           const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
 
-          const refreshData = currentUserSession.refreshToken ? {
-            refreshToken: currentUserSession.refreshToken,
-            clientId: currentUserSession.clientId,
-            tenantId: currentUserSession.tenantId,
-            crmUrl: currentUserSession.crmUrl,
-            verifier: currentUserSession.verifier
-          } : null;
+          const refreshData = currentUserSession.refreshToken
+            ? {
+                refreshToken: currentUserSession.refreshToken,
+                clientId: currentUserSession.clientId,
+                tenantId: currentUserSession.tenantId,
+                crmUrl: currentUserSession.crmUrl,
+                verifier: currentUserSession.verifier,
+              }
+            : null;
 
           await callDataverseWithRefresh(
             updateUrl,
@@ -374,25 +425,27 @@ const processJobInBackground = async (jobId) => {
             refreshData
           );
 
-          contact.status = 'completed';
+          contact.status = "completed";
           job.successCount++;
           console.log(`✅ Successfully updated contact ${contact.contactId}`);
-
         } catch (error) {
-          console.error(`❌ Error processing contact ${contact.contactId}:`, error.message);
-          
-          contact.status = 'failed';
+          console.error(
+            `❌ Error processing contact ${contact.contactId}:`,
+            error.message
+          );
+
+          contact.status = "failed";
           contact.error = error.message;
           job.failureCount++;
           job.errors.push({
             contactId: contact.contactId,
             error: error.message,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           });
 
-          if (error.message.includes('TOKEN_REFRESH_FAILED')) {
+          if (error.message.includes("TOKEN_REFRESH_FAILED")) {
             console.log(`⏸️ Pausing job ${jobId} - token refresh failed`);
-            job.status = 'paused';
+            job.status = "paused";
             throw error; // Stop processing this batch
           }
         }
@@ -401,7 +454,7 @@ const processJobInBackground = async (jobId) => {
       try {
         await Promise.allSettled(batchPromises);
         job.processedCount = job.successCount + job.failureCount;
-        
+
         // Save progress after each batch
         const currentJobs = await loadJobs();
         currentJobs[jobId] = job;
@@ -409,24 +462,28 @@ const processJobInBackground = async (jobId) => {
 
         // Wait between batches (except for the last batch)
         if (batchIndex < contactBatches.length - 1) {
-          const waitTime = WAIT_BETWEEN_BATCHES_MS + getRandomDelay(-10000, 20000);
+          const waitTime =
+            WAIT_BETWEEN_BATCHES_MS + getRandomDelay(-10000, 20000);
           console.log(`⏳ Waiting ${waitTime / 1000}s before next batch...`);
-          await new Promise(resolve => setTimeout(resolve, waitTime));
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
         }
 
-        console.log(`📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed`);
-        
+        console.log(
+          `📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed`
+        );
       } catch (error) {
-        if (error.message.includes('TOKEN_REFRESH_FAILED')) {
+        if (error.message.includes("TOKEN_REFRESH_FAILED")) {
           break; // Stop processing
         }
       }
     }
 
     // Mark job as completed if all contacts processed
-    const remainingPending = job.contacts.filter(c => c.status === 'pending').length;
+    const remainingPending = job.contacts.filter(
+      (c) => c.status === "pending"
+    ).length;
     if (remainingPending === 0) {
-      job.status = 'completed';
+      job.status = "completed";
       job.completedAt = new Date().toISOString();
     }
 
@@ -436,12 +493,11 @@ const processJobInBackground = async (jobId) => {
     await saveJobs(finalJobs);
 
     console.log(`✅ Job ${jobId} processing completed. Status: ${job.status}`);
-
   } catch (error) {
     console.error(`❌ Background processing error for job ${jobId}:`, error);
-    job.status = 'failed';
+    job.status = "failed";
     job.error = error.message;
-    
+
     const errorJobs = await loadJobs();
     errorJobs[jobId] = job;
     await saveJobs(errorJobs);
@@ -458,7 +514,7 @@ app.get("/job-status/:jobId", async (req, res) => {
     if (!job) {
       return res.status(404).json({
         success: false,
-        message: "Job not found"
+        message: "Job not found",
       });
     }
 
@@ -474,10 +530,9 @@ app.get("/job-status/:jobId", async (req, res) => {
         createdAt: job.createdAt,
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
-        errors: job.errors
-      }
+        errors: job.errors,
+      },
     });
-
   } catch (error) {
     console.error("❌ Error getting job status:", error);
     res.status(500).json({
@@ -496,25 +551,26 @@ app.get("/user-job/:userId", async (req, res) => {
     const userSession = userSessions[userId];
 
     if (!userSession || !userSession.currentJobId) {
-      return res.status(404).json({
+      return res.status(200).json({
         success: false,
-        message: "No active job found for user"
+        message: "No active job found for user",
+        canResume: false,
+        job: null,
       });
     }
-
     const jobs = await loadJobs();
     const job = jobs[userSession.currentJobId];
 
     if (!job) {
       return res.status(404).json({
         success: false,
-        message: "Job not found"
+        message: "Job not found",
       });
     }
 
     res.status(200).json({
       success: true,
-      canResume: job.status === 'paused' || job.status === 'processing',
+      canResume: job.status === "paused" || job.status === "processing",
       job: {
         jobId: job.jobId,
         status: job.status,
@@ -524,10 +580,9 @@ app.get("/user-job/:userId", async (req, res) => {
         failureCount: job.failureCount,
         createdAt: job.createdAt,
         lastProcessedAt: job.lastProcessedAt,
-        completedAt: job.completedAt
-      }
+        completedAt: job.completedAt,
+      },
     });
-
   } catch (error) {
     console.error("❌ Error getting user job:", error);
     res.status(500).json({
@@ -542,12 +597,15 @@ app.get("/user-job/:userId", async (req, res) => {
 app.post("/update-contacts-post", async (req, res) => {
   // Redirect to new endpoint with userId
   const userId = req.body.userId || `legacy_${Date.now()}`;
-  
+
   req.body.userId = userId;
   req.body.resume = false;
-  
+
   // Forward to new endpoint
-  return app._router.handle({ ...req, url: '/start-processing', method: 'POST' }, res);
+  return app._router.handle(
+    { ...req, url: "/start-processing", method: "POST" },
+    res
+  );
 });
 
 // New endpoint to handle manual token refresh from extension
@@ -562,14 +620,19 @@ app.post("/refresh-token", async (req, res) => {
       });
     }
 
-    const newTokenData = await refreshAccessToken(refreshToken, clientId, tenantId, crmUrl, verifier);
+    const newTokenData = await refreshAccessToken(
+      refreshToken,
+      clientId,
+      tenantId,
+      crmUrl,
+      verifier
+    );
 
     res.status(200).json({
       success: true,
       message: "Token refreshed successfully",
       tokenData: newTokenData,
     });
-
   } catch (error) {
     console.error("❌ Token refresh failed:", error);
     res.status(401).json({
