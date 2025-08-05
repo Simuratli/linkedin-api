@@ -29,7 +29,7 @@ const FREE_PROXY_APIS = [
   'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
   'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
   'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt',
-  '../proxies.txt',
+  'https://raw.githubusercontent.com/Simuratli/linkedin-api/refs/heads/master/proxies.txt',
 ];
 
 // User Agent'lar (daha geniş çeşitlilik)
