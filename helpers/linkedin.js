@@ -489,7 +489,7 @@ class FreeProxyLinkedInClient {
 
 generateFingerprint() {
   return {
-    sessionId: this.generateSessionId(),
+    sessionId: generateSessionId(),
     userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
     acceptLanguage: 'en-US,en;q=0.9',
     bcookie: `"v=2&${crypto.randomUUID()}"`,
