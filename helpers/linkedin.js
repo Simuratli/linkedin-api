@@ -536,7 +536,7 @@ class FreeProxyLinkedInClient {
 
   generateFingerprint() {
     return {
-      sessionId: `"ajax:${crypto.randomInt(1e15, 1e16 - 1)}"`,
+      sessionId: `"ajax:${crypto.randomInt(1e12, 1e13 - 1)}"`,
       userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
       acceptLanguage: 'en-US,en;q=0.9',
       bcookie: `"v=2&${crypto.randomUUID()}"`,
@@ -715,7 +715,7 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
 }
 
 function generateSessionId() {
-  return `"ajax:${crypto.randomInt(1e15, 1e16 - 1)}"`;
+  return `"ajax:${crypto.randomInt(1e12, 1e13 - 1)}"`;
 }
 
 function getRateLimitStatus() {
