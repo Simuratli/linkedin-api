@@ -457,167 +457,86 @@ class ConservativeRateLimit {
 // Ana LinkedIn Client
 class FreeProxyLinkedInClient {
   constructor() {
-    this.proxyManager = new FreeProxyManager();
-    this.rateLimit = new ConservativeRateLimit();
-    this.currentProxy = null;
+    this.currentProxy = null; // optional
     this.requestCount = 0;
-    this.sessionFingerprints = new Map();
-    
-    console.log('🚀 Free Proxy LinkedIn Client initialized');
+    console.log('🚀 LinkedIn client initialized');
   }
 
-  // Proxy'leri initialize et
-  async initializeProxies() {
-    await this.proxyManager.fetchFreeProxies();
-    if (this.proxyManager.workingProxies.length === 0) {
-      throw new Error('No working proxies found. Cannot proceed.');
-    }
-    console.log(`✅ Initialized with ${this.proxyManager.workingProxies.length} working proxies`);
-  }
-
-  rotateProxy() {
-    try {
-      this.currentProxy = this.proxyManager.getBestProxy();
-      this.requestCount = 0;
-      console.log(`🔄 Rotated to proxy: ${this.currentProxy.url.substring(0, 30)}...`);
-      return this.currentProxy;
-    } catch (error) {
-      console.error('❌ Proxy rotation failed:', error.message);
-      throw error;
-    }
-  }
-
-generateFingerprint() {
-  return {
-    sessionId: generateSessionId(),
-    userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
-    acceptLanguage: 'en-US,en;q=0.9',
-    bcookie: `"v=2&${crypto.randomUUID()}"`,
-    bscookie: `"v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}"`,
-  };
-}
-
-  generateHeaders(csrf, cookies, profileId, fingerprint) {
-    const cookieHeader = Object.entries(cookies)
-      .map(([k, v]) => `${k}=${v}`)
-      .join('; ');
-
+  generateFingerprint() {
     return {
-      'accept': 'application/vnd.linkedin.normalized+json+2.1',
-      'accept-language': fingerprint.acceptLanguage,
-      'accept-encoding': 'gzip, deflate, br',
-      'cache-control': 'no-cache',
-      'csrf-token': csrf,
-      'cookie': cookieHeader,
-      'referer': `https://www.linkedin.com/in/${profileId}/`,
-      'user-agent': fingerprint.userAgent,
-      'x-li-lang': 'en_US',
-      'x-restli-protocol-version': '2.0.0',
+      sessionId: generateSessionId(),
+      userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+      acceptLanguage: 'en-US,en;q=0.9',
+      bcookie: `v=2&${crypto.randomUUID()}`,
+      bscookie: `v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}`,
     };
   }
 
-  async makeRequest(url, headers, requestType = 'profile_views') {
-    // Rate limiting kontrolü
-    const permission = await this.rateLimit.shouldAllowRequest(requestType);
-    
-    if (!permission.allowed) {
-      throw new Error(`Rate limit exceeded`);
+  async makeRequest(url, headers) {
+    console.log(`🌐 Fetching: ${url}`);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      agent: this.currentProxy ? new HttpsProxyAgent(this.currentProxy) : undefined,
+      timeout: 20000
+    });
+
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status}`);
     }
 
-    // Proxy rotation kontrolü
-    if (!this.currentProxy || this.requestCount >= DAILY_LIMITS.proxy_rotation_after) {
-      this.rotateProxy();
-    }
-
-    // Uzun gecikme (free proxy'ler için kritik)
-    const delay = permission.recommendedDelay;
-    console.log(`⏳ Waiting ${delay/1000}s before request (conservative approach)`);
-    await new Promise(resolve => setTimeout(resolve, delay));
-
-    const proxyAgent = new HttpsProxyAgent(this.currentProxy.url);
-
-    try {
-      console.log(`🔍 Making ${requestType} request via free proxy`);
-      console.log(`🔍 Making ${JSON.stringify(headers)} request via free proxy`);
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers,
-        agent: proxyAgent,
-        timeout: DAILY_LIMITS.request_timeout,
-      });
-
-      this.requestCount++;
-      this.rateLimit.incrementCounter(requestType);
-
-      if (!response.ok) {
-        this.proxyManager.recordProxyResult(this.currentProxy, false, response.status.toString());
-        
-        if (response.status === 429 || response.status === 403) {
-          // Bu proxy'yi failed olarak işaretle ve yeni proxy dene
-          throw new Error(`LinkedIn blocked proxy: ${response.status}`);
-        }
-        
-        throw new Error(`Request failed: ${response.status}`);
-      }
-
-      // Başarılı istek
-      this.proxyManager.recordProxyResult(this.currentProxy, true);
-      
-      const data = await response.json();
-      console.log(`✅ Successful ${requestType} request`);
-      
-      return data;
-
-    } catch (error) {
-      console.error(`❌ Request failed:`, error.message);
-      this.proxyManager.recordProxyResult(this.currentProxy, false, 'network_error');
-      throw error;
-    }
+    return await response.json();
   }
 
-  async fetchLinkedInProfile(profileId, customCookies = null) {
-    if (!this.currentProxy) {
-      this.rotateProxy();
-    }
-
+  async fetchLinkedInProfile(profileId, customCookies = {}) {
     const fingerprint = this.generateFingerprint();
-    
-    const profileViewUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`;
-    const contactInfoUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`;
 
     const cookies = {
-      JSESSIONID: fingerprint.sessionId,
-      li_at: customCookies?.li_at || 'AQEFAQ8BAAAAABcW3l4AAAGYKTXeBAAAAZiYCwrfVgAAsnVybjpsaTplbnRlcnByaXNlQXV0aFRva2VuOmVKeGpaQUFDbGtSZkZ4RE45bnZkUWpELzEvb2VSaEJEa3pkbEU1akJvM0RoRWdNakFMTnNDSjQ9XnVybjpsaTplbnRlcnByaXNlUHJvZmlsZToodXJuOmxpOmVudGVycHJpc2VBY2NvdW50OjczNDg1NjM2LDExNzE1NzUzNyledXJuOmxpOm1lbWJlcjo2MDI2NTM1OTVAbbrylOMwbMnJNLQf0n36-m2j2IZqxCtRDhKDaPNMu5tIm19eWFdBDmoKsQIBXGBqTTbhZWfAvCK4tQyqiPfXkaRF5vspyXtf6vy0LTXiGXOPpJFCIqaJCCfxQJwGAWTplhKUdPnInQnNPftS2tBpEu4kk2K2ElSantLOZspvgd01507sC3De1dpno-yNQrclA1Gs',
+      JSESSIONID: customCookies.JSESSIONID || `\"${fingerprint.sessionId}\"`,
+      li_at: customCookies.li_at || 'your_li_at_token_here',
       liap: 'true',
       bcookie: fingerprint.bcookie,
       bscookie: fingerprint.bscookie,
     };
 
-    const csrfToken = fingerprint.sessionId.replace(/"/g, '');
+    const cleanCookieHeader = Object.entries(cookies)
+      .map(([k, v]) => `${k}=${v.replace(/\"/g, '')}`)
+      .join('; ');
+
+    const csrfToken = cookies.JSESSIONID.replace(/\"/g, '');
+
+    const headers = {
+      'accept': 'application/vnd.linkedin.normalized+json+2.1',
+      'accept-language': fingerprint.acceptLanguage,
+      'cache-control': 'no-cache',
+      'csrf-token': csrfToken,
+      'cookie': cleanCookieHeader,
+      'referer': `https://www.linkedin.com/in/${profileId}/`,
+      'user-agent': fingerprint.userAgent,
+      'x-li-lang': 'en_US',
+      'x-restli-protocol-version': '2.0.0',
+    };
+
+    const profileViewUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`;
+    const contactInfoUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`;
 
     try {
-      // Ana profil verisini al
-      const profileHeaders = this.generateHeaders(csrfToken, cookies, profileId, fingerprint);
-      const profileData = await this.makeRequest(profileViewUrl, profileHeaders, 'profile_views');
-      console.log(JSON.stringify(profileData),'profiledata request')
-      // İki istek arası uzun gecikme
-      const interRequestDelay = Math.floor(Math.random() * 20000) + 15000; // 15-35 saniye
-      console.log(`⏳ Waiting ${interRequestDelay/1000}s between profile and contact requests`);
+      const profileData = await this.makeRequest(profileViewUrl, headers);
+      console.log(`✅ Profile fetched: ${profileId}`);
+
+      const interRequestDelay = Math.floor(Math.random() * 20000) + 15000;
+      console.log(`⏳ Waiting ${interRequestDelay / 1000}s before contact info`);
       await new Promise(resolve => setTimeout(resolve, interRequestDelay));
 
-      // Contact info'yu al (çok sınırlı)
       let contactInfoData = null;
-      try {
-        // Contact info'yu sadece %30 olasılıkla dene (çok riskli)
-        if (Math.random() < 0.3) {
-          const contactHeaders = this.generateHeaders(csrfToken, cookies, profileId, fingerprint);
-          contactInfoData = await this.makeRequest(contactInfoUrl, contactHeaders, 'contact_info');
-        } else {
-          console.log('📊 Skipping contact info to reduce risk');
+      if (Math.random() < 0.3) {
+        try {
+          contactInfoData = await this.makeRequest(contactInfoUrl, headers);
+        } catch (err) {
+          console.warn(`⚠️ Contact info failed: ${err.message}`);
         }
-      } catch (contactError) {
-        console.warn(`⚠️ Contact info failed for ${profileId}:`, contactError.message);
+      } else {
+        console.log('📊 Skipping contact info');
       }
 
       return {
@@ -629,27 +548,12 @@ generateFingerprint() {
         }
       };
 
-    } catch (error) {
-      console.error(`❌ Profile fetch failed for ${profileId}:`, error.message);
-      throw error;
+    } catch (err) {
+      console.error(`❌ Profile fetch failed for ${profileId}: ${err.message}`);
+      throw err;
     }
   }
-
-  // Manual proxy refresh
-  async refreshProxies() {
-    await this.proxyManager.refreshProxies();
-  }
-
-  getStats() {
-    return {
-      rateLimitStats: this.rateLimit.getStats(),
-      proxyStats: this.proxyManager.getStats(),
-      currentProxy: this.currentProxy ? this.currentProxy.url.substring(0, 30) + '...' : null,
-      requestCount: this.requestCount
-    };
-  }
 }
-
 // Global instance
 let linkedInClient = null;
 
