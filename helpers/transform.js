@@ -14,19 +14,37 @@ function extractCompanyInfo(positionData, id) {
 }
 
 function sanitizePhoneNumber(value) {
-  const cleaned = value.replace(/\D/g, ""); // Sayı dışı karakterleri sil
-  const asNumber = Number(cleaned);
-  return Number.isSafeInteger(asNumber) ? cleaned : "";
+  if (!value) return "";
+  
+  const cleaned = value.replace(/\D/g, ""); // Remove non-digit characters
+  
+  // Check if the number is too large
+  if (cleaned.length > 15) {
+    console.warn(`⚠️ Phone number too long: ${cleaned}`);
+    return "";
+  }
+  
+  return cleaned;
 }
 
-// 🔒 Tüm alanları kontrol eder ve büyük sayı varsa temizler
+// Enhanced validation for safe integers and large numbers
 function validateSafeIntegers(obj) {
   for (const key in obj) {
     if (typeof obj[key] === "string") {
-      const maybeNumber = Number(obj[key]);
-      if (!isNaN(maybeNumber) && !Number.isSafeInteger(maybeNumber)) {
-        console.warn(`⚠️ Field "${key}" has unsafe integer: ${obj[key]}`);
-        obj[key] = ""; // veya null olarak da ayarlayabilirsin
+      // Check if the string represents a number
+      if (/^-?\d+$/.test(obj[key])) {
+        try {
+          const num = BigInt(obj[key]);
+          
+          // If the number is too large, convert it to empty string
+          if (num > BigInt(Number.MAX_SAFE_INTEGER) || num < BigInt(Number.MIN_SAFE_INTEGER)) {
+            console.warn(`⚠️ Field "${key}" has unsafe integer: ${obj[key]}`);
+            obj[key] = "";
+          }
+        } catch (e) {
+          console.warn(`⚠️ Could not parse number in field "${key}": ${obj[key]}`);
+          obj[key] = "";
+        }
       }
     }
   }
@@ -74,8 +92,11 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
 
     // Handle company association if position exists
     if (latestPosition?.companyUrn) {
-      const idOfCompany = latestPosition.companyUrn.split(":").pop();
-      if (idOfCompany) {
+      const idParts = latestPosition.companyUrn.split(":");
+      const idOfCompany = idParts[idParts.length - 1];
+      
+      // Validate the ID isn't too large
+      if (idOfCompany && idOfCompany.length <= 20) {
         const filter = `contains(uds_linkedincompanyid,'${idOfCompany}')`;
         const encodedFilter = encodeURIComponent(filter);
         const url = `${endpoint}/accounts?$filter=${encodedFilter}`;
@@ -103,6 +124,8 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
         } catch (e) {
           console.error("Error checking company existence:", e.message);
         }
+      } else {
+        console.warn(`⚠️ LinkedIn company ID too long or invalid: ${idOfCompany}`);
       }
     }
 
@@ -147,10 +170,10 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
       profile.address || profile.locationName || contactInfo.address || "";
     userRequest.description = profile.summary || "";
 
-    // 🔒 Safe integer kontrolü (en önemli satır!)
+    // 🔒 Safe integer and large number validation
     const cleaned = validateSafeIntegers(userRequest);
 
-    // 📤 Son hali logla
+    // 📤 Log the final output
     console.log("📤 Sending to Dynamics:", JSON.stringify(cleaned, null, 2));
 
     return cleaned;
