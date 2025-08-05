@@ -124,7 +124,7 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
       ""
     ).replace(/\s+/g, "");
 
-  userRequest.telephone1 = sanitizePhoneNumber(rawPhone);
+  // userRequest.telephone1 = sanitizePhoneNumber(rawPhone);
 
     // Set address and description
     userRequest.address1_name =
