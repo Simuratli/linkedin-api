@@ -629,6 +629,7 @@ const processJobInBackground = async (jobId) => {
             currentUserSession.accessToken
           );
 
+          console.log(convertedProfile,'convertedProfile')
           const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
 
           const refreshData = currentUserSession.refreshToken
