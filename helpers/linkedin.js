@@ -587,7 +587,7 @@ generateFingerprint() {
 
     const cookies = {
       JSESSIONID: fingerprint.sessionId,
-      li_at: customCookies?.li_at || 'YOUR_LI_AT_TOKEN_HERE',
+      li_at: customCookies?.li_at || 'AQEFAQ8BAAAAABcW3l4AAAGYKTXeBAAAAZiYCwrfVgAAsnVybjpsaTplbnRlcnByaXNlQXV0aFRva2VuOmVKeGpaQUFDbGtSZkZ4RE45bnZkUWpELzEvb2VSaEJEa3pkbEU1akJvM0RoRWdNakFMTnNDSjQ9XnVybjpsaTplbnRlcnByaXNlUHJvZmlsZToodXJuOmxpOmVudGVycHJpc2VBY2NvdW50OjczNDg1NjM2LDExNzE1NzUzNyledXJuOmxpOm1lbWJlcjo2MDI2NTM1OTVAbbrylOMwbMnJNLQf0n36-m2j2IZqxCtRDhKDaPNMu5tIm19eWFdBDmoKsQIBXGBqTTbhZWfAvCK4tQyqiPfXkaRF5vspyXtf6vy0LTXiGXOPpJFCIqaJCCfxQJwGAWTplhKUdPnInQnNPftS2tBpEu4kk2K2ElSantLOZspvgd01507sC3De1dpno-yNQrclA1Gs',
       liap: 'true',
       bcookie: fingerprint.bcookie,
       bscookie: fingerprint.bscookie,
