@@ -19,6 +19,20 @@ function sanitizePhoneNumber(value) {
   return Number.isSafeInteger(asNumber) ? cleaned : "";
 }
 
+// 🔒 Tüm alanları kontrol eder ve büyük sayı varsa temizler
+function validateSafeIntegers(obj) {
+  for (const key in obj) {
+    if (typeof obj[key] === "string") {
+      const maybeNumber = Number(obj[key]);
+      if (!isNaN(maybeNumber) && !Number.isSafeInteger(maybeNumber)) {
+        console.warn(`⚠️ Field "${key}" has unsafe integer: ${obj[key]}`);
+        obj[key] = ""; // veya null olarak da ayarlayabilirsin
+      }
+    }
+  }
+  return obj;
+}
+
 async function transformToCreateUserRequest(profileData, endpoint, token) {
   try {
     // Check if profileData is valid
@@ -101,7 +115,9 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
     // Handle birthdate
     const birth = profile.birthDate;
     if (birth?.month && birth?.day) {
-      userRequest.birthdate = `1900-${String(birth.month).padStart(2, "0")}-${String(birth.day).padStart(2, "0")}`;
+      userRequest.birthdate = `1900-${String(birth.month).padStart(2, "0")}-${String(
+        birth.day
+      ).padStart(2, "0")}`;
     }
 
     // Extract contact info (prefer contactInfo section if available)
@@ -124,14 +140,20 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
       ""
     ).replace(/\s+/g, "");
 
-  // userRequest.telephone1 = sanitizePhoneNumber(rawPhone);
+    userRequest.telephone1 = sanitizePhoneNumber(rawPhone);
 
     // Set address and description
     userRequest.address1_name =
       profile.address || profile.locationName || contactInfo.address || "";
     userRequest.description = profile.summary || "";
-    console.log("📤 Sending to Dynamics:", JSON.stringify(userRequest, null, 2));
-    return userRequest;
+
+    // 🔒 Safe integer kontrolü (en önemli satır!)
+    const cleaned = validateSafeIntegers(userRequest);
+
+    // 📤 Son hali logla
+    console.log("📤 Sending to Dynamics:", JSON.stringify(cleaned, null, 2));
+
+    return cleaned;
   } catch (error) {
     console.error("Error transforming LinkedIn profile data:", error);
     throw error;
