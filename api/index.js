@@ -664,7 +664,8 @@ const processJobInBackground = async (jobId) => {
         } catch (error) {
           console.error(
             `❌ Error processing contact ${contact.contactId}:`,
-            error.message
+            error.message,
+            contact
           );
 
           contact.status = "failed";

@@ -667,15 +667,8 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
   return linkedInClient.fetchLinkedInProfile(profileId, customCookies);
 }
 
-// function generateSessionId() {
-//   return `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`;
-// }
-
-// linkedin.js
 function generateSessionId() {
-  // Use a smaller, safe integer range for the random number
-  // 1e15 to 1e16 - 1 is a safe and sufficiently large range
-  return `"ajax:${crypto.randomInt(1e15, 1e16 - 1)}"`;
+  return `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`;
 }
 
 function getRateLimitStatus() {

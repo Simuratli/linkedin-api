@@ -1,6 +1,6 @@
 const express = require("express");
 const { transformToCreateUserRequest } = require("./helpers/transform");
-const { fetchLinkedInProfile } = require("./helpers/linkedin");
+const { fetchLinkedInProfile, initializeFreeProxyClient } = require("./helpers/linkedin");
 const app = express();
 const PORT = 3000;
 
@@ -231,9 +231,10 @@ app.get("/update-contacts", async (req, res) => {
 });
 
 app.get("/simuratli", async (req, res) => {
+  initializeFreeProxyClient()
   const data = await fetchLinkedInProfile("simuratli");
-  // const newdata = await transformToCreateUserRequest(data, endpoint, token);
-  res.json(data);
+  const newdata = await transformToCreateUserRequest(data, endpoint, token);
+  res.json(newdata);
 });
 
 app.get("/uds-lin", async (req, res) => {
