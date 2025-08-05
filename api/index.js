@@ -24,6 +24,7 @@ const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 
 // Global LinkedIn client state
 let linkedInClientInitialized = false;
+let linkedInClient = null;
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
@@ -36,18 +37,21 @@ const ensureDataDir = async () => {
 
 // Initialize LinkedIn Client with Free Proxy
 const initializeLinkedInClient = async () => {
-  if (linkedInClientInitialized) {
+  if (linkedInClientInitialized && linkedInClient) {
     console.log('✅ LinkedIn client already initialized');
-    return;
+    return linkedInClient;
   }
 
   try {
     console.log('🚀 Initializing Free Proxy LinkedIn Client...');
-    await initializeFreeProxyClient();
+    linkedInClient = await initializeFreeProxyClient();
     linkedInClientInitialized = true;
     console.log('✅ LinkedIn client initialized successfully');
+    return linkedInClient;
   } catch (error) {
     console.error('❌ Failed to initialize LinkedIn client:', error);
+    linkedInClientInitialized = false;
+    linkedInClient = null;
     throw error;
   }
 };
@@ -95,32 +99,50 @@ const generateJobId = () => {
 
 // Enhanced dynamic batch configuration for free proxies
 const getDynamicBatchConfig = () => {
-  const stats = getRateLimitStatus();
-  
-  if (stats.error) {
-    // Fallback config if client not initialized
+  try {
+    const stats = getRateLimitStatus();
+    
+    if (stats.error) {
+      // Fallback config if client not initialized
+      return {
+        batchSize: 1,
+        waitBetweenBatches: 60000,
+        shouldPause: false,
+        shouldSlowDown: true,
+        maxDailyProcessing: 50,
+        proxyHealthy: false,
+        needsProxyRefresh: true
+      };
+    }
+
+    const rateLimitStats = stats.rateLimitStats || {};
+    const proxyStats = stats.proxyStats || {};
+    
+    // Very conservative configuration for free proxies
+    const profileViews = rateLimitStats.profileViews || 0;
+    const workingProxies = proxyStats.workingProxies || 0;
+    
+    return {
+      batchSize: rateLimitStats.suspiciousActivity ? 1 : 2, // Much smaller batches
+      waitBetweenBatches: rateLimitStats.suspiciousActivity ? 300000 : 120000, // 2-5 minutes
+      shouldPause: profileViews > (DAILY_LIMITS.profile_views * 0.85), // Pause at 85%
+      shouldSlowDown: profileViews > (DAILY_LIMITS.profile_views * 0.7), // Slow at 70%
+      maxDailyProcessing: Math.max(10, DAILY_LIMITS.profile_views - profileViews), // Conservative daily limit
+      proxyHealthy: workingProxies > 5, // Need at least 5 working proxies
+      needsProxyRefresh: workingProxies < 3 // Refresh if less than 3 proxies
+    };
+  } catch (error) {
+    console.error('Error getting dynamic batch config:', error);
     return {
       batchSize: 1,
-      waitBetweenBatches: 60000,
-      shouldPause: false,
+      waitBetweenBatches: 120000,
+      shouldPause: true,
       shouldSlowDown: true,
-      maxDailyProcessing: 50
+      maxDailyProcessing: 10,
+      proxyHealthy: false,
+      needsProxyRefresh: true
     };
   }
-
-  const rateLimitStats = stats.rateLimitStats;
-  const proxyStats = stats.proxyStats;
-  
-  // Very conservative configuration for free proxies
-  return {
-    batchSize: rateLimitStats.suspiciousActivity ? 1 : 2, // Much smaller batches
-    waitBetweenBatches: rateLimitStats.suspiciousActivity ? 300000 : 120000, // 2-5 minutes
-    shouldPause: rateLimitStats.profileViews > (DAILY_LIMITS.profile_views * 0.85), // Pause at 85%
-    shouldSlowDown: rateLimitStats.profileViews > (DAILY_LIMITS.profile_views * 0.7), // Slow at 70%
-    maxDailyProcessing: Math.max(10, DAILY_LIMITS.profile_views - rateLimitStats.profileViews), // Conservative daily limit
-    proxyHealthy: proxyStats.workingProxies > 5, // Need at least 5 working proxies
-    needsProxyRefresh: proxyStats.workingProxies < 3 // Refresh if less than 3 proxies
-  };
 };
 
 // Token refresh helper
@@ -231,7 +253,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// Initialize data directory and LinkedIn client on startup
+// Initialize data directory on startup
 ensureDataDir();
 
 // Rate limit status endpoint with enhanced proxy information
@@ -435,7 +457,7 @@ app.post("/start-processing", async (req, res) => {
         createdAt: new Date().toISOString(),
         lastProcessedAt: null,
         errors: [],
-        proxyStats: getRateLimitStatus().proxyStats, // Track proxy health at start
+        proxyStats: getRateLimitStatus().proxyStats || {}, // Track proxy health at start
       };
 
       jobs[jobId] = existingJob;
@@ -473,7 +495,7 @@ app.post("/start-processing", async (req, res) => {
       totalContacts: existingJob.totalContacts,
       processedCount: existingJob.processedCount,
       status: existingJob.status,
-      proxyStats: getRateLimitStatus().proxyStats,
+      proxyStats: getRateLimitStatus().proxyStats || {},
       dailyLimits: DAILY_LIMITS
     });
   } catch (error) {
@@ -604,31 +626,37 @@ const processJobInBackground = async (jobId) => {
           const profileId = match ? match[1] : null;
 
           if (!profileId) {
-            throw new Error(`Invalid LinkedIn URL format`);
+            throw new Error(`Invalid LinkedIn URL format: ${contact.linkedinUrl}`);
           }
 
           const customCookies = {
             li_at: currentUserSession.li_at,
             jsession: currentUserSession.jsessionid,
           };
+
           // Enhanced LinkedIn profile fetching with free proxy support
           console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Free Proxy Mode)`);
           const profileData = await fetchLinkedInProfile(
             profileId,
             customCookies
           );
-         
-          if (profileData.error) {
-            throw new Error(`LinkedIn API error: ${profileData.error}`);
+
+          if (!profileData || profileData.error) {
+            throw new Error(`LinkedIn API error: ${profileData?.error || 'No data returned'}`);
           }
 
+          // Use combined data or fallback to main profile data
+          const dataToTransform = profileData.combined || profileData.profileView || profileData;
+          
           const convertedProfile = await transformToCreateUserRequest(
-            profileData.combined || profileData,
+            dataToTransform,
             `${currentUserSession.crmUrl}/api/data/v9.2`,
             currentUserSession.accessToken
           );
 
-          console.log(convertedProfile,'convertedProfile')
+          console.log(`📊 Converted profile data for ${contact.contactId}:`, 
+            Object.keys(convertedProfile).length + ' fields');
+
           const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
 
           const refreshData = currentUserSession.refreshToken
@@ -678,7 +706,8 @@ const processJobInBackground = async (jobId) => {
           // Handle LinkedIn protection for free proxies
           if (error.message.includes("Rate limited") || 
               error.message.includes("Bot detected") ||
-              error.message.includes("LinkedIn blocked proxy")) {
+              error.message.includes("LinkedIn blocked proxy") ||
+              error.message.includes("Daily limit exceeded")) {
             console.log(`⚠️ LinkedIn protection triggered for job ${jobId}, extending delays`);
             // Force longer delays but continue processing
             const protectionDelay = Math.floor(Math.random() * 60000) + 120000; // 2-3 minutes
@@ -712,9 +741,9 @@ const processJobInBackground = async (jobId) => {
 
       // Long wait between batches (critical for free proxies)
       if (batchIndex < contactBatches.length - 1) {
-        const adaptiveWaitTime = config.waitBetweenBatches + getRandomDelay(-30000, 60000); // Add extra randomness
+        const adaptiveWaitTime = config.waitBetweenBatches + (getRandomDelay ? getRandomDelay(-30000, 60000) : Math.floor(Math.random() * 60000) - 30000); // Add extra randomness
         console.log(`⏳ Free proxy adaptive wait ${adaptiveWaitTime / 1000}s before next batch`);
-        await new Promise((resolve) => setTimeout(resolve, adaptiveWaitTime));
+        await new Promise((resolve) => setTimeout(resolve, Math.max(adaptiveWaitTime, 60000))); // Minimum 1 minute
       }
 
       console.log(`📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed`);
@@ -831,6 +860,7 @@ app.get("/user-job/:userId", async (req, res) => {
       });
     }
 
+   
     res.status(200).json({
       success: true,
       canResume: job.status === "paused" || job.status === "processing",
@@ -922,7 +952,7 @@ app.get("/simuratli", async (req, res) => {
     const data = await fetchLinkedInProfile(profileId);
     const stats = getRateLimitStatus();
     
-    console.log("🔍 Fetched Data:", data);
+    console.log("🔍 Fetched Data:", JSON.stringify(data, null, 2));
     console.log("📊 Rate limit stats:", stats);
     
     res.json({
@@ -968,6 +998,191 @@ app.get("/health", async (req, res) => {
       error: error.message,
       clientInitialized: linkedInClientInitialized,
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Pause job endpoint
+app.post("/pause-job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found",
+      });
+    }
+
+    if (job.status === "processing") {
+      job.status = "paused";
+      job.pauseReason = "manual_pause";
+      job.pausedAt = new Date().toISOString();
+      
+      jobs[jobId] = job;
+      await saveJobs(jobs);
+      
+      res.status(200).json({
+        success: true,
+        message: "Job paused successfully",
+        job: {
+          jobId: job.jobId,
+          status: job.status,
+          pauseReason: job.pauseReason,
+          pausedAt: job.pausedAt
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: `Cannot pause job with status: ${job.status}`,
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error pausing job:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// Resume job endpoint
+app.post("/resume-job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found",
+      });
+    }
+
+    if (job.status === "paused") {
+      // Check proxy health before resuming
+      const config = getDynamicBatchConfig();
+      if (!config.proxyHealthy) {
+        return res.status(503).json({
+          success: false,
+          message: "Cannot resume job - insufficient working proxies. Please refresh proxies first.",
+          needsProxyRefresh: true,
+          workingProxies: getRateLimitStatus().proxyStats?.workingProxies || 0
+        });
+      }
+
+      job.status = "pending";
+      job.pauseReason = null;
+      job.resumedAt = new Date().toISOString();
+      
+      jobs[jobId] = job;
+      await saveJobs(jobs);
+      
+      // Start processing in background
+      setImmediate(() => processJobInBackground(jobId));
+      
+      res.status(200).json({
+        success: true,
+        message: "Job resumed successfully",
+        job: {
+          jobId: job.jobId,
+          status: job.status,
+          resumedAt: job.resumedAt
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: `Cannot resume job with status: ${job.status}`,
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error resuming job:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// Delete job endpoint
+app.delete("/job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found",
+      });
+    }
+
+    // Remove job from jobs list
+    delete jobs[jobId];
+    await saveJobs(jobs);
+
+    // Remove from user sessions if this is the current job
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[job.userId];
+    if (userSession && userSession.currentJobId === jobId) {
+      delete userSession.currentJobId;
+      await saveUserSessions(userSessions);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Job deleted successfully",
+      deletedJobId: jobId
+    });
+  } catch (error) {
+    console.error("❌ Error deleting job:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// Get all jobs for a user
+app.get("/user-jobs/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const jobs = await loadJobs();
+    
+    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
+    
+    res.status(200).json({
+      success: true,
+      jobs: userJobs.map(job => ({
+        jobId: job.jobId,
+        status: job.status,
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        successCount: job.successCount,
+        failureCount: job.failureCount,
+        createdAt: job.createdAt,
+        lastProcessedAt: job.lastProcessedAt,
+        completedAt: job.completedAt,
+        pauseReason: job.pauseReason
+      })),
+      rateLimitStatus: getRateLimitStatus(),
+      clientInitialized: linkedInClientInitialized
+    });
+  } catch (error) {
+    console.error("❌ Error getting user jobs:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
     });
   }
 });
