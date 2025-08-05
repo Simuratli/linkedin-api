@@ -10,7 +10,7 @@ const {
   initializeFreeProxyClient,
   refreshProxies,
   DAILY_LIMITS 
-} = require("../helpers/enhanced_linkedin");
+} = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
