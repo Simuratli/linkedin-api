@@ -7,12 +7,9 @@ const {
   fetchLinkedInProfile, 
   generateSessionId, 
   getRateLimitStatus, 
-  initializeFreeProxyClient,
-  refreshProxies,
+  initializeLinkedInClient,
   DAILY_LIMITS 
 } = require("../helpers/linkedin");
-
-// ...existing code...
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
@@ -26,7 +23,6 @@ const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 
 // Global LinkedIn client state
 let linkedInClientInitialized = false;
-let simpleLinkedInClientInitialized = false;
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
@@ -37,38 +33,20 @@ const ensureDataDir = async () => {
   }
 };
 
-// Initialize LinkedIn Client with Free Proxy
-const initializeLinkedInClient = async () => {
+// Initialize LinkedIn Client
+const initializeLinkedInClientAPI = async () => {
   if (linkedInClientInitialized) {
     console.log('✅ LinkedIn client already initialized');
     return;
   }
 
   try {
-    console.log('🚀 Initializing Free Proxy LinkedIn Client...');
-    await initializeFreeProxyClient();
+    console.log('🚀 Initializing Simple LinkedIn Client...');
+    await initializeLinkedInClient();
     linkedInClientInitialized = true;
     console.log('✅ LinkedIn client initialized successfully');
   } catch (error) {
     console.error('❌ Failed to initialize LinkedIn client:', error);
-    throw error;
-  }
-};
-
-// Initialize Simple LinkedIn Client (no proxies needed)
-const initializeSimpleLinkedInClientAPI = async () => {
-  if (simpleLinkedInClientInitialized) {
-    console.log('✅ Simple LinkedIn client already initialized');
-    return;
-  }
-
-  try {
-    console.log('🚀 Initializing Simple LinkedIn Client (Direct Requests)...');
-    await initializeSimpleLinkedInClient();
-    simpleLinkedInClientInitialized = true;
-    console.log('✅ Simple LinkedIn client initialized successfully');
-  } catch (error) {
-    console.error('❌ Failed to initialize simple LinkedIn client:', error);
     throw error;
   }
 };
@@ -114,19 +92,13 @@ const generateJobId = () => {
   return `job_${Date.now()}_${Math.random().toString(36).substring(2)}`;
 };
 
-// Simple batch configuration (no proxies at all)
-const getDynamicBatchConfig = () => {
-  const stats = getRateLimitStatus();
-  const proxyStats = stats.proxyStats || {};
-  const successRate = proxyStats.successRate || 0;
+// Simple batch configuration
+const getBatchConfig = () => {
   return {
-    batchSize: 2,
-    waitBetweenBatches: 60000,
-    shouldPause: successRate < 10,
-    shouldSlowDown: successRate < 50,
-    maxDailyProcessing: 200,
-    proxyHealthy: successRate > 30,
-    needsProxyRefresh: proxyStats.workingProxies < 10
+    batchSize: 1, // Process one at a time to be safe
+    waitBetweenBatches: 30000, // 30 seconds between batches
+    waitBetweenRequests: 5000, // 5 seconds between requests
+    maxDailyProcessing: 100
   };
 };
 
@@ -238,27 +210,19 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// Initialize data directory and LinkedIn client on startup
+// Initialize data directory on startup
 ensureDataDir();
 
-// Rate limit status endpoint with enhanced proxy information
+// Rate limit status endpoint
 app.get("/rate-limit-status/:userId", async (req, res) => {
   try {
     const stats = getRateLimitStatus();
-    const config = getDynamicBatchConfig();
+    const config = getBatchConfig();
     
     res.status(200).json({
       success: true,
       stats: stats,
       config: config,
-      recommendations: {
-        shouldSlowDown: config.shouldSlowDown,
-        shouldPause: config.shouldPause,
-        recommendedBatchSize: config.batchSize,
-        recommendedDelay: config.waitBetweenBatches,
-        needsProxyRefresh: config.needsProxyRefresh,
-        proxyHealthy: config.proxyHealthy
-      },
       clientInitialized: linkedInClientInitialized
     });
   } catch (error) {
@@ -271,36 +235,10 @@ app.get("/rate-limit-status/:userId", async (req, res) => {
   }
 });
 
-// Proxy management endpoints
-app.post("/refresh-proxies", async (req, res) => {
-  try {
-    if (!linkedInClientInitialized) {
-      await initializeLinkedInClient();
-    }
-    
-    console.log('🔄 Manual proxy refresh requested');
-    await refreshProxies();
-    
-    const stats = getRateLimitStatus();
-    res.status(200).json({
-      success: true,
-      message: "Proxies refreshed successfully",
-      stats: stats
-    });
-  } catch (error) {
-    console.error('❌ Proxy refresh failed:', error);
-    res.status(500).json({
-      success: false,
-      message: "Proxy refresh failed",
-      error: error.message
-    });
-  }
-});
-
 // Initialize LinkedIn client endpoint
 app.post("/initialize-client", async (req, res) => {
   try {
-    await initializeLinkedInClient();
+    await initializeLinkedInClientAPI();
     const stats = getRateLimitStatus();
     
     res.status(200).json({
@@ -318,7 +256,7 @@ app.post("/initialize-client", async (req, res) => {
   }
 });
 
-// Enhanced start processing endpoint
+// Start processing endpoint
 app.post("/start-processing", async (req, res) => {
   try {
     const {
@@ -345,26 +283,14 @@ app.post("/start-processing", async (req, res) => {
     // Initialize LinkedIn client if not done yet
     if (!linkedInClientInitialized) {
       try {
-        await initializeLinkedInClient();
+        await initializeLinkedInClientAPI();
       } catch (initError) {
         return res.status(500).json({
           success: false,
-          message: "Failed to initialize LinkedIn client. Please try again or refresh proxies.",
-          error: initError.message,
-          needsProxyRefresh: true
+          message: "Failed to initialize LinkedIn client. Please try again.",
+          error: initError.message
         });
       }
-    }
-
-    // Check proxy health before starting
-    const config = getDynamicBatchConfig();
-    if (!config.proxyHealthy) {
-      return res.status(503).json({
-        success: false,
-        message: "Insufficient working proxies. Please refresh proxies first.",
-        needsProxyRefresh: true,
-        workingProxies: getRateLimitStatus().proxyStats?.workingProxies || 0
-      });
     }
 
     const clientEndpoint = `${crmUrl}/api/data/v9.2`;
@@ -379,7 +305,7 @@ app.post("/start-processing", async (req, res) => {
           }
         : null;
 
-    // Load existing jobs and user sessions
+    // Load existing jobs and user sessions  
     const jobs = await loadJobs();
     const userSessions = await loadUserSessions();
 
@@ -442,7 +368,6 @@ app.post("/start-processing", async (req, res) => {
         createdAt: new Date().toISOString(),
         lastProcessedAt: null,
         errors: [],
-        proxyStats: getRateLimitStatus().proxyStats, // Track proxy health at start
       };
 
       jobs[jobId] = existingJob;
@@ -480,7 +405,6 @@ app.post("/start-processing", async (req, res) => {
       totalContacts: existingJob.totalContacts,
       processedCount: existingJob.processedCount,
       status: existingJob.status,
-      proxyStats: getRateLimitStatus().proxyStats,
       dailyLimits: DAILY_LIMITS
     });
   } catch (error) {
@@ -493,7 +417,7 @@ app.post("/start-processing", async (req, res) => {
   }
 });
 
-// Enhanced background processing function
+// Background processing function
 const processJobInBackground = async (jobId) => {
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
@@ -515,59 +439,23 @@ const processJobInBackground = async (jobId) => {
     job.lastProcessedAt = new Date().toISOString();
     await saveJobs(jobs);
 
-    // Get dynamic configuration for proxies
-    let config = getDynamicBatchConfig();
-    console.log(`📊 Proxy Dynamic config for job ${jobId}:`, {
+    const config = getBatchConfig();
+    console.log(`📊 Processing job ${jobId} with config:`, {
       batchSize: config.batchSize,
-      waitTime: config.waitBetweenBatches / 1000 + 's',
-      shouldPause: config.shouldPause,
-      maxDaily: config.maxDailyProcessing,
-      proxyHealthy: config.proxyHealthy,
-      needsProxyRefresh: config.needsProxyRefresh
+      waitBetweenBatches: config.waitBetweenBatches / 1000 + 's',
+      waitBetweenRequests: config.waitBetweenRequests / 1000 + 's',
+      maxDaily: config.maxDailyProcessing
     });
-
-    // Daily limit check
-    if (config.shouldPause) {
-      const stats = getRateLimitStatus();
-      console.log(`⏸️ Daily limit approaching, pausing job ${jobId}`);
-      job.status = "paused";
-      job.pauseReason = "daily_limit_approaching";
-      await saveJobs({ ...(await loadJobs()), [jobId]: job });
-      return;
-    }
 
     // Get pending contacts
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");
-    
-    // Limit contacts based on daily quota (very conservative for free proxies)
-    const contactsToProcess = pendingContacts.slice(0, Math.min(config.maxDailyProcessing, 20)); // Max 20 per day
+    const contactsToProcess = pendingContacts.slice(0, config.maxDailyProcessing);
     const contactBatches = chunkArray(contactsToProcess, config.batchSize);
 
-    console.log(`📊 Processing ${contactsToProcess.length} contacts (free proxy limited) in ${contactBatches.length} batches for job ${jobId}`);
+    console.log(`📊 Processing ${contactsToProcess.length} contacts in ${contactBatches.length} batches for job ${jobId}`);
 
     for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
       const batch = contactBatches[batchIndex];
-
-      // Update configuration before each batch
-      config = getDynamicBatchConfig();
-      
-      // Check limits again
-      if (config.shouldPause) {
-        console.log(`⏸️ Daily limit reached during processing, pausing job ${jobId}`);
-        job.status = "paused";
-        job.pauseReason = "daily_limit_reached";
-        await saveJobs({ ...(await loadJobs()), [jobId]: job });
-        return;
-      }
-
-      // Check proxy health
-      if (!config.proxyHealthy) {
-        console.log(`⏸️ Proxy health degraded, pausing job ${jobId}`);
-        job.status = "paused";
-        job.pauseReason = "proxy_health_degraded";
-        await saveJobs({ ...(await loadJobs()), [jobId]: job });
-        return;
-      }
 
       // Check if user session is still valid
       const currentUserSessions = await loadUserSessions();
@@ -582,7 +470,7 @@ const processJobInBackground = async (jobId) => {
       }
 
       console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`);
-      // Process batch sequentially for proxies
+      
       for (const contact of batch) {
         try {
           contact.status = "processing";
@@ -599,17 +487,16 @@ const processJobInBackground = async (jobId) => {
             jsessionid: currentUserSession.jsessionid,
           };
 
-          // Proxy LinkedIn profile fetching
-          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Proxy Request)`);
+          console.log(`🔍 Fetching LinkedIn profile: ${profileId}`);
           const profileData = await fetchLinkedInProfile(profileId, customCookies);
-          console.log(`✅ Successfully fetched with proxy client`);
+          console.log(`✅ Successfully fetched profile data`);
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
 
           const convertedProfile = await transformToCreateUserRequest(
-            profileData.combined || profileData,
+            profileData,
             `${currentUserSession.crmUrl}/api/data/v9.2`,
             currentUserSession.accessToken
           );
@@ -638,12 +525,9 @@ const processJobInBackground = async (jobId) => {
           job.successCount++;
           console.log(`✅ Successfully updated contact ${contact.contactId}`);
 
-          // Extra delay between contacts in same batch (for proxies)
-          if (batch.indexOf(contact) < batch.length - 1) {
-            const intraContactDelay = Math.floor(Math.random() * 10000) + 5000; // 5-15 seconds
-            console.log(`⏳ Waiting ${intraContactDelay/1000}s before next contact in batch`);
-            await new Promise((resolve) => setTimeout(resolve, intraContactDelay));
-          }
+          // Wait between requests
+          console.log(`⏳ Waiting ${config.waitBetweenRequests/1000}s before next request`);
+          await sleep(config.waitBetweenRequests);
 
         } catch (error) {
           console.error(
@@ -659,17 +543,6 @@ const processJobInBackground = async (jobId) => {
             error: error.message,
             timestamp: new Date().toISOString(),
           });
-
-          // Handle LinkedIn protection for free proxies
-          if (error.message.includes("Rate limited") || 
-              error.message.includes("Bot detected") ||
-              error.message.includes("LinkedIn blocked proxy")) {
-            console.log(`⚠️ LinkedIn protection triggered for job ${jobId}, extending delays`);
-            // Force longer delays but continue processing
-            const protectionDelay = Math.floor(Math.random() * 60000) + 120000; // 2-3 minutes
-            console.log(`⏳ Protection delay: ${protectionDelay/1000}s`);
-            await new Promise((resolve) => setTimeout(resolve, protectionDelay));
-          }
 
           if (error.message.includes("TOKEN_REFRESH_FAILED")) {
             console.log(`⏸️ Pausing job ${jobId} - token refresh failed`);
@@ -695,16 +568,13 @@ const processJobInBackground = async (jobId) => {
       currentJobs[jobId] = job;
       await saveJobs(currentJobs);
 
-      // Long wait between batches (critical for free proxies)
+      // Wait between batches
       if (batchIndex < contactBatches.length - 1) {
-        const adaptiveWaitTime = config.waitBetweenBatches + getRandomDelay(-30000, 60000); // Add extra randomness
-        console.log(`⏳ Free proxy adaptive wait ${adaptiveWaitTime / 1000}s before next batch`);
-        await new Promise((resolve) => setTimeout(resolve, adaptiveWaitTime));
+        console.log(`⏳ Waiting ${config.waitBetweenBatches / 1000}s before next batch`);
+        await sleep(config.waitBetweenBatches);
       }
 
       console.log(`📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed`);
-      const currentStats = getRateLimitStatus();
-      console.log(`📊 Today's usage: ${currentStats.rateLimitStats?.profileViews || 0}/${DAILY_LIMITS.profile_views} profile views`);
     }
 
     // Mark job as completed if all contacts processed
@@ -715,9 +585,6 @@ const processJobInBackground = async (jobId) => {
     if (remainingPending === 0) {
       job.status = "completed";
       job.completedAt = new Date().toISOString();
-    } else if (config.shouldPause) {
-      job.status = "paused";
-      job.pauseReason = "daily_limit_reached";
     }
 
     // Final save
@@ -726,11 +593,6 @@ const processJobInBackground = async (jobId) => {
     await saveJobs(finalJobs);
 
     console.log(`✅ Job ${jobId} processing completed. Status: ${job.status}`);
-    
-    // Final stats
-    const finalStats = getRateLimitStatus();
-    console.log(`📊 Final daily stats: Profile views: ${finalStats.rateLimitStats?.profileViews || 0}/${DAILY_LIMITS.profile_views}`);
-    console.log(`🔗 Working proxies: ${finalStats.proxyStats?.workingProxies || 0}`);
     
   } catch (error) {
     console.error(`❌ Background processing error for job ${jobId}:`, error);
@@ -743,7 +605,7 @@ const processJobInBackground = async (jobId) => {
   }
 };
 
-// Enhanced job status endpoint
+// Job status endpoint
 app.get("/job-status/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -788,7 +650,7 @@ app.get("/job-status/:jobId", async (req, res) => {
   }
 });
 
-// Enhanced user job endpoint
+// User job endpoint
 app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -831,7 +693,8 @@ app.get("/user-job/:userId", async (req, res) => {
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
       },
-      // ...existing code...
+      rateLimitStatus: getRateLimitStatus(),
+      clientInitialized: linkedInClientInitialized
     });
   } catch (error) {
     console.error("❌ Error getting user job:", error);
@@ -843,20 +706,7 @@ app.get("/user-job/:userId", async (req, res) => {
   }
 });
 
-// Legacy endpoint (for backward compatibility)
-app.post("/update-contacts-post", async (req, res) => {
-  const userId = req.body.userId || `legacy_${Date.now()}`;
-  req.body.userId = userId;
-  req.body.resume = false;
-
-  // Forward to new endpoint
-  return app._router.handle(
-    { ...req, url: "/start-processing", method: "POST" },
-    res
-  );
-});
-
-// Enhanced token refresh endpoint
+// Token refresh endpoint
 app.post("/refresh-token", async (req, res) => {
   try {
     const { refreshToken, clientId, tenantId, crmUrl, verifier } = req.body;
@@ -892,14 +742,10 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
-// ...existing code...
-
-// ...existing code...
-
 // Health check endpoint
 app.get("/health", async (req, res) => {
   try {
-    const config = getDynamicBatchConfig();
+    const config = getBatchConfig();
     res.status(200).json({
       success: true,
       status: "healthy",
@@ -917,21 +763,17 @@ app.get("/health", async (req, res) => {
   }
 });
 
-// Start server with client initialization
+// Start server
 app.listen(PORT, async () => {
   console.log(`✅ Server is running on http://localhost:${PORT}`);
   console.log(`📊 Daily LinkedIn limits configured:`);
-  console.log(`   - Profile views: ${DAILY_LIMITS.profile_views}`);
+  console.log(`   - Profile requests: ${DAILY_LIMITS.profile_views}`);
   console.log(`   - Contact info: ${DAILY_LIMITS.contact_info}`);
-  console.log(`   - Max requests per hour: ${DAILY_LIMITS.max_requests_per_hour}`);
-  console.log(`   - Proxy rotation after: ${DAILY_LIMITS.proxy_rotation_after} requests`);
   
-  // Initialize LinkedIn client on startup (optional, can be done on first request)
+  // Initialize LinkedIn client on startup
   try {
-    console.log('🚀 Initializing Free Proxy LinkedIn Client on startup...');
-    await initializeLinkedInClient();
-    const stats = getRateLimitStatus();
-    console.log(`📊 Client initialized with ${stats.proxyStats?.workingProxies || 0} working proxies`);
+    console.log('🚀 Initializing LinkedIn Client on startup...');
+    await initializeLinkedInClientAPI();
   } catch (error) {
     console.warn('⚠️ LinkedIn client initialization failed on startup. Will initialize on first request.');
     console.warn('Error:', error.message);

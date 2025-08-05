@@ -1,128 +1,24 @@
-// Enhanced LinkedIn Client with Advanced Proxy Management and Anti-Detection
 const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const fetch = require('node-fetch');
-const AbortController = require('abort-controller');
-const { HttpsProxyAgent } = require('https-proxy-agent');
-const { SocksProxyAgent } = require('socks-proxy-agent');
 
 // File paths for persistent storage
 const DATA_DIR = path.join(__dirname, '../data');
 const RATE_LIMIT_FILE = path.join(DATA_DIR, 'daily_rate_limits.json');
-const PROXY_STATS_FILE = path.join(DATA_DIR, 'proxy_stats.json');
-const WORKING_PROXIES_FILE = path.join(DATA_DIR, 'working_proxies.json');
 const SESSION_FILE = path.join(DATA_DIR, 'session_data.json');
 
-// Enhanced limits for high-volume requests (10k+ support)
+// Daily limits for LinkedIn requests
 const DAILY_LIMITS = {
-  profile_views: 15000,
-  contact_info: 3000,
-  search_queries: 8000,
-  max_requests_per_hour: 800,
-  max_burst_requests: 15,
-  proxy_rotation_after: 20,
-  proxy_test_timeout: 6000,
-  request_timeout: 20000,
-  min_delay_between: 500,
-  max_delay_between: 2000,
-  max_retries: 7,
-  proxy_health_threshold: 0.6,
-  concurrent_requests: 8,
-  proxy_refresh_interval: 300000 // 5 minutes
+  profile_views: 100,
+  contact_info: 50,
+  request_timeout: 15000,
+  min_delay_between: 2000,  // 2 seconds minimum
+  max_delay_between: 8000,  // 8 seconds maximum
+  max_retries: 3
 };
 
-// Your working proxy list (simple text format)
-// Hardcoded proxy list from user
-const USER_PROXIES = [
-  '37.187.74.125:80',
-  '123.30.154.171:7777',
-  '113.160.132.195:8080',
-  '57.129.81.201:8080',
-  '181.174.164.221:80',
-  '4.156.78.45:80',
-  '23.247.136.248:80',
-  '38.147.98.190:8080',
-  '5.78.129.53:80',
-  '123.141.181.58:5031',
-  '23.247.136.254:80',
-  '4.245.123.244:80',
-  '92.67.186.210:80',
-  '4.195.16.140:80',
-  '45.146.163.31:80',
-  '59.7.246.4:80',
-  '108.141.130.146:80',
-  '14.241.80.37:8080',
-  '90.162.35.34:80',
-  '129.159.38.24:80',
-  '91.132.92.150:80',
-  '42.118.173.169:16000',
-  '1.54.73.223:16000',
-  '42.113.21.213:16000',
-  '58.187.70.8:16000',
-  '42.113.21.13:16000',
-  '42.119.98.149:16000',
-  '116.108.11.144:4001',
-  '27.79.148.128:16000',
-  '27.79.145.145:16000',
-  '173.209.63.66:8232',
-  '94.136.188.78:4326',
-  '123.18.234.145:8080',
-  '58.187.71.91:16000',
-  '27.79.170.65:16000',
-  '118.68.173.16:16000',
-  '42.119.154.222:16000',
-  '41.59.90.168:80',
-  '91.107.149.78:80',
-  '143.42.66.91:80',
-  '192.73.244.36:80',
-  '212.113.112.84:1080',
-  '31.56.78.170:8181',
-  '139.59.1.14:80',
-  '91.84.99.28:80',
-  '58.186.92.147:16000',
-  '51.79.152.84:60009',
-  '114.9.24.2:1452',
-  '27.79.183.77:16000',
-  '173.209.63.70:8192',
-  '45.59.117.2:8080',
-  '103.82.246.17:6080',
-  '112.211.133.231:8082',
-  '171.7.62.197:8080',
-  '38.54.71.67:80',
-  '42.113.20.0:16000',
-  '41.59.90.171:80',
-  '154.118.231.30:80',
-  '89.117.145.245:3128',
-  '47.90.205.231:33333',
-  '156.248.83.36:3129',
-  '156.228.110.62:3129',
-  '156.228.83.141:3129',
-  '156.248.80.210:3129'
-];
-
-// Enhanced User-Agent rotation with mobile and desktop variants
-const USER_AGENTS = [
-  // Chrome Desktop
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  
-  // Firefox Desktop
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0',
-  'Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0',
-  
-  // Safari Desktop
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
-  
-  // Mobile variants for better stealth
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
-  'Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36',
-  'Mozilla/5.0 (iPad; CPU OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1'
-];
-
-// LinkedIn-specific headers for better stealth
+// LinkedIn headers for better stealth
 const LINKEDIN_HEADERS = {
   'Accept': 'application/vnd.linkedin.normalized+json+2.1',
   'Accept-Language': 'en-US,en;q=0.9',
@@ -147,6 +43,14 @@ const LINKEDIN_HEADERS = {
   })
 };
 
+// User-Agent rotation for better stealth
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0'
+];
+
 // Ensure data directory exists
 const ensureDataDir = async () => {
   try {
@@ -156,404 +60,26 @@ const ensureDataDir = async () => {
   }
 };
 
-// Enhanced timeout fetch with better error handling
-class TimeoutFetch {
-  static async fetchWithTimeout(url, options = {}, timeoutMs = DAILY_LIMITS.request_timeout) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    
-    try {
-      const response = await fetch(url, { 
-        ...options, 
-        signal: controller.signal,
-        timeout: timeoutMs
-      });
-      clearTimeout(timeout);
-      return response;
-    } catch (error) {
-      clearTimeout(timeout);
-      if (error.name === 'AbortError') {
-        throw new Error(`Request timeout after ${timeoutMs}ms`);
-      }
-      throw error;
-    }
-  }
-}
-
-// Advanced Proxy Manager with health monitoring
-class AdvancedProxyManager {
-  constructor() {
-    this.proxies = [];
-    this.workingProxies = [];
-    this.deadProxies = new Set();
-    this.proxyStats = new Map();
-    this.currentProxyIndex = 0;
-    this.lastProxyFetch = 0;
-    this.isRefreshing = false;
-    this.proxyPool = {
-      http: [],
-      https: [],
-      socks4: [],
-      socks5: []
-    };
-  }
-
-  // Get random user agent for stealth
-  getRandomUserAgent() {
-    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-  }
-
-  // Generate random headers for better stealth
-  generateRandomHeaders(customHeaders = {}) {
-    const baseHeaders = {
-      'User-Agent': this.getRandomUserAgent(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
-      'DNT': '1',
-      'Upgrade-Insecure-Requests': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
-      'Sec-Fetch-User': '?1',
-      ...customHeaders
-    };
-
-    return baseHeaders;
-  }
-
-  // Use hardcoded proxy list from USER_PROXIES
-  async fetchProxiesFromAPI() {
-    try {
-      console.log('🔄 Loading proxies from hardcoded list...');
-      const newProxies = [];
-      USER_PROXIES.forEach((proxyStr, index) => {
-        const trimmedLine = proxyStr.trim();
-        if (!trimmedLine) return;
-        const match = trimmedLine.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})$/);
-        if (match) {
-          const [, ip, port] = match;
-          const proxyUrl = `http://${ip}:${port}`;
-          newProxies.push({
-            url: proxyUrl,
-            protocol: 'http',
-            ip: ip,
-            port: parseInt(port),
-            country: 'unknown',
-            countryCode: 'unknown',
-            city: 'unknown',
-            anonymity: 'unknown',
-            uptime: 95,
-            averageTimeout: 1000,
-            isAlive: true,
-            lastTested: null,
-            successCount: 0,
-            failureCount: 0,
-            responseTime: null,
-            isWorking: null,
-            priority: Math.max(100 - index, 1),
-            source: 'curated_list'
-          });
-        } else {
-          console.warn(`⚠️ Invalid proxy format: ${trimmedLine}`);
-        }
-      });
-      const sortedProxies = newProxies.sort((a, b) => b.priority - a.priority);
-      console.log(`✅ Loaded ${sortedProxies.length} proxies from hardcoded list`);
-      return sortedProxies;
-    } catch (error) {
-      console.error('❌ Failed to load proxies from hardcoded list:', error.message);
-      return [];
-    }
-  }
-
-  // Test individual proxy with enhanced validation
-  async testProxy(proxy, testUrl = 'http://httpbin.org/ip') {
-    const startTime = Date.now();
-    
-    try {
-      let agent;
-      if (proxy.protocol === 'http' || proxy.protocol === 'https') {
-        agent = new HttpsProxyAgent(proxy.url);
-      } else if (proxy.protocol === 'socks4' || proxy.protocol === 'socks5') {
-        agent = new SocksProxyAgent(proxy.url);
-      } else {
-        throw new Error(`Unsupported proxy protocol: ${proxy.protocol}`);
-      }
-
-      const response = await TimeoutFetch.fetchWithTimeout(testUrl, {
-        agent,
-        headers: this.generateRandomHeaders(),
-        method: 'GET'
-      }, DAILY_LIMITS.proxy_test_timeout);
-
-      const responseTime = Date.now() - startTime;
-
-      if (response.ok) {
-        const result = await response.json();
-        proxy.responseTime = responseTime;
-        proxy.lastTested = Date.now();
-        proxy.successCount++;
-        proxy.isWorking = true;
-        
-        // Update proxy stats
-        const stats = this.proxyStats.get(proxy.url) || { success: 0, failure: 0, avgResponseTime: 0 };
-        stats.success++;
-        stats.avgResponseTime = (stats.avgResponseTime + responseTime) / 2;
-        this.proxyStats.set(proxy.url, stats);
-        
-        return true;
-      } else {
-        throw new Error(`Test failed with status: ${response.status}`);
-      }
-
-    } catch (error) {
-      proxy.failureCount++;
-      proxy.isWorking = false;
-      proxy.lastTested = Date.now();
-      
-      // Update failure stats
-      const stats = this.proxyStats.get(proxy.url) || { success: 0, failure: 0, avgResponseTime: 0 };
-      stats.failure++;
-      this.proxyStats.set(proxy.url, stats);
-      
-      return false;
-    }
-  }
-
-  // Test proxies in batches for better performance
-  async testProxiesBatch(proxies, batchSize = 20) {
-    const workingProxies = [];
-    
-    for (let i = 0; i < proxies.length; i += batchSize) {
-      const batch = proxies.slice(i, i + batchSize);
-      console.log(`🧪 Testing proxy batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(proxies.length/batchSize)} (${batch.length} proxies)`);
-      
-      const testPromises = batch.map(proxy => this.testProxy(proxy));
-      const results = await Promise.allSettled(testPromises);
-      
-      results.forEach((result, index) => {
-        const proxy = batch[index];
-        if (result.status === 'fulfilled' && result.value === true) {
-          workingProxies.push(proxy);
-        }
-      });
-      
-      // Small delay between batches to avoid overwhelming the test endpoints
-      if (i + batchSize < proxies.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    }
-    
-    return workingProxies;
-  }
-
-  // Refresh proxy pool with health monitoring
-  async refreshProxyPool(forceRefresh = false) {
-    const now = Date.now();
-    
-    if (this.isRefreshing) {
-      console.log('⏳ Proxy refresh already in progress...');
-      return;
-    }
-
-    if (!forceRefresh && 
-        this.workingProxies.length > 50 && 
-        (now - this.lastProxyFetch) < DAILY_LIMITS.proxy_refresh_interval) {
-      console.log(`✅ Using cached proxies (${this.workingProxies.length} available)`);
-      return;
-    }
-
-    this.isRefreshing = true;
-    
-    try {
-      console.log('🔄 Starting proxy pool refresh...');
-      
-      // Fetch new proxies from API
-      const newProxies = await this.fetchProxiesFromAPI();
-      
-      if (newProxies.length === 0) {
-        console.warn('⚠️ No proxies fetched from API');
-        this.isRefreshing = false;
-        return;
-      }
-
-      // Test proxies in batches
-      console.log(`🧪 Testing ${newProxies.length} proxies...`);
-      const workingProxies = await this.testProxiesBatch(newProxies);
-      
-      // Organize proxies by protocol
-      this.proxyPool = { http: [], https: [], socks4: [], socks5: [] };
-      workingProxies.forEach(proxy => {
-        if (this.proxyPool[proxy.protocol]) {
-          this.proxyPool[proxy.protocol].push(proxy);
-        }
-      });
-
-      // Update working proxies list
-      this.proxies = newProxies;
-      this.workingProxies = workingProxies;
-      this.lastProxyFetch = now;
-      
-      // Save working proxies to file
-      await this.saveProxyStats();
-      
-      console.log(`✅ Proxy refresh completed:`);
-      console.log(`   - Total tested: ${this.proxies.length}`);
-      console.log(`   - Working proxies: ${this.workingProxies.length}`);
-      console.log(`   - Success rate: ${((this.workingProxies.length/this.proxies.length) * 100).toFixed(1)}%`);
-      console.log(`   - HTTP: ${this.proxyPool.http.length}`);
-      console.log(`   - HTTPS: ${this.proxyPool.https.length}`);
-      console.log(`   - SOCKS4: ${this.proxyPool.socks4.length}`);
-      console.log(`   - SOCKS5: ${this.proxyPool.socks5.length}`);
-
-    } catch (error) {
-      console.error('❌ Proxy refresh failed:', error.message);
-    } finally {
-      this.isRefreshing = false;
-    }
-  }
-
-  // Get best proxy based on performance metrics and list priority
-  getBestProxy(protocol = 'http') {
-    let availableProxies = this.workingProxies;
-    
-    // Filter by protocol if specified
-    if (protocol && this.proxyPool[protocol]) {
-      availableProxies = this.proxyPool[protocol];
-    }
-    
-    if (availableProxies.length === 0) {
-      throw new Error(`No working proxies available for protocol: ${protocol}`);
-    }
-
-    // Enhanced sorting based on curated list priority + performance data
-    const sortedProxies = availableProxies.sort((a, b) => {
-      const aStats = this.proxyStats.get(a.url) || { success: 0, failure: 1, avgResponseTime: 5000 };
-      const bStats = this.proxyStats.get(b.url) || { success: 0, failure: 1, avgResponseTime: 5000 };
-      
-      // Calculate performance score
-      const aSuccessRate = aStats.success / (aStats.success + aStats.failure);
-      const bSuccessRate = bStats.success / (bStats.success + bStats.failure);
-      
-      // Combine list priority with our performance data
-      const aScore = (
-        (a.priority || 50) * 0.4 +              // List priority (40% weight)
-        (aSuccessRate * 100) * 0.4 +            // Our success rate (40% weight)  
-        ((3000 - (aStats.avgResponseTime || 3000)) / 30) * 0.2  // Response time (20% weight)
-      );
-      
-      const bScore = (
-        (b.priority || 50) * 0.4 +
-        (bSuccessRate * 100) * 0.4 +
-        ((3000 - (bStats.avgResponseTime || 3000)) / 30) * 0.2
-      );
-      
-      return bScore - aScore;
+// Simple timeout wrapper for fetch
+const fetchWithTimeout = async (url, options = {}, timeoutMs = DAILY_LIMITS.request_timeout) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, { 
+      ...options, 
+      signal: controller.signal
     });
-
-    // Use weighted round-robin selection from top performers
-    const topProxies = sortedProxies.slice(0, Math.min(20, sortedProxies.length));
-    
-    // Prefer proxies from curated list that are working well
-    const curatedProxies = topProxies.filter(p => p.source === 'curated_list');
-    const selectionPool = curatedProxies.length > 0 ? curatedProxies : topProxies;
-    
-    const selectedProxy = selectionPool[this.currentProxyIndex % selectionPool.length];
-    this.currentProxyIndex++;
-    
-    return selectedProxy;
-  }
-
-  // Mark proxy as dead and remove from working pool
-  markProxyAsDead(proxyUrl) {
-    this.deadProxies.add(proxyUrl);
-    this.workingProxies = this.workingProxies.filter(p => p.url !== proxyUrl);
-    
-    // Remove from protocol pools
-    Object.keys(this.proxyPool).forEach(protocol => {
-      this.proxyPool[protocol] = this.proxyPool[protocol].filter(p => p.url !== proxyUrl);
-    });
-    
-    console.log(`💀 Marked proxy as dead: ${proxyUrl} (${this.workingProxies.length} remaining)`);
-  }
-
-  // Save proxy statistics to file
-  async saveProxyStats() {
-    try {
-      const statsData = {
-        workingProxies: this.workingProxies,
-        proxyStats: Object.fromEntries(this.proxyStats),
-        deadProxies: Array.from(this.deadProxies),
-        lastUpdated: Date.now(),
-        proxyPool: {
-          http: this.proxyPool.http.length,
-          https: this.proxyPool.https.length,
-          socks4: this.proxyPool.socks4.length,
-          socks5: this.proxyPool.socks5.length
-        }
-      };
-      
-      await fs.writeFile(PROXY_STATS_FILE, JSON.stringify(statsData, null, 2));
-      await fs.writeFile(WORKING_PROXIES_FILE, JSON.stringify(this.workingProxies, null, 2));
-    } catch (error) {
-      console.error('❌ Failed to save proxy stats:', error.message);
+    clearTimeout(timeout);
+    return response;
+  } catch (error) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
     }
+    throw error;
   }
-
-  // Load proxy statistics from file
-  async loadProxyStats() {
-    try {
-      const data = await fs.readFile(PROXY_STATS_FILE, 'utf8');
-      const statsData = JSON.parse(data);
-      
-      this.workingProxies = statsData.workingProxies || [];
-      this.proxyStats = new Map(Object.entries(statsData.proxyStats || {}));
-      this.deadProxies = new Set(statsData.deadProxies || []);
-      
-      // Rebuild proxy pools
-      this.proxyPool = { http: [], https: [], socks4: [], socks5: [] };
-      this.workingProxies.forEach(proxy => {
-        if (this.proxyPool[proxy.protocol]) {
-          this.proxyPool[proxy.protocol].push(proxy);
-        }
-      });
-      
-      console.log(`📊 Loaded proxy stats: ${this.workingProxies.length} working proxies`);
-    } catch (error) {
-      console.log('📊 No existing proxy stats found, starting fresh');
-    }
-  }
-
-  // Get proxy statistics
-  getStats() {
-    return {
-      totalProxies: this.proxies.length,
-      workingProxies: this.workingProxies.length,
-      deadProxies: this.deadProxies.size,
-      successRate: this.proxies.length > 0 ? (this.workingProxies.length / this.proxies.length * 100).toFixed(1) : 0,
-      proxyPool: {
-        http: this.proxyPool.http.length,
-        https: this.proxyPool.https.length,
-        socks4: this.proxyPool.socks4.length,
-        socks5: this.proxyPool.socks5.length
-      },
-      avgResponseTime: this.getAverageResponseTime(),
-      lastRefresh: this.lastProxyFetch
-    };
-  }
-
-  // Calculate average response time
-  getAverageResponseTime() {
-    const stats = Array.from(this.proxyStats.values());
-    if (stats.length === 0) return 0;
-    
-    const totalTime = stats.reduce((sum, stat) => sum + (stat.avgResponseTime || 0), 0);
-    return Math.round(totalTime / stats.length);
-  }
-}
+};
 
 // Rate limiter with persistent storage
 class RateLimiter {
@@ -596,8 +122,7 @@ class RateLimiter {
       console.error('❌ Failed to save rate limits:', error.message);
     }
   }
-
-  // Check if request is allowed
+// Check if request is allowed
   async checkLimit(type, increment = true) {
     await this.load();
     
@@ -662,12 +187,9 @@ class RateLimiter {
 // Main LinkedIn Client
 class LinkedInClient {
   constructor() {
-    this.proxyManager = new AdvancedProxyManager();
     this.rateLimiter = new RateLimiter();
     this.sessionData = {};
     this.initialized = false;
-    this.requestQueue = [];
-    this.processing = false;
   }
 
   // Initialize the client
@@ -678,21 +200,13 @@ class LinkedInClient {
     }
 
     try {
-      console.log('🚀 Initializing LinkedIn client...');
+      console.log('🚀 Initializing simple LinkedIn client...');
       
       await ensureDataDir();
-      await this.proxyManager.loadProxyStats();
       await this.loadSessionData();
       
-      // Initial proxy refresh
-      await this.proxyManager.refreshProxyPool(true);
-      
-      if (this.proxyManager.workingProxies.length === 0) {
-        throw new Error('No working proxies available after initialization');
-      }
-      
       this.initialized = true;
-      console.log(`✅ LinkedIn client initialized with ${this.proxyManager.workingProxies.length} working proxies`);
+      console.log('✅ LinkedIn client initialized successfully');
       
     } catch (error) {
       console.error('❌ LinkedIn client initialization failed:', error.message);
@@ -726,7 +240,17 @@ class LinkedInClient {
     return crypto.randomBytes(16).toString('hex');
   }
 
-  // Enhanced LinkedIn request with anti-detection
+  // Get random user agent
+  getRandomUserAgent() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  }
+
+  // Get random delay between min and max
+  getRandomDelay() {
+    return Math.floor(Math.random() * (DAILY_LIMITS.max_delay_between - DAILY_LIMITS.min_delay_between + 1)) + DAILY_LIMITS.min_delay_between;
+  }
+
+  // Make LinkedIn request with retries and delays
   async makeLinkedInRequest(url, options = {}, retries = DAILY_LIMITS.max_retries) {
     if (!this.initialized) {
       await this.initialize();
@@ -742,21 +266,17 @@ class LinkedInClient {
     
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        // Get best proxy
-        const proxy = this.proxyManager.getBestProxy('http');
-        
-        // Create proxy agent
-        let agent;
-        if (proxy.protocol === 'http' || proxy.protocol === 'https') {
-          agent = new HttpsProxyAgent(proxy.url);
-        } else if (proxy.protocol === 'socks4' || proxy.protocol === 'socks5') {
-          agent = new SocksProxyAgent(proxy.url);
+        // Add random delay before request (except first attempt)
+        if (attempt > 1) {
+          const delay = this.getRandomDelay();
+          console.log(`⏳ Waiting ${delay}ms before retry attempt ${attempt}`);
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
 
         // Enhanced headers with rotation
         const headers = {
           ...LINKEDIN_HEADERS,
-          ...this.proxyManager.generateRandomHeaders(),
+          'User-Agent': this.getRandomUserAgent(),
           ...options.headers
         };
 
@@ -767,11 +287,10 @@ class LinkedInClient {
             .join('; ');
         }
 
-        console.log(`🔄 Attempt ${attempt}/${retries} - Using proxy: ${proxy.url}`);
+        console.log(`🔄 Attempt ${attempt}/${retries} - Making request to LinkedIn`);
 
-        const response = await TimeoutFetch.fetchWithTimeout(url, {
+        const response = await fetchWithTimeout(url, {
           ...options,
-          agent,
           headers,
           method: options.method || 'GET'
         });
@@ -787,8 +306,7 @@ class LinkedInClient {
           continue;
         } else if (response.status === 403 || response.status === 401) {
           // Blocked or unauthorized
-          this.proxyManager.markProxyAsDead(proxy.url);
-          throw new Error(`Access denied (${response.status}). Proxy may be blocked.`);
+          throw new Error(`Access denied (${response.status}). May be blocked or need re-authentication.`);
         } else {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
@@ -797,21 +315,9 @@ class LinkedInClient {
         lastError = error;
         console.warn(`⚠️ Attempt ${attempt}/${retries} failed: ${error.message}`);
         
-        // If proxy-related error, mark as dead and try again
-        if (error.message.includes('timeout') || 
-            error.message.includes('ECONNREFUSED') ||
-            error.message.includes('ENOTFOUND')) {
-          try {
-            const proxy = this.proxyManager.getBestProxy('http');
-            this.proxyManager.markProxyAsDead(proxy.url);
-          } catch (e) {
-            // Ignore if no proxy available
-          }
-        }
-        
         // Wait before retry with exponential backoff
         if (attempt < retries) {
-          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+          const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000);
           console.log(`⏳ Waiting ${delay}ms before retry...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -820,7 +326,8 @@ class LinkedInClient {
 
     throw new Error(`Request failed after ${retries} attempts. Last error: ${lastError?.message}`);
   }
-   // Fetch LinkedIn profile with enhanced voyager API
+
+  // Fetch LinkedIn profile
   async fetchLinkedInProfile(profileId, cookies = {}) {
     try {
       console.log(`🔍 Fetching LinkedIn profile: ${profileId}`);
@@ -828,13 +335,10 @@ class LinkedInClient {
       // Generate session ID for tracking
       const sessionId = this.generateSessionId();
       
-      // LinkedIn Voyager API endpoints for comprehensive profile data
+      // LinkedIn Voyager API endpoints
       const endpoints = {
         profile: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`,
-        contact: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`,
-        experience: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profilePositionGroups`,
-        skills: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/skillCategory`,
-        education: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileSchools`
+        contact: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`
       };
 
       const results = {};
@@ -844,33 +348,24 @@ class LinkedInClient {
         const profileResponse = await this.makeLinkedInRequest(endpoints.profile, {
           headers: {
             'Accept': 'application/vnd.linkedin.normalized+json+2.1',
-            'x-restli-protocol-version': '2.0.0',
-            'x-li-track': JSON.stringify({
-              "clientVersion": "1.13.9631",
-              "mpVersion": "1.13.9631", 
-              "osName": "web",
-              "timezoneOffset": -480,
-              "timezone": "America/Los_Angeles",
-              "deviceFormFactor": "DESKTOP",
-              "mpName": "voyager-web"
-            })
+            'x-restli-protocol-version': '2.0.0'
           },
           cookies
         });
 
         if (profileResponse.ok) {
-          results.profile = await profileResponse.json();
+          results.profileView = await profileResponse.json();
           console.log(`✅ Profile data fetched for ${profileId}`);
         }
       } catch (error) {
         console.error(`❌ Failed to fetch profile data: ${error.message}`);
-        results.profile = { error: error.message };
+        results.profileView = { error: error.message };
       }
 
-      // Add small delay between requests
-      await new Promise(resolve => setTimeout(resolve, 
-        Math.random() * (DAILY_LIMITS.max_delay_between - DAILY_LIMITS.min_delay_between) + DAILY_LIMITS.min_delay_between
-      ));
+      // Add delay between requests
+      const delay = this.getRandomDelay();
+      console.log(`⏳ Waiting ${delay}ms before next request`);
+      await new Promise(resolve => setTimeout(resolve, delay));
 
       // Fetch contact info (if rate limits allow)
       const contactLimit = await this.rateLimiter.checkLimit('contact_info', false);
@@ -886,39 +381,16 @@ class LinkedInClient {
           });
 
           if (contactResponse.ok) {
-            results.contact = await contactResponse.json();
+            results.contactInfo = await contactResponse.json();
             console.log(`✅ Contact info fetched for ${profileId}`);
           }
         } catch (error) {
           console.warn(`⚠️ Failed to fetch contact info: ${error.message}`);
-          results.contact = { error: error.message };
+          results.contactInfo = { error: error.message };
         }
       } else {
         console.log(`⏸️ Contact info rate limit reached (${contactLimit.current}/${contactLimit.limit})`);
-        results.contact = { error: 'Rate limit exceeded' };
-      }
-
-      // Fetch experience data
-      try {
-        await new Promise(resolve => setTimeout(resolve, 
-          Math.random() * (DAILY_LIMITS.max_delay_between - DAILY_LIMITS.min_delay_between) + DAILY_LIMITS.min_delay_between
-        ));
-
-        const experienceResponse = await this.makeLinkedInRequest(endpoints.experience, {
-          headers: {
-            'Accept': 'application/vnd.linkedin.normalized+json+2.1',
-            'x-restli-protocol-version': '2.0.0'
-          },
-          cookies
-        });
-
-        if (experienceResponse.ok) {
-          results.experience = await experienceResponse.json();
-          console.log(`✅ Experience data fetched for ${profileId}`);
-        }
-      } catch (error) {
-        console.warn(`⚠️ Failed to fetch experience data: ${error.message}`);
-        results.experience = { error: error.message };
+        results.contactInfo = { error: 'Rate limit exceeded' };
       }
 
       // Return combined results
@@ -926,7 +398,8 @@ class LinkedInClient {
         profileId,
         sessionId,
         timestamp: Date.now(),
-        success: !!results.profile && !results.profile.error,
+        success: !!results.profileView && !results.profileView.error,
+        ...results, // This spreads profileView and contactInfo at the top level for compatibility
         data: results,
         // Simplified combined data for easier processing
         combined: this.combineProfileData(results)
@@ -957,8 +430,8 @@ class LinkedInClient {
     
     try {
       // Extract profile basics
-      if (results.profile && results.profile.profile) {
-        const profile = results.profile.profile;
+      if (results.profileView && results.profileView.profile) {
+        const profile = results.profileView.profile;
         combined.firstName = profile.firstName;
         combined.lastName = profile.lastName;
         combined.headline = profile.headline;
@@ -970,26 +443,12 @@ class LinkedInClient {
       }
 
       // Extract contact info
-      if (results.contact && results.contact.contactInfo) {
-        const contact = results.contact.contactInfo;
+      if (results.contactInfo && results.contactInfo.data) {
+        const contact = results.contactInfo.data;
         combined.email = contact.emailAddress;
         combined.phone = contact.phoneNumbers?.[0]?.number;
         combined.websites = contact.websites?.map(w => w.url);
         combined.twitter = contact.twitterHandles?.[0]?.name;
-      }
-
-      // Extract experience
-      if (results.experience && results.experience.positionGroups) {
-        combined.experience = results.experience.positionGroups.map(group => ({
-          company: group.companyName,
-          positions: group.profilePositions?.map(pos => ({
-            title: pos.title,
-            description: pos.description,
-            startDate: pos.dateRange?.start,
-            endDate: pos.dateRange?.end,
-            current: !pos.dateRange?.end
-          }))
-        }));
       }
 
       return combined;
@@ -1002,21 +461,12 @@ class LinkedInClient {
   // Get rate limit status
   async getRateLimitStatus() {
     const stats = await this.rateLimiter.getStats();
-    const proxyStats = this.proxyManager.getStats();
     
     return {
       rateLimitStats: stats,
-      proxyStats: proxyStats,
       clientInitialized: this.initialized,
       dailyLimits: DAILY_LIMITS
     };
-  }
-
-  // Refresh proxies manually
-  async refreshProxies() {
-    console.log('🔄 Manual proxy refresh requested');
-    await this.proxyManager.refreshProxyPool(true);
-    return this.proxyManager.getStats();
   }
 }
 
@@ -1024,7 +474,7 @@ class LinkedInClient {
 let globalLinkedInClient = null;
 
 // Initialize LinkedIn client
-const initializeFreeProxyClient = async () => {
+const initializeLinkedInClient = async () => {
   if (!globalLinkedInClient) {
     globalLinkedInClient = new LinkedInClient();
   }
@@ -1035,7 +485,7 @@ const initializeFreeProxyClient = async () => {
 // Fetch LinkedIn profile (main export function)
 const fetchLinkedInProfile = async (profileId, cookies = {}) => {
   if (!globalLinkedInClient) {
-    await initializeFreeProxyClient();
+    await initializeLinkedInClient();
   }
   return await globalLinkedInClient.fetchLinkedInProfile(profileId, cookies);
 };
@@ -1046,49 +496,34 @@ const generateSessionId = () => {
 };
 
 // Get rate limit status
-const getRateLimitStatus = async () => {
+const getRateLimitStatus = () => {
   if (!globalLinkedInClient) {
     return {
       rateLimitStats: { today: {}, requestHistory: 0, dailyLimits: DAILY_LIMITS },
-      proxyStats: { totalProxies: 0, workingProxies: 0, successRate: 0 },
       clientInitialized: false,
       dailyLimits: DAILY_LIMITS
     };
   }
-  return await globalLinkedInClient.getRateLimitStatus();
-};
-
-// Refresh proxies
-const refreshProxies = async () => {
-  if (!globalLinkedInClient) {
-    await initializeFreeProxyClient();
-  }
-  return await globalLinkedInClient.refreshProxies();
+  return globalLinkedInClient.getRateLimitStatus();
 };
 
 // Export all functions
 module.exports = {
   // Main functions
   fetchLinkedInProfile,
-  initializeFreeProxyClient, 
-  refreshProxies,
+  initializeLinkedInClient,
   getRateLimitStatus,
   generateSessionId,
   
   // Classes for advanced usage
   LinkedInClient,
-  AdvancedProxyManager,
   RateLimiter,
-  TimeoutFetch,
   
   // Constants
   DAILY_LIMITS,
-  USER_AGENTS,
   LINKEDIN_HEADERS,
   
   // File paths
   RATE_LIMIT_FILE,
-  PROXY_STATS_FILE,
-  WORKING_PROXIES_FILE
+  SESSION_FILE
 };
-      
