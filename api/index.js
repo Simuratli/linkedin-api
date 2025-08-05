@@ -611,15 +611,15 @@ const processJobInBackground = async (jobId) => {
             li_at: currentUserSession.li_at,
             jsession: currentUserSession.jsessionid,
           };
-
+ console.log(profileData,'profileData')
+          console.log(profileId,'profiprofileIdleData')
           // Enhanced LinkedIn profile fetching with free proxy support
           console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Free Proxy Mode)`);
           const profileData = await fetchLinkedInProfile(
             profileId,
             customCookies
           );
-          console.log(profileData,'profileData')
-          console.log(profileId,'profiprofileIdleData')
+         
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
