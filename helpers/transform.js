@@ -1,54 +1,15 @@
 const { getDataverse, createDataverse } = require("./dynamics");
 
-function extractCompanyInfo(positionData, id) {
+function extractCompanyInfo(positionData,id) {
   if (!positionData) {
-    return { name: "", location: "", id: "" };
+    return { name: '', location: '', id:"" };
   }
 
   return {
-    name: positionData.companyName || "",
-    address1_name:
-      positionData.locationName || positionData.geoLocationName || "",
-    uds_linkedincompanyid: id || "",
+    name: positionData.companyName || '',
+    address1_name: positionData.locationName || positionData.geoLocationName || '',
+    uds_linkedincompanyid: id || ""
   };
-}
-
-function sanitizePhoneNumber(value) {
-  if (!value) return "";
-  
-  const cleaned = value.replace(/\D/g, ""); // Remove non-digit characters
-  
-  // Check if the number is too large
-  if (cleaned.length > 15) {
-    console.warn(`⚠️ Phone number too long: ${cleaned}`);
-    return "";
-  }
-  
-  return cleaned;
-}
-
-// Enhanced validation for safe integers and large numbers
-function validateSafeIntegers(obj) {
-  for (const key in obj) {
-    if (typeof obj[key] === "string") {
-      // Check if the string represents a number
-      if (/^-?\d+$/.test(obj[key])) {
-        try {
-          const num = BigInt(obj[key]);
-          
-          // If the number is too large, convert it to empty string
-          if (num > BigInt(Number.MAX_SAFE_INTEGER) || num < BigInt(Number.MIN_SAFE_INTEGER)) {
-            console.warn(`⚠️ Field "${key}" has unsafe integer: ${obj[key]}`);
-            obj[key] = "";
-          }
-        } catch (e) {
-          console.warn(`⚠️ Could not parse number in field "${key}": ${obj[key]}`);
-          obj[key] = "";
-        }
-      }
-    }
-  }
-  return obj;
 }
 
 async function transformToCreateUserRequest(profileData, endpoint, token) {
@@ -92,11 +53,8 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
 
     // Handle company association if position exists
     if (latestPosition?.companyUrn) {
-      const idParts = latestPosition.companyUrn.split(":");
-      const idOfCompany = idParts[idParts.length - 1];
-      
-      // Validate the ID isn't too large
-      if (idOfCompany && idOfCompany.length <= 20) {
+      const idOfCompany = latestPosition.companyUrn.split(":").pop();
+      if (idOfCompany) {
         const filter = `contains(uds_linkedincompanyid,'${idOfCompany}')`;
         const encodedFilter = encodeURIComponent(filter);
         const url = `${endpoint}/accounts?$filter=${encodedFilter}`;
@@ -107,7 +65,7 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
             userRequest["parentcustomerid_account@odata.bind"] =
               `/accounts(${companyResponse.value[0].accountid})`;
           } else {
-            console.log(latestPosition, "latestpso");
+            console.log(latestPosition,'latestpso')
             const request = extractCompanyInfo(latestPosition, idOfCompany);
             const response = await createDataverse(
               `${endpoint}/accounts`,
@@ -115,17 +73,15 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
               request,
               "POST"
             );
-            if (response) {
-              userRequest["parentcustomerid_account@odata.bind"] =
-                `/accounts(${response.accountid})`;
+            if(response){
+                userRequest["parentcustomerid_account@odata.bind"] =
+              `/accounts(${response.accountid})`;
             }
-            console.log(response, "response of new company");
+            console.log(response,'response of new company')
           }
         } catch (e) {
           console.error("Error checking company existence:", e.message);
         }
-      } else {
-        console.warn(`⚠️ LinkedIn company ID too long or invalid: ${idOfCompany}`);
       }
     }
 
@@ -138,9 +94,7 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
     // Handle birthdate
     const birth = profile.birthDate;
     if (birth?.month && birth?.day) {
-      userRequest.birthdate = `1900-${String(birth.month).padStart(2, "0")}-${String(
-        birth.day
-      ).padStart(2, "0")}`;
+      userRequest.birthdate = `1900-${String(birth.month).padStart(2, "0")}-${String(birth.day).padStart(2, "0")}`;
     }
 
     // Extract contact info (prefer contactInfo section if available)
@@ -155,7 +109,7 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
       "";
 
     // Use contactInfo phone if available, otherwise try to extract from summary
-    const rawPhone = (
+    userRequest.telephone1 = (
       contactInfo.phoneNumbers?.[0]?.number ||
       (profile.summary?.match(
         /(?:\+?\d{1,3})?\s?\(?\d{2,3}\)?[-.\s]?\d{3}[-.\s]?\d{4,6}/
@@ -163,20 +117,12 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
       ""
     ).replace(/\s+/g, "");
 
-    userRequest.telephone1 = sanitizePhoneNumber(rawPhone);
-
     // Set address and description
     userRequest.address1_name =
       profile.address || profile.locationName || contactInfo.address || "";
     userRequest.description = profile.summary || "";
 
-    // 🔒 Safe integer and large number validation
-    const cleaned = validateSafeIntegers(userRequest);
-
-    // 📤 Log the final output
-    console.log("📤 Sending to Dynamics:", JSON.stringify(cleaned, null, 2));
-
-    return cleaned;
+    return userRequest;
   } catch (error) {
     console.error("Error transforming LinkedIn profile data:", error);
     throw error;
