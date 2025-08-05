@@ -12,9 +12,9 @@ const BROWSER_CONFIG = {
   ],
   
   delays: {
-    min: 30000,   // 30 seconds
-    max: 90000,   // 1.5 minutes
-    betweenRequests: [60000, 120000] // 1-2 minutes between requests
+    min: 15000,   // 15 seconds (faster)
+    max: 45000,   // 45 seconds (faster)
+    betweenRequests: [30000, 60000] // 30-60 seconds between requests (faster)
   }
 };
 

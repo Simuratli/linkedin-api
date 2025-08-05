@@ -113,21 +113,6 @@ class FreeProxyManager {
     console.log('🔄 Fetching fresh free proxies...');
     this.allProxies = [];
 
-    // Fallback proxy listesi (eğer API'ler çalışmazsa)
-    const fallbackProxies = [
-      'http://103.149.162.194:80',
-      'http://103.149.162.195:80',
-      'http://103.149.162.196:80',
-      'http://103.149.162.197:80',
-      'http://103.149.162.198:80',
-      'http://103.149.162.199:80',
-      'http://103.149.162.200:80',
-      'http://103.149.162.201:80',
-      'http://103.149.162.202:80',
-      'http://103.149.162.203:80'
-    ];
-
-    let apiSuccess = false;
     for (const apiUrl of FREE_PROXY_APIS) {
       try {
         console.log(`📡 Fetching from: ${apiUrl.substring(0, 50)}...`);
@@ -144,7 +129,6 @@ class FreeProxyManager {
           const proxies = this.parseProxyList(data);
           this.allProxies.push(...proxies);
           console.log(`✅ Found ${proxies.length} proxies from this source`);
-          apiSuccess = true;
         }
       } catch (error) {
         console.warn(`⚠️ Failed to fetch from API: ${error.message}`);
@@ -152,12 +136,6 @@ class FreeProxyManager {
       
       // API'ler arası kısa bekleme
       await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-
-    // Eğer hiçbir API çalışmazsa fallback proxy'leri kullan
-    if (!apiSuccess || this.allProxies.length === 0) {
-      console.log('⚠️ No proxies found from APIs, using fallback proxies...');
-      this.allProxies = [...fallbackProxies];
     }
 
     // Duplicate'leri temizle
@@ -193,17 +171,14 @@ class FreeProxyManager {
 
   // Proxy'leri test et ve çalışanları filtrele
   async testAndFilterProxies() {
-    if (this.allProxies.length === 0) {
-      console.log('❌ No proxies to test');
-      return;
-    }
+    if (this.allProxies.length === 0) return;
 
     console.log('🧪 Testing proxies for functionality...');
-    const batchSize = 10; // Daha küçük batch size
+    const batchSize = 20; // Paralel test sayısı
     const workingProxies = [];
     
     // Proxy'leri batch'lere ayır
-    for (let i = 0; i < Math.min(this.allProxies.length, 100); i += batchSize) {
+    for (let i = 0; i < Math.min(this.allProxies.length, 200); i += batchSize) {
       const batch = this.allProxies.slice(i, i + batchSize);
       
       const testPromises = batch.map(proxy => this.testProxy(proxy));
@@ -222,23 +197,13 @@ class FreeProxyManager {
       console.log(`📊 Tested batch ${Math.floor(i/batchSize) + 1}, found ${workingProxies.length} working proxies so far`);
       
       // Batch'ler arası kısa bekleme
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    // Eğer hiç çalışan proxy bulunamazsa, tüm proxy'leri çalışan olarak kabul et
-    if (workingProxies.length === 0) {
-      console.log('⚠️ No working proxies found, accepting all proxies as working...');
-      this.workingProxies = this.allProxies.slice(0, 20).map(proxy => ({
-        url: proxy,
-        responseTime: 5000,
-        country: 'Unknown'
-      }));
-    } else {
-      // Response time'a göre sırala (hızlı olanlar önce)
-      this.workingProxies = workingProxies
-        .sort((a, b) => a.responseTime - b.responseTime)
-        .slice(0, 20); // En iyi 20 tanesini al
-    }
+    // Response time'a göre sırala (hızlı olanlar önce)
+    this.workingProxies = workingProxies
+      .sort((a, b) => a.responseTime - b.responseTime)
+      .slice(0, 50); // En iyi 50 tanesini al
 
     console.log(`✅ Found ${this.workingProxies.length} working proxies`);
     await this.saveStoredData();
@@ -251,11 +216,11 @@ class FreeProxyManager {
     try {
       const proxyAgent = new HttpsProxyAgent(proxyUrl);
       
-      // Basit HTTP test - daha kısa timeout
+      // Basit HTTP test
       const response = await fetch('http://httpbin.org/ip', {
         method: 'GET',
         agent: proxyAgent,
-        timeout: 8000, // Daha kısa timeout
+        timeout: DAILY_LIMITS.proxy_test_timeout,
         headers: {
           'User-Agent': this.getRandomUserAgent()
         }
@@ -272,8 +237,7 @@ class FreeProxyManager {
         };
       }
     } catch (error) {
-      // Test başarısız - daha detaylı log
-      console.log(`❌ Proxy test failed for ${proxyUrl}: ${error.message}`);
+      // Test başarısız
     }
 
     return { working: false };
@@ -505,20 +469,9 @@ class FreeProxyLinkedInClient {
   // Proxy'leri initialize et
   async initializeProxies() {
     await this.proxyManager.fetchFreeProxies();
-    
-    // Eğer hiç proxy bulunamazsa, manuel olarak bazı proxy'ler ekle
     if (this.proxyManager.workingProxies.length === 0) {
-      console.log('⚠️ No working proxies found, adding manual fallback proxies...');
-      this.proxyManager.workingProxies = [
-        { url: 'http://103.149.162.194:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.195:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.196:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.197:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.198:80', responseTime: 5000, country: 'Unknown' }
-      ];
-      await this.proxyManager.saveStoredData();
+      throw new Error('No working proxies found. Cannot proceed.');
     }
-    
     console.log(`✅ Initialized with ${this.proxyManager.workingProxies.length} working proxies`);
   }
 
@@ -530,27 +483,13 @@ class FreeProxyLinkedInClient {
       return this.currentProxy;
     } catch (error) {
       console.error('❌ Proxy rotation failed:', error.message);
-      
-      // Eğer proxy rotation başarısız olursa, manuel proxy'ler ekle
-      console.log('⚠️ Adding manual fallback proxies...');
-      this.proxyManager.workingProxies = [
-        { url: 'http://103.149.162.194:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.195:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.196:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.197:80', responseTime: 5000, country: 'Unknown' },
-        { url: 'http://103.149.162.198:80', responseTime: 5000, country: 'Unknown' }
-      ];
-      
-      this.currentProxy = this.proxyManager.workingProxies[0];
-      this.requestCount = 0;
-      console.log(`🔄 Using fallback proxy: ${this.currentProxy.url}`);
-      return this.currentProxy;
+      throw error;
     }
   }
 
   generateFingerprint() {
     return {
-      sessionId: `"ajax:${crypto.randomInt(1e12, 1e13 - 1)}"`,
+      sessionId: `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`,
       userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
       acceptLanguage: 'en-US,en;q=0.9',
       bcookie: `"v=2&${crypto.randomUUID()}"`,
@@ -577,9 +516,7 @@ class FreeProxyLinkedInClient {
     };
   }
 
-  async makeRequest(url, headers, requestType = 'profile_views', retryCount = 0) {
-    const maxRetries = 3;
-    
+  async makeRequest(url, headers, requestType = 'profile_views') {
     // Rate limiting kontrolü
     const permission = await this.rateLimit.shouldAllowRequest(requestType);
     
@@ -600,7 +537,7 @@ class FreeProxyLinkedInClient {
     const proxyAgent = new HttpsProxyAgent(this.currentProxy.url);
 
     try {
-      console.log(`🔍 Making ${requestType} request via free proxy (attempt ${retryCount + 1}/${maxRetries + 1})`);
+      console.log(`🔍 Making ${requestType} request via free proxy`);
       
       const response = await fetch(url, {
         method: 'GET',
@@ -620,15 +557,6 @@ class FreeProxyLinkedInClient {
           throw new Error(`LinkedIn blocked proxy: ${response.status}`);
         }
         
-        // 400 hatası için özel işlem - proxy'yi değiştir ve tekrar dene
-        if (response.status === 400 && retryCount < maxRetries) {
-          console.log(`⚠️ HTTP 400 error, rotating proxy and retrying...`);
-          this.rotateProxy();
-          // Kısa bekleme sonra tekrar dene
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          return this.makeRequest(url, headers, requestType, retryCount + 1);
-        }
-        
         throw new Error(`Request failed: ${response.status}`);
       }
 
@@ -643,15 +571,6 @@ class FreeProxyLinkedInClient {
     } catch (error) {
       console.error(`❌ Request failed:`, error.message);
       this.proxyManager.recordProxyResult(this.currentProxy, false, 'network_error');
-      
-      // Network error durumunda proxy'yi değiştir ve tekrar dene
-      if ((error.message.includes('network_error') || error.message.includes('timeout')) && retryCount < maxRetries) {
-        console.log(`⚠️ Network error, rotating proxy and retrying...`);
-        this.rotateProxy();
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        return this.makeRequest(url, headers, requestType, retryCount + 1);
-      }
-      
       throw error;
     }
   }
@@ -749,7 +668,7 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
 }
 
 function generateSessionId() {
-  return `"ajax:${crypto.randomInt(1e12, 1e13 - 1)}"`;
+  return `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`;
 }
 
 function getRateLimitStatus() {
