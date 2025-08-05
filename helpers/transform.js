@@ -1,15 +1,22 @@
 const { getDataverse, createDataverse } = require("./dynamics");
 
-function extractCompanyInfo(positionData,id) {
+function extractCompanyInfo(positionData, id) {
   if (!positionData) {
-    return { name: '', location: '', id:"" };
+    return { name: "", location: "", id: "" };
   }
 
   return {
-    name: positionData.companyName || '',
-    address1_name: positionData.locationName || positionData.geoLocationName || '',
-    uds_linkedincompanyid: id || ""
+    name: positionData.companyName || "",
+    address1_name:
+      positionData.locationName || positionData.geoLocationName || "",
+    uds_linkedincompanyid: id || "",
   };
+}
+
+function sanitizePhoneNumber(value) {
+  const cleaned = value.replace(/\D/g, ""); // Sayı dışı karakterleri sil
+  const asNumber = Number(cleaned);
+  return Number.isSafeInteger(asNumber) ? cleaned : "";
 }
 
 async function transformToCreateUserRequest(profileData, endpoint, token) {
@@ -65,7 +72,7 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
             userRequest["parentcustomerid_account@odata.bind"] =
               `/accounts(${companyResponse.value[0].accountid})`;
           } else {
-            console.log(latestPosition,'latestpso')
+            console.log(latestPosition, "latestpso");
             const request = extractCompanyInfo(latestPosition, idOfCompany);
             const response = await createDataverse(
               `${endpoint}/accounts`,
@@ -73,11 +80,11 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
               request,
               "POST"
             );
-            if(response){
-                userRequest["parentcustomerid_account@odata.bind"] =
-              `/accounts(${response.accountid})`;
+            if (response) {
+              userRequest["parentcustomerid_account@odata.bind"] =
+                `/accounts(${response.accountid})`;
             }
-            console.log(response,'response of new company')
+            console.log(response, "response of new company");
           }
         } catch (e) {
           console.error("Error checking company existence:", e.message);
@@ -109,13 +116,15 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
       "";
 
     // Use contactInfo phone if available, otherwise try to extract from summary
-    userRequest.telephone1 = (
+    const rawPhone = (
       contactInfo.phoneNumbers?.[0]?.number ||
       (profile.summary?.match(
         /(?:\+?\d{1,3})?\s?\(?\d{2,3}\)?[-.\s]?\d{3}[-.\s]?\d{4,6}/
       ) || [])[0] ||
       ""
     ).replace(/\s+/g, "");
+
+  userRequest.telephone1 = sanitizePhoneNumber(rawPhone);
 
     // Set address and description
     userRequest.address1_name =
