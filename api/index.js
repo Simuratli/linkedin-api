@@ -12,12 +12,7 @@ const {
   DAILY_LIMITS 
 } = require("../helpers/linkedin");
 
-// Simple LinkedIn Client (no proxies, direct requests)
-const { 
-  initializeSimpleLinkedInClient, 
-  fetchLinkedInProfile: fetchLinkedInProfileSimple,
-  getStats: getSimpleClientStats
-} = require("../helpers/simple_linkedin_client");
+// ...existing code...
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
@@ -121,31 +116,17 @@ const generateJobId = () => {
 
 // Simple batch configuration (no proxies at all)
 const getDynamicBatchConfig = () => {
-  const simpleStats = getSimpleClientStats();
-  
-  if (simpleStats.error) {
-    // Fallback config if simple client not initialized
-    return {
-      batchSize: 1,
-      waitBetweenBatches: 60000,
-      shouldPause: false,
-      shouldSlowDown: true,
-      maxDailyProcessing: 50
-    };
-  }
-
-  // Simple client stats
-  const successRate = simpleStats.successRate || 0;
-  
-  // Simple configuration (no proxies needed)
+  const stats = getRateLimitStatus();
+  const proxyStats = stats.proxyStats || {};
+  const successRate = proxyStats.successRate || 0;
   return {
-    batchSize: 1, // Very small batches
-    waitBetweenBatches: 120000, // 2 minutes between batches
-    shouldPause: false, // Don't pause
-    shouldSlowDown: successRate < 30, // Slow down if success rate is low
-    maxDailyProcessing: 100, // Conservative daily limit
-    proxyHealthy: successRate > 30, // Healthy if success rate > 30%
-    needsProxyRefresh: false // No proxy refresh needed
+    batchSize: 2,
+    waitBetweenBatches: 60000,
+    shouldPause: successRate < 10,
+    shouldSlowDown: successRate < 50,
+    maxDailyProcessing: 200,
+    proxyHealthy: successRate > 30,
+    needsProxyRefresh: proxyStats.workingProxies < 10
   };
 };
 
@@ -534,10 +515,9 @@ const processJobInBackground = async (jobId) => {
     job.lastProcessedAt = new Date().toISOString();
     await saveJobs(jobs);
 
-    // Get dynamic configuration for free proxies
+    // Get dynamic configuration for proxies
     let config = getDynamicBatchConfig();
-    
-    console.log(`📊 Free Proxy Dynamic config for job ${jobId}:`, {
+    console.log(`📊 Proxy Dynamic config for job ${jobId}:`, {
       batchSize: config.batchSize,
       waitTime: config.waitBetweenBatches / 1000 + 's',
       shouldPause: config.shouldPause,
@@ -545,9 +525,6 @@ const processJobInBackground = async (jobId) => {
       proxyHealthy: config.proxyHealthy,
       needsProxyRefresh: config.needsProxyRefresh
     });
-
-    // No proxy refresh needed - simple client doesn't use proxies
-    console.log(`📊 Simple client doesn't require any proxy refresh`);
 
     // Daily limit check
     if (config.shouldPause) {
@@ -583,11 +560,11 @@ const processJobInBackground = async (jobId) => {
         return;
       }
 
-      // Check simple client health
+      // Check proxy health
       if (!config.proxyHealthy) {
-        console.log(`⏸️ Simple client health degraded, pausing job ${jobId}`);
+        console.log(`⏸️ Proxy health degraded, pausing job ${jobId}`);
         job.status = "paused";
-        job.pauseReason = "simple_client_health_degraded";
+        job.pauseReason = "proxy_health_degraded";
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
         return;
       }
@@ -605,10 +582,7 @@ const processJobInBackground = async (jobId) => {
       }
 
       console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`);
-      const simpleStats = getSimpleClientStats();
-      console.log(`🎯 Simple client status: ${simpleStats.successRate || 0}% success rate, ${simpleStats.totalRequests || 0} total requests`);
-
-      // Process batch sequentially for free proxies (safer)
+      // Process batch sequentially for proxies
       for (const contact of batch) {
         try {
           contact.status = "processing";
@@ -622,15 +596,13 @@ const processJobInBackground = async (jobId) => {
 
           const customCookies = {
             li_at: currentUserSession.li_at,
-            jsession: currentUserSession.jsessionid,
+            jsessionid: currentUserSession.jsessionid,
           };
 
-          // Direct LinkedIn profile fetching (no proxies at all)
-          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Direct Request)`);
-          
-          // Use only simple client - no proxy fallback
-          const profileData = await fetchLinkedInProfileSimple(profileId);
-          console.log(`✅ Successfully fetched with direct request`);
+          // Proxy LinkedIn profile fetching
+          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Proxy Request)`);
+          const profileData = await fetchLinkedInProfile(profileId, customCookies);
+          console.log(`✅ Successfully fetched with proxy client`);
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
@@ -666,7 +638,7 @@ const processJobInBackground = async (jobId) => {
           job.successCount++;
           console.log(`✅ Successfully updated contact ${contact.contactId}`);
 
-          // Extra delay between contacts in same batch (for free proxies)
+          // Extra delay between contacts in same batch (for proxies)
           if (batch.indexOf(contact) < batch.length - 1) {
             const intraContactDelay = Math.floor(Math.random() * 10000) + 5000; // 5-15 seconds
             console.log(`⏳ Waiting ${intraContactDelay/1000}s before next contact in batch`);
@@ -859,8 +831,7 @@ app.get("/user-job/:userId", async (req, res) => {
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
       },
-      simpleClientStats: getSimpleClientStats(),
-      simpleClientInitialized: simpleLinkedInClientInitialized
+      // ...existing code...
     });
   } catch (error) {
     console.error("❌ Error getting user job:", error);
@@ -921,80 +892,17 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
-// Initialize simple LinkedIn client endpoint
-app.post("/initialize-simple-client", async (req, res) => {
-  try {
-    console.log('🚀 Initializing simple LinkedIn client...');
-    await initializeSimpleLinkedInClientAPI();
-    
-    const simpleStats = getSimpleClientStats();
-    
-    res.json({
-      success: true,
-      message: "Simple LinkedIn client initialized successfully",
-      simpleClientStats: simpleStats,
-      clientInitialized: simpleLinkedInClientInitialized
-    });
-  } catch (error) {
-    console.error("❌ Simple client initialization failed:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      suggestion: "Check if the simple client module is available"
-    });
-  }
-});
+// ...existing code...
 
-// Test route with simple LinkedIn client (no proxies at all)
-app.get("/simuratli", async (req, res) => {
-  const profileId = "simuratli";
-  try {
-    // Initialize simple client if not done yet
-    if (!simpleLinkedInClientInitialized) {
-      await initializeSimpleLinkedInClientAPI();
-    }
-
-    console.log(`🔍 Testing simple LinkedIn fetch for: ${profileId}`);
-    
-    // Use only simple client - no proxy fallback
-    const data = await fetchLinkedInProfileSimple(profileId);
-    const simpleStats = getSimpleClientStats();
-    
-    console.log("🔍 Fetched Data:", data);
-    console.log("🎯 Simple client stats:", simpleStats);
-    
-    res.json({
-      success: true,
-      data: data,
-      clientUsed: 'simple',
-      simpleClientStats: simpleStats,
-      simpleClientInitialized: simpleLinkedInClientInitialized
-    });
-  } catch (error) {
-    console.error("❌ Test endpoint error:", error);
-    const simpleStats = getSimpleClientStats();
-    
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      simpleClientStats: simpleStats,
-      simpleClientInitialized: simpleLinkedInClientInitialized,
-      suggestion: error.message.includes('not initialized') ? 'Try calling /initialize-simple-client first' : 'Check client health'
-    });
-  }
-});
+// ...existing code...
 
 // Health check endpoint
 app.get("/health", async (req, res) => {
   try {
-    const simpleStats = getSimpleClientStats();
     const config = getDynamicBatchConfig();
-    
     res.status(200).json({
       success: true,
       status: "healthy",
-      simpleClientInitialized: simpleLinkedInClientInitialized,
-      simpleClientStats: simpleStats,
       config: config,
       timestamp: new Date().toISOString()
     });
