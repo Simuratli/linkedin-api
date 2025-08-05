@@ -530,7 +530,21 @@ class FreeProxyLinkedInClient {
       return this.currentProxy;
     } catch (error) {
       console.error('❌ Proxy rotation failed:', error.message);
-      throw error;
+      
+      // Eğer proxy rotation başarısız olursa, manuel proxy'ler ekle
+      console.log('⚠️ Adding manual fallback proxies...');
+      this.proxyManager.workingProxies = [
+        { url: 'http://103.149.162.194:80', responseTime: 5000, country: 'Unknown' },
+        { url: 'http://103.149.162.195:80', responseTime: 5000, country: 'Unknown' },
+        { url: 'http://103.149.162.196:80', responseTime: 5000, country: 'Unknown' },
+        { url: 'http://103.149.162.197:80', responseTime: 5000, country: 'Unknown' },
+        { url: 'http://103.149.162.198:80', responseTime: 5000, country: 'Unknown' }
+      ];
+      
+      this.currentProxy = this.proxyManager.workingProxies[0];
+      this.requestCount = 0;
+      console.log(`🔄 Using fallback proxy: ${this.currentProxy.url}`);
+      return this.currentProxy;
     }
   }
 
@@ -563,7 +577,9 @@ class FreeProxyLinkedInClient {
     };
   }
 
-  async makeRequest(url, headers, requestType = 'profile_views') {
+  async makeRequest(url, headers, requestType = 'profile_views', retryCount = 0) {
+    const maxRetries = 3;
+    
     // Rate limiting kontrolü
     const permission = await this.rateLimit.shouldAllowRequest(requestType);
     
@@ -584,7 +600,7 @@ class FreeProxyLinkedInClient {
     const proxyAgent = new HttpsProxyAgent(this.currentProxy.url);
 
     try {
-      console.log(`🔍 Making ${requestType} request via free proxy`);
+      console.log(`🔍 Making ${requestType} request via free proxy (attempt ${retryCount + 1}/${maxRetries + 1})`);
       
       const response = await fetch(url, {
         method: 'GET',
@@ -604,6 +620,15 @@ class FreeProxyLinkedInClient {
           throw new Error(`LinkedIn blocked proxy: ${response.status}`);
         }
         
+        // 400 hatası için özel işlem - proxy'yi değiştir ve tekrar dene
+        if (response.status === 400 && retryCount < maxRetries) {
+          console.log(`⚠️ HTTP 400 error, rotating proxy and retrying...`);
+          this.rotateProxy();
+          // Kısa bekleme sonra tekrar dene
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          return this.makeRequest(url, headers, requestType, retryCount + 1);
+        }
+        
         throw new Error(`Request failed: ${response.status}`);
       }
 
@@ -618,6 +643,15 @@ class FreeProxyLinkedInClient {
     } catch (error) {
       console.error(`❌ Request failed:`, error.message);
       this.proxyManager.recordProxyResult(this.currentProxy, false, 'network_error');
+      
+      // Network error durumunda proxy'yi değiştir ve tekrar dene
+      if ((error.message.includes('network_error') || error.message.includes('timeout')) && retryCount < maxRetries) {
+        console.log(`⚠️ Network error, rotating proxy and retrying...`);
+        this.rotateProxy();
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        return this.makeRequest(url, headers, requestType, retryCount + 1);
+      }
+      
       throw error;
     }
   }
