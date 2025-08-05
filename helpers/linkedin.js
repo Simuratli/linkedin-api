@@ -1,6 +1,5 @@
 // LinkedIn Client with Free Proxy Support - Güvenli ve Dikkatli Yaklaşım
 const crypto = require('crypto');
-const fetch = require('node-fetch');
 const fs = require('fs').promises;
 const path = require('path');
 const { HttpsProxyAgent } = require('https-proxy-agent');
