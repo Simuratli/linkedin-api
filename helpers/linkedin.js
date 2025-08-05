@@ -1,49 +1,337 @@
-// Enhanced LinkedIn Bot Protection System
+// LinkedIn Client with Free Proxy Support - Güvenli ve Dikkatli Yaklaşım
 const crypto = require('crypto');
-const fetch = require('node-fetch');
 const fs = require('fs').promises;
 const path = require('path');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
-// Günlük rate limiting için dosya yolu
+// Dosya yolları
 const RATE_LIMIT_FILE = path.join(__dirname, '../data/daily_rate_limits.json');
+const PROXY_STATS_FILE = path.join(__dirname, '../data/free_proxy_stats.json');
+const WORKING_PROXIES_FILE = path.join(__dirname, '../data/working_proxies.json');
 
+// Free proxy'ler için çok konservatif limitler
+const DAILY_LIMITS = {
+  profile_views: 300,          // Günde maksimum 300 (güvenli)
+  contact_info: 50,            // Contact info çok sınırlı
+  search_queries: 100,         // Arama limiti
+  max_requests_per_hour: 50,   // Saatte max 50 (çok konservatif)
+  max_burst_requests: 2,       // Ard arda max 2 istek
+  proxy_rotation_after: 15,    // Her 15 request'te proxy değiş
+  proxy_test_timeout: 10000,   // 10 saniye proxy test timeout
+  request_timeout: 20000,      // 20 saniye request timeout
+  min_delay_between: 15000,    // En az 15 saniye ara
+  max_delay_between: 45000,    // En fazla 45 saniye ara
+};
+
+// Popüler Free Proxy API'leri
+const FREE_PROXY_APIS = [
+  'https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all',
+  'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
+  'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
+  'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt'
+];
+
+// User Agent'lar (daha geniş çeşitlilik)
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0'
 ];
 
-const RESIDENTIAL_IPS = [
-  // Bu kısmı gerçek residential proxy'lerle doldur
-  '192.168.1.100',
-  '10.0.0.50',
-  // Veya proxy servisinden al
-];
+// Free Proxy Manager
+class FreeProxyManager {
+  constructor() {
+    this.allProxies = [];
+    this.workingProxies = [];
+    this.failedProxies = new Set();
+    this.proxyStats = {};
+    this.lastProxyFetch = 0;
+    this.currentProxyIndex = 0;
+    
+    this.loadStoredData();
+  }
 
-// Günlük rate limitleri
-const DAILY_LIMITS = {
-  profile_views: 500,      // Günlük profil görüntüleme limiti
-  contact_info: 100,       // Günlük contact info limiti
-  search_queries: 200,     // Günlük arama limiti
-  max_requests_per_hour: 80, // Saatlik genel limit
-  max_burst_requests: 3,   // Ard arda yapılabilecek maksimum istek
-};
+  async loadStoredData() {
+    try {
+      // Çalışan proxy'leri yükle
+      const workingData = await fs.readFile(WORKING_PROXIES_FILE, 'utf8');
+      const workingParsed = JSON.parse(workingData);
+      this.workingProxies = workingParsed.proxies || [];
+      this.lastProxyFetch = workingParsed.lastFetch || 0;
+      
+      // Proxy istatistiklerini yükle
+      const statsData = await fs.readFile(PROXY_STATS_FILE, 'utf8');
+      const statsParsed = JSON.parse(statsData);
+      this.proxyStats = statsParsed.stats || {};
+      this.failedProxies = new Set(statsParsed.failed || []);
+      
+      console.log(`📊 Loaded ${this.workingProxies.length} working proxies from cache`);
+    } catch (error) {
+      console.log('📋 No cached proxy data found, will fetch fresh proxies');
+    }
+  }
 
-// Advanced rate limiting class
-class AdvancedRateLimit {
+  async saveStoredData() {
+    try {
+      const dataDir = path.dirname(WORKING_PROXIES_FILE);
+      await fs.mkdir(dataDir, { recursive: true });
+      
+      // Çalışan proxy'leri kaydet
+      await fs.writeFile(WORKING_PROXIES_FILE, JSON.stringify({
+        proxies: this.workingProxies,
+        lastFetch: this.lastProxyFetch,
+        lastUpdate: new Date().toISOString()
+      }, null, 2));
+      
+      // İstatistikleri kaydet
+      await fs.writeFile(PROXY_STATS_FILE, JSON.stringify({
+        stats: this.proxyStats,
+        failed: Array.from(this.failedProxies),
+        lastUpdate: new Date().toISOString()
+      }, null, 2));
+      
+    } catch (error) {
+      console.error('❌ Failed to save proxy data:', error);
+    }
+  }
+
+  // Free proxy'leri API'lerden çek
+  async fetchFreeProxies() {
+    const now = Date.now();
+    const oneHour = 60 * 60 * 1000;
+    
+    // Eğer son 1 saat içinde çektiyse ve çalışan proxy'ler varsa skip et
+    if (this.workingProxies.length > 10 && (now - this.lastProxyFetch) < oneHour) {
+      console.log('📋 Using cached proxies (fetched recently)');
+      return;
+    }
+
+    console.log('🔄 Fetching fresh free proxies...');
+    this.allProxies = [];
+
+    for (const apiUrl of FREE_PROXY_APIS) {
+      try {
+        console.log(`📡 Fetching from: ${apiUrl.substring(0, 50)}...`);
+        
+        const response = await fetch(apiUrl, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': this.getRandomUserAgent()
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.text();
+          const proxies = this.parseProxyList(data);
+          this.allProxies.push(...proxies);
+          console.log(`✅ Found ${proxies.length} proxies from this source`);
+        }
+      } catch (error) {
+        console.warn(`⚠️ Failed to fetch from API: ${error.message}`);
+      }
+      
+      // API'ler arası kısa bekleme
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    // Duplicate'leri temizle
+    this.allProxies = [...new Set(this.allProxies)];
+    console.log(`📊 Total unique proxies found: ${this.allProxies.length}`);
+    
+    this.lastProxyFetch = now;
+    await this.testAndFilterProxies();
+  }
+
+  parseProxyList(data) {
+    const proxies = [];
+    const lines = data.split('\n');
+    
+    for (const line of lines) {
+      const cleanLine = line.trim();
+      
+      // IP:PORT formatını kontrol et
+      const match = cleanLine.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{1,5})$/);
+      if (match) {
+        const [, ip, port] = match;
+        
+        // Temel IP validasyonu
+        const ipParts = ip.split('.').map(Number);
+        if (ipParts.every(part => part >= 0 && part <= 255)) {
+          proxies.push(`http://${ip}:${port}`);
+        }
+      }
+    }
+    
+    return proxies;
+  }
+
+  // Proxy'leri test et ve çalışanları filtrele
+  async testAndFilterProxies() {
+    if (this.allProxies.length === 0) return;
+
+    console.log('🧪 Testing proxies for functionality...');
+    const batchSize = 20; // Paralel test sayısı
+    const workingProxies = [];
+    
+    // Proxy'leri batch'lere ayır
+    for (let i = 0; i < Math.min(this.allProxies.length, 200); i += batchSize) {
+      const batch = this.allProxies.slice(i, i + batchSize);
+      
+      const testPromises = batch.map(proxy => this.testProxy(proxy));
+      const results = await Promise.allSettled(testPromises);
+      
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled' && result.value.working) {
+          workingProxies.push({
+            url: batch[index],
+            responseTime: result.value.responseTime,
+            country: result.value.country || 'Unknown'
+          });
+        }
+      });
+      
+      console.log(`📊 Tested batch ${Math.floor(i/batchSize) + 1}, found ${workingProxies.length} working proxies so far`);
+      
+      // Batch'ler arası kısa bekleme
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    // Response time'a göre sırala (hızlı olanlar önce)
+    this.workingProxies = workingProxies
+      .sort((a, b) => a.responseTime - b.responseTime)
+      .slice(0, 50); // En iyi 50 tanesini al
+
+    console.log(`✅ Found ${this.workingProxies.length} working proxies`);
+    await this.saveStoredData();
+  }
+
+  // Tek proxy test et
+  async testProxy(proxyUrl) {
+    const startTime = Date.now();
+    
+    try {
+      const proxyAgent = new HttpsProxyAgent(proxyUrl);
+      
+      // Basit HTTP test
+      const response = await fetch('http://httpbin.org/ip', {
+        method: 'GET',
+        agent: proxyAgent,
+        timeout: DAILY_LIMITS.proxy_test_timeout,
+        headers: {
+          'User-Agent': this.getRandomUserAgent()
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const responseTime = Date.now() - startTime;
+        
+        return {
+          working: true,
+          responseTime: responseTime,
+          ip: data.origin
+        };
+      }
+    } catch (error) {
+      // Test başarısız
+    }
+
+    return { working: false };
+  }
+
+  getRandomUserAgent() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  }
+
+  // En iyi proxy'yi seç
+  getBestProxy() {
+    if (this.workingProxies.length === 0) {
+      throw new Error('No working proxies available. Please fetch new proxies.');
+    }
+
+    // Failed proxy'leri filtrele
+    const availableProxies = this.workingProxies.filter(proxy => 
+      !this.failedProxies.has(proxy.url)
+    );
+
+    if (availableProxies.length === 0) {
+      // Tüm proxy'ler failed ise, failed list'i temizle ve tekrar dene
+      console.log('⚠️ All proxies marked as failed, clearing failed list...');
+      this.failedProxies.clear();
+      return this.getBestProxy();
+    }
+
+    // Round-robin seçim
+    const selectedProxy = availableProxies[this.currentProxyIndex % availableProxies.length];
+    this.currentProxyIndex++;
+
+    return selectedProxy;
+  }
+
+  // Proxy sonucunu kaydet
+  recordProxyResult(proxy, success, errorType = null) {
+    const proxyUrl = proxy.url || proxy;
+    
+    if (!this.proxyStats[proxyUrl]) {
+      this.proxyStats[proxyUrl] = { success: 0, failed: 0, errors: {} };
+    }
+
+    if (success) {
+      this.proxyStats[proxyUrl].success++;
+      // Başarılı ise failed list'ten çıkar
+      this.failedProxies.delete(proxyUrl);
+    } else {
+      this.proxyStats[proxyUrl].failed++;
+      
+      if (errorType) {
+        if (!this.proxyStats[proxyUrl].errors[errorType]) {
+          this.proxyStats[proxyUrl].errors[errorType] = 0;
+        }
+        this.proxyStats[proxyUrl].errors[errorType]++;
+      }
+
+      // 3 kez başarısız ise failed list'e ekle
+      if (this.proxyStats[proxyUrl].failed >= 3) {
+        this.failedProxies.add(proxyUrl);
+        console.log(`🚫 Proxy marked as failed: ${proxyUrl.substring(0, 30)}...`);
+      }
+    }
+
+    this.saveStoredData();
+  }
+
+  getStats() {
+    return {
+      totalProxies: this.allProxies.length,
+      workingProxies: this.workingProxies.length,
+      failedProxies: this.failedProxies.size,
+      proxyStats: Object.keys(this.proxyStats).length,
+      lastFetch: new Date(this.lastProxyFetch).toLocaleString()
+    };
+  }
+
+  // Proxy'leri manuel olarak refresh et
+  async refreshProxies() {
+    console.log('🔄 Manual proxy refresh initiated...');
+    this.lastProxyFetch = 0; // Force refresh
+    await this.fetchFreeProxies();
+  }
+}
+
+// Rate Limiting (Free proxy'ler için çok konservatif)
+class ConservativeRateLimit {
   constructor() {
     this.dailyCounters = {};
     this.hourlyCounters = {};
-    this.lastRequestTimes = [];
+    this.requestTimestamps = [];
     this.suspiciousActivity = false;
     this.backoffMultiplier = 1;
     this.lastResetTime = this.getTodayKey();
     
-    // Startup'ta günlük verileri yükle
     this.loadDailyData();
   }
 
@@ -51,23 +339,18 @@ class AdvancedRateLimit {
     return new Date().toISOString().split('T')[0];
   }
 
-  getHourKey() {
-    const now = new Date();
-    return `${this.getTodayKey()}-${now.getHours()}`;
-  }
-
   async loadDailyData() {
     try {
       const data = await fs.readFile(RATE_LIMIT_FILE, 'utf8');
       const parsed = JSON.parse(data);
       
-      // Bugünkü verileri yükle, eski verileri temizle
       const today = this.getTodayKey();
       if (parsed[today]) {
-        this.dailyCounters = parsed[today];
+        this.dailyCounters = parsed[today].counters || {};
+        this.suspiciousActivity = parsed[today].suspicious || false;
+        this.backoffMultiplier = parsed[today].backoff || 1;
       }
     } catch (error) {
-      // Dosya yoksa veya hata varsa boş başla
       this.dailyCounters = {};
     }
   }
@@ -78,27 +361,22 @@ class AdvancedRateLimit {
       try {
         const existingData = await fs.readFile(RATE_LIMIT_FILE, 'utf8');
         allData = JSON.parse(existingData);
-      } catch (e) {
-        // Dosya yoksa boş obje ile başla
-      }
+      } catch (e) {}
 
       const today = this.getTodayKey();
-      allData[today] = this.dailyCounters;
+      allData[today] = {
+        counters: this.dailyCounters,
+        suspicious: this.suspiciousActivity,
+        backoff: this.backoffMultiplier,
+        lastUpdate: new Date().toISOString()
+      };
 
-      // 7 günden eski verileri temizle
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 7);
-      const weekAgoKey = weekAgo.toISOString().split('T')[0];
-
-      Object.keys(allData).forEach(key => {
-        if (key < weekAgoKey) {
-          delete allData[key];
-        }
-      });
-
+      const dataDir = path.dirname(RATE_LIMIT_FILE);
+      await fs.mkdir(dataDir, { recursive: true });
+      
       await fs.writeFile(RATE_LIMIT_FILE, JSON.stringify(allData, null, 2));
     } catch (error) {
-      console.error('Daily data save error:', error);
+      console.error('❌ Rate limit save error:', error);
     }
   }
 
@@ -106,36 +384,22 @@ class AdvancedRateLimit {
     const today = this.getTodayKey();
     if (this.lastResetTime !== today) {
       this.dailyCounters = {};
-      this.lastResetTime = today;
-      this.backoffMultiplier = 1; // Reset backoff on new day
-      this.suspiciousActivity = false;
-    }
-  }
-
-  resetCountersIfNewHour() {
-    const currentHour = this.getHourKey();
-    if (!this.hourlyCounters[currentHour]) {
-      // Yeni saat, eski saatleri temizle
       this.hourlyCounters = {};
-      this.hourlyCounters[currentHour] = 0;
+      this.lastResetTime = today;
+      this.backoffMultiplier = 1;
+      this.suspiciousActivity = false;
+      console.log('🔄 Daily counters reset');
     }
   }
 
   incrementCounter(type) {
     this.resetCountersIfNewDay();
-    this.resetCountersIfNewHour();
-
-    const today = this.getTodayKey();
-    const currentHour = this.getHourKey();
 
     if (!this.dailyCounters[type]) {
       this.dailyCounters[type] = 0;
     }
-    
     this.dailyCounters[type]++;
-    this.hourlyCounters[currentHour]++;
-    
-    // Günlük verileri kaydet
+
     this.saveDailyData();
   }
 
@@ -152,338 +416,205 @@ class AdvancedRateLimit {
     };
   }
 
-  checkHourlyLimit() {
-    this.resetCountersIfNewHour();
-    const currentHour = this.getHourKey();
-    const count = this.hourlyCounters[currentHour] || 0;
+  getRandomDelay() {
+    // Free proxy'ler için çok uzun gecikmeler
+    const baseMin = DAILY_LIMITS.min_delay_between;
+    const baseMax = DAILY_LIMITS.max_delay_between;
     
-    return {
-      allowed: count < DAILY_LIMITS.max_requests_per_hour,
-      current: count,
-      limit: DAILY_LIMITS.max_requests_per_hour,
-      remaining: Math.max(0, DAILY_LIMITS.max_requests_per_hour - count)
-    };
-  }
-
-  checkBurstLimit() {
-    const now = Date.now();
-    const oneMinuteAgo = now - 60000;
-    
-    // Son 1 dakikadaki istekleri filtrele
-    this.lastRequestTimes = this.lastRequestTimes.filter(time => time > oneMinuteAgo);
-    
-    return {
-      allowed: this.lastRequestTimes.length < DAILY_LIMITS.max_burst_requests,
-      current: this.lastRequestTimes.length,
-      limit: DAILY_LIMITS.max_burst_requests
-    };
-  }
-
-  recordRequest() {
-    this.lastRequestTimes.push(Date.now());
-  }
-
-  detectSuspiciousActivity() {
-    const hourlyCheck = this.checkHourlyLimit();
-    const burstCheck = this.checkBurstLimit();
-    
-    // Şüpheli aktivite tespiti
-    if (hourlyCheck.current > hourlyCheck.limit * 0.8 || !burstCheck.allowed) {
-      this.suspiciousActivity = true;
-      this.backoffMultiplier = Math.min(this.backoffMultiplier * 1.5, 5);
-      console.warn('⚠️ Suspicious activity detected, increasing delays');
-    }
-    
-    return this.suspiciousActivity;
-  }
-
-  getAdaptiveDelay(baseMin = 8000, baseMax = 15000) {
-    const multiplier = this.backoffMultiplier;
+    const multiplier = this.suspiciousActivity ? 2 : 1;
     const min = baseMin * multiplier;
     const max = baseMax * multiplier;
     
-    // Şüpheli aktivite varsa daha uzun bekle
-    if (this.suspiciousActivity) {
-      return this.getRandomDelay(min * 2, max * 3);
-    }
-    
-    return this.getRandomDelay(min, max);
-  }
-
-  getRandomDelay(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
   async shouldAllowRequest(type = 'profile_views') {
     const dailyCheck = this.checkDailyLimit(type);
-    const hourlyCheck = this.checkHourlyLimit();
-    const burstCheck = this.checkBurstLimit();
 
     if (!dailyCheck.allowed) {
       throw new Error(`Daily limit exceeded for ${type}. Limit: ${dailyCheck.limit}, Current: ${dailyCheck.current}`);
     }
 
-    if (!hourlyCheck.allowed) {
-      const waitTime = 3600000; // 1 hour
-      throw new Error(`Hourly limit exceeded. Wait ${waitTime/60000} minutes`);
-    }
-
-    if (!burstCheck.allowed) {
-      const waitTime = 60000; // 1 minute
-      throw new Error(`Burst limit exceeded. Wait ${waitTime/1000} seconds`);
-    }
-
     return {
       allowed: true,
       dailyRemaining: dailyCheck.remaining,
-      hourlyRemaining: hourlyCheck.remaining,
-      recommendedDelay: this.getAdaptiveDelay()
+      recommendedDelay: this.getRandomDelay()
+    };
+  }
+
+  getStats() {
+    this.resetCountersIfNewDay();
+    return {
+      profileViews: this.dailyCounters.profile_views || 0,
+      contactInfo: this.dailyCounters.contact_info || 0,
+      limits: DAILY_LIMITS,
+      suspiciousActivity: this.suspiciousActivity,
+      backoffMultiplier: this.backoffMultiplier
     };
   }
 }
 
-// Human behavior simulation
-class HumanBehaviorSimulator {
+// Ana LinkedIn Client
+class FreeProxyLinkedInClient {
   constructor() {
-    this.sessionStartTime = Date.now();
-    this.activityPattern = this.generateDailyPattern();
-    this.mouseMovements = [];
-    this.scrollEvents = [];
-  }
-
-  generateDailyPattern() {
-    // Gerçekçi günlük aktivite paterni oluştur
-    const patterns = [
-      { start: 9, end: 12, intensity: 0.7 },   // Sabah yoğunluğu
-      { start: 13, end: 17, intensity: 0.9 },  // Öğleden sonra yoğunluğu
-      { start: 19, end: 22, intensity: 0.4 },  // Akşam düşük aktivite
-    ];
-    return patterns;
-  }
-
-  getCurrentIntensity() {
-    const hour = new Date().getHours();
-    const pattern = this.activityPattern.find(p => hour >= p.start && hour <= p.end);
-    return pattern ? pattern.intensity : 0.2;
-  }
-
-  simulateReadingTime(contentLength = 1000) {
-    // İçerik uzunluğuna göre okuma süresi simüle et
-    const wordsPerMinute = 200;
-    const words = contentLength / 5; // Ortalama kelime uzunluğu
-    const readingTimeMs = (words / wordsPerMinute) * 60 * 1000;
+    this.proxyManager = new FreeProxyManager();
+    this.rateLimit = new ConservativeRateLimit();
+    this.currentProxy = null;
+    this.requestCount = 0;
+    this.sessionFingerprints = new Map();
     
-    // %20-80 arası rastgele varyasyon ekle
-    const variance = 0.6 * Math.random() + 0.2;
-    return Math.floor(readingTimeMs * variance);
+    console.log('🚀 Free Proxy LinkedIn Client initialized');
   }
 
-  simulateTypingPattern() {
-    // İnsan typing pattern'i simüle et
-    return {
-      keystrokeDynamics: Math.random() * 100 + 50, // 50-150ms arası
-      pauseBetweenWords: Math.random() * 200 + 100, // 100-300ms arası
-    };
+  // Proxy'leri initialize et
+  async initializeProxies() {
+    await this.proxyManager.fetchFreeProxies();
+    if (this.proxyManager.workingProxies.length === 0) {
+      throw new Error('No working proxies found. Cannot proceed.');
+    }
+    console.log(`✅ Initialized with ${this.proxyManager.workingProxies.length} working proxies`);
   }
 
-  getHumanizedDelay(baseDelay) {
-    const intensity = this.getCurrentIntensity();
-    const sessionDuration = Date.now() - this.sessionStartTime;
-    
-    // Uzun session'larda yorgunluk faktörü
-    const fatigueMultiplier = Math.min(1 + (sessionDuration / 3600000) * 0.2, 2);
-    
-    // Günlük yoğunluğa göre ayarlama
-    const adjustedDelay = baseDelay * (2 - intensity) * fatigueMultiplier;
-    
-    return Math.floor(adjustedDelay);
+  rotateProxy() {
+    try {
+      this.currentProxy = this.proxyManager.getBestProxy();
+      this.requestCount = 0;
+      console.log(`🔄 Rotated to proxy: ${this.currentProxy.url.substring(0, 30)}...`);
+      return this.currentProxy;
+    } catch (error) {
+      console.error('❌ Proxy rotation failed:', error.message);
+      throw error;
+    }
   }
+
+generateFingerprint() {
+  return {
+    sessionId: generateSessionId(),
+    userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+    acceptLanguage: 'en-US,en;q=0.9',
+    bcookie: `"v=2&${crypto.randomUUID()}"`,
+    bscookie: `"v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}"`,
+  };
 }
 
-// Enhanced LinkedIn client
-class EnhancedLinkedInClient {
-  constructor() {
-    this.rateLimit = new AdvancedRateLimit();
-    this.behaviorSimulator = new HumanBehaviorSimulator();
-    this.sessionId = this.generateSessionId();
-    this.fingerprint = this.generateFingerprint();
-    this.requestHistory = [];
-    this.consecutiveErrors = 0;
-    this.lastSuccessfulRequest = null;
-  }
-
-  generateSessionId() {
-    return `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}`;
-  }
-
-  generateFingerprint() {
-    // Browser fingerprint simüle et
-    return {
-      screen: { width: 1920, height: 1080, colorDepth: 24 },
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      language: 'en-US',
-      platform: 'Win32',
-      hardwareConcurrency: 8,
-      deviceMemory: 8,
-      webgl: 'WebGL 1.0 (OpenGL ES 2.0 Chromium)',
-    };
-  }
-
-  getRandomUserAgent() {
-    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-  }
-
-  generateAdvancedHeaders(csrf, cookieObj, profileId, requestType = 'profile') {
-    const cookieHeader = Object.entries(cookieObj)
+  generateHeaders(csrf, cookies, profileId, fingerprint) {
+    const cookieHeader = Object.entries(cookies)
       .map(([k, v]) => `${k}=${v}`)
       .join('; ');
 
-    const baseHeaders = {
+    return {
       'accept': 'application/vnd.linkedin.normalized+json+2.1',
-      'accept-language': 'en-US,en;q=0.9,tr;q=0.8',
+      'accept-language': fingerprint.acceptLanguage,
       'accept-encoding': 'gzip, deflate, br',
       'cache-control': 'no-cache',
       'csrf-token': csrf,
       'cookie': cookieHeader,
-      'dnt': '1',
-      'pragma': 'no-cache',
       'referer': `https://www.linkedin.com/in/${profileId}/`,
-      'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-origin',
-      'user-agent': this.getRandomUserAgent(),
+      'user-agent': fingerprint.userAgent,
       'x-li-lang': 'en_US',
-      'x-li-page-instance': `urn:li:page:d_flagship3_profile_view_base;${crypto.randomUUID()}`,
       'x-restli-protocol-version': '2.0.0',
-      'x-requested-with': 'XMLHttpRequest',
-      'x-li-track': JSON.stringify({
-        'clientApplicationInstance': crypto.randomUUID(),
-        'pageInstance': crypto.randomUUID(),
-      }),
     };
-
-    // Request type'a göre özel headerlar ekle
-    if (requestType === 'contact') {
-      baseHeaders['x-li-page-instance'] = `urn:li:page:d_flagship3_profile_view_base_contact_details;${crypto.randomUUID()}`;
-    }
-
-    return baseHeaders;
   }
 
-  async makeLinkedInRequest(url, headers, requestType = 'profile_views') {
+  async makeRequest(url, headers, requestType = 'profile_views') {
     // Rate limiting kontrolü
     const permission = await this.rateLimit.shouldAllowRequest(requestType);
     
     if (!permission.allowed) {
-      throw new Error(`Rate limit exceeded: ${permission.message}`);
+      throw new Error(`Rate limit exceeded`);
     }
 
-    // Adaptif gecikme
+    // Proxy rotation kontrolü
+    if (!this.currentProxy || this.requestCount >= DAILY_LIMITS.proxy_rotation_after) {
+      this.rotateProxy();
+    }
+
+    // Uzun gecikme (free proxy'ler için kritik)
     const delay = permission.recommendedDelay;
-    console.log(`⏳ Adaptive delay: ${delay/1000}s (${requestType})`);
+    console.log(`⏳ Waiting ${delay/1000}s before request (conservative approach)`);
     await new Promise(resolve => setTimeout(resolve, delay));
 
-    // İstek öncesi human behavior simülasyonu
-    const readingTime = this.behaviorSimulator.simulateReadingTime();
-    if (this.lastSuccessfulRequest) {
-      console.log(`📖 Simulating reading time: ${readingTime/1000}s`);
-      await new Promise(resolve => setTimeout(resolve, readingTime));
-    }
+    const proxyAgent = new HttpsProxyAgent(this.currentProxy.url);
 
     try {
-      console.log(`🔍 Making LinkedIn request: ${requestType}`);
+      console.log(`🔍 Making ${requestType} request via free proxy`);
       
       const response = await fetch(url, {
+        method: 'GET',
         headers,
-        credentials: 'include',
-        timeout: 30000, // 30 saniye timeout
+        agent: proxyAgent,
+        timeout: DAILY_LIMITS.request_timeout,
       });
 
-      // Request'i kaydet
-      this.rateLimit.recordRequest();
+      this.requestCount++;
       this.rateLimit.incrementCounter(requestType);
-      
-      // Error handling
+
       if (!response.ok) {
-        this.consecutiveErrors++;
+        this.proxyManager.recordProxyResult(this.currentProxy, false, response.status.toString());
         
-        if (response.status === 429) {
-          this.rateLimit.detectSuspiciousActivity();
-          throw new Error(`Rate limited: ${response.status} - Backing off`);
-        }
-        
-        if (response.status === 403) {
-          this.rateLimit.detectSuspiciousActivity();
-          throw new Error(`Access forbidden - Bot detected: ${response.status}`);
-        }
-        
-        if (response.status === 999) {
-          throw new Error(`LinkedIn challenge required: ${response.status}`);
+        if (response.status === 429 || response.status === 403) {
+          // Bu proxy'yi failed olarak işaretle ve yeni proxy dene
+          throw new Error(`LinkedIn blocked proxy: ${response.status}`);
         }
         
         throw new Error(`Request failed: ${response.status}`);
       }
 
       // Başarılı istek
-      this.consecutiveErrors = 0;
-      this.lastSuccessfulRequest = Date.now();
+      this.proxyManager.recordProxyResult(this.currentProxy, true);
       
       const data = await response.json();
-      
       console.log(`✅ Successful ${requestType} request`);
-      console.log(`📊 Daily remaining: ${permission.dailyRemaining}, Hourly remaining: ${permission.hourlyRemaining}`);
       
       return data;
 
     } catch (error) {
-      console.error(`❌ LinkedIn request failed:`, error.message);
-      
-      // Consecutive error handling
-      if (this.consecutiveErrors >= 3) {
-        const backoffTime = Math.pow(2, this.consecutiveErrors) * 5000;
-        console.log(`🛑 ${this.consecutiveErrors} consecutive errors, backing off for ${backoffTime/1000}s`);
-        await new Promise(resolve => setTimeout(resolve, backoffTime));
-      }
-      
+      console.error(`❌ Request failed:`, error.message);
+      this.proxyManager.recordProxyResult(this.currentProxy, false, 'network_error');
       throw error;
     }
   }
 
   async fetchLinkedInProfile(profileId, customCookies = null) {
+    if (!this.currentProxy) {
+      this.rotateProxy();
+    }
+
+    const fingerprint = this.generateFingerprint();
+    
     const profileViewUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`;
     const contactInfoUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`;
 
     const cookies = {
-      JSESSIONID: customCookies?.jsession || this.generateSessionId(),
-      li_at: customCookies?.li_at || 'YOUR_LI_AT_TOKEN_HERE',
+      JSESSIONID: fingerprint.sessionId,
+      li_at: customCookies?.li_at || 'AQEFAQ8BAAAAABcW3l4AAAGYKTXeBAAAAZiYCwrfVgAAsnVybjpsaTplbnRlcnByaXNlQXV0aFRva2VuOmVKeGpaQUFDbGtSZkZ4RE45bnZkUWpELzEvb2VSaEJEa3pkbEU1akJvM0RoRWdNakFMTnNDSjQ9XnVybjpsaTplbnRlcnByaXNlUHJvZmlsZToodXJuOmxpOmVudGVycHJpc2VBY2NvdW50OjczNDg1NjM2LDExNzE1NzUzNyledXJuOmxpOm1lbWJlcjo2MDI2NTM1OTVAbbrylOMwbMnJNLQf0n36-m2j2IZqxCtRDhKDaPNMu5tIm19eWFdBDmoKsQIBXGBqTTbhZWfAvCK4tQyqiPfXkaRF5vspyXtf6vy0LTXiGXOPpJFCIqaJCCfxQJwGAWTplhKUdPnInQnNPftS2tBpEu4kk2K2ElSantLOZspvgd01507sC3De1dpno-yNQrclA1Gs',
       liap: 'true',
-      timezone: 'America/Los_Angeles',
-      lang: 'v=2&lang=en-us',
-      bcookie: `"v=2&${crypto.randomUUID()}"`,
-      bscookie: `"v=1&${Date.now()}${crypto.randomUUID()}"`,
+      bcookie: fingerprint.bcookie,
+      bscookie: fingerprint.bscookie,
     };
 
-    const csrfToken = cookies.JSESSIONID.replace(/"/g, '');
+    const csrfToken = fingerprint.sessionId.replace(/"/g, '');
 
     try {
       // Ana profil verisini al
-      const profileHeaders = this.generateAdvancedHeaders(csrfToken, cookies, profileId, 'profile');
-      const profileData = await this.makeLinkedInRequest(profileViewUrl, profileHeaders, 'profile_views');
+      const profileHeaders = this.generateHeaders(csrfToken, cookies, profileId, fingerprint);
+      const profileData = await this.makeRequest(profileViewUrl, profileHeaders, 'profile_views');
 
-      // İki istek arası human-like delay
-      const interRequestDelay = this.behaviorSimulator.getHumanizedDelay(
-        this.rateLimit.getRandomDelay(3000, 7000)
-      );
+      // İki istek arası uzun gecikme
+      const interRequestDelay = Math.floor(Math.random() * 20000) + 15000; // 15-35 saniye
+      console.log(`⏳ Waiting ${interRequestDelay/1000}s between profile and contact requests`);
       await new Promise(resolve => setTimeout(resolve, interRequestDelay));
 
-      // Contact info'yu al (daha sınırlı)
+      // Contact info'yu al (çok sınırlı)
       let contactInfoData = null;
       try {
-        const contactHeaders = this.generateAdvancedHeaders(csrfToken, cookies, profileId, 'contact');
-        contactInfoData = await this.makeLinkedInRequest(contactInfoUrl, contactHeaders, 'contact_info');
+        // Contact info'yu sadece %30 olasılıkla dene (çok riskli)
+        if (Math.random() < 0.3) {
+          const contactHeaders = this.generateHeaders(csrfToken, cookies, profileId, fingerprint);
+          contactInfoData = await this.makeRequest(contactInfoUrl, contactHeaders, 'contact_info');
+        } else {
+          console.log('📊 Skipping contact info to reduce risk');
+        }
       } catch (contactError) {
         console.warn(`⚠️ Contact info failed for ${profileId}:`, contactError.message);
       }
@@ -503,39 +634,66 @@ class EnhancedLinkedInClient {
     }
   }
 
-  // Günlük istatistikleri al
-  getDailyStats() {
+  // Manual proxy refresh
+  async refreshProxies() {
+    await this.proxyManager.refreshProxies();
+  }
+
+  getStats() {
     return {
-      profileViews: this.rateLimit.dailyCounters.profile_views || 0,
-      contactInfo: this.rateLimit.dailyCounters.contact_info || 0,
-      limits: DAILY_LIMITS,
-      suspiciousActivity: this.rateLimit.suspiciousActivity,
-      backoffMultiplier: this.rateLimit.backoffMultiplier,
+      rateLimitStats: this.rateLimit.getStats(),
+      proxyStats: this.proxyManager.getStats(),
+      currentProxy: this.currentProxy ? this.currentProxy.url.substring(0, 30) + '...' : null,
+      requestCount: this.requestCount
     };
   }
 }
 
 // Global instance
-const linkedInClient = new EnhancedLinkedInClient();
+let linkedInClient = null;
 
-// Export functions for backward compatibility
+// Initialize function
+async function initializeFreeProxyClient() {
+  linkedInClient = new FreeProxyLinkedInClient();
+  await linkedInClient.initializeProxies();
+  return linkedInClient;
+}
+
+// Export functions
 async function fetchLinkedInProfile(profileId, customCookies = null) {
+  if (!linkedInClient) {
+    throw new Error('LinkedIn client not initialized. Call initializeFreeProxyClient() first.');
+  }
   return linkedInClient.fetchLinkedInProfile(profileId, customCookies);
 }
 
 function generateSessionId() {
-  return linkedInClient.generateSessionId();
+  const timestamp = Date.now();
+  const random = Math.floor(Math.random() * 1000000);
+  return `"ajax:${timestamp}${random.toString().padStart(6, '0')}"`;
 }
 
-// Rate limit status endpoint helper
 function getRateLimitStatus() {
-  return linkedInClient.getDailyStats();
+  if (!linkedInClient) {
+    return { error: 'Client not initialized' };
+  }
+  return linkedInClient.getStats();
+}
+
+// Proxy yenileme fonksiyonu
+async function refreshProxies() {
+  if (!linkedInClient) {
+    throw new Error('LinkedIn client not initialized');
+  }
+  return linkedInClient.refreshProxies();
 }
 
 module.exports = {
   fetchLinkedInProfile,
   generateSessionId,
   getRateLimitStatus,
-  EnhancedLinkedInClient,
+  initializeFreeProxyClient,
+  refreshProxies,
+  FreeProxyLinkedInClient,
   DAILY_LIMITS
 };

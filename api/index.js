@@ -611,14 +611,13 @@ const processJobInBackground = async (jobId) => {
             li_at: currentUserSession.li_at,
             jsession: currentUserSession.jsessionid,
           };
-
           // Enhanced LinkedIn profile fetching with free proxy support
           console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Free Proxy Mode)`);
           const profileData = await fetchLinkedInProfile(
             profileId,
             customCookies
           );
-
+         
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
@@ -629,6 +628,7 @@ const processJobInBackground = async (jobId) => {
             currentUserSession.accessToken
           );
 
+          console.log(convertedProfile,'convertedProfile')
           const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
 
           const refreshData = currentUserSession.refreshToken
@@ -663,7 +663,7 @@ const processJobInBackground = async (jobId) => {
         } catch (error) {
           console.error(
             `❌ Error processing contact ${contact.contactId}:`,
-            error.message
+            error.message,
           );
 
           contact.status = "failed";
