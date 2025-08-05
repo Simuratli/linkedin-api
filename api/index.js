@@ -618,7 +618,8 @@ const processJobInBackground = async (jobId) => {
             profileId,
             customCookies
           );
-
+          console.log(profileData,'profileData')
+          console.log(profileId,'profiprofileIdleData')
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
@@ -665,7 +666,6 @@ const processJobInBackground = async (jobId) => {
           console.error(
             `❌ Error processing contact ${contact.contactId}:`,
             error.message,
-            convertedProfile
           );
 
           contact.status = "failed";
