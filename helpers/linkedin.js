@@ -122,7 +122,8 @@ class RateLimiter {
       console.error('❌ Failed to save rate limits:', error.message);
     }
   }
-// Check if request is allowed
+
+  // Check if request is allowed
   async checkLimit(type, increment = true) {
     await this.load();
     
@@ -183,6 +184,149 @@ class RateLimiter {
     await this.save();
   }
 }
+
+// Enhanced profile data parser
+const parseLinkedInProfile = (responseData, profileId) => {
+  console.log('🔍 Parsing LinkedIn response for:', profileId);
+  
+  // Check if response has the expected structure
+  if (!responseData) {
+    throw new Error('No response data received');
+  }
+
+  // Log the response structure for debugging
+  console.log('📋 Response keys:', Object.keys(responseData));
+  
+  let profile = null;
+  let included = null;
+
+  // Try different response structures
+  if (responseData.data && responseData.included) {
+    // Standard Voyager API response
+    profile = responseData.data;
+    included = responseData.included;
+    console.log('✅ Found standard Voyager API structure');
+  } else if (responseData.profile) {
+    // Direct profile object
+    profile = responseData.profile;
+    included = responseData.included || [];
+    console.log('✅ Found direct profile structure');
+  } else if (responseData.elements && responseData.elements.length > 0) {
+    // Elements array structure
+    profile = responseData.elements[0];
+    included = responseData.included || [];
+    console.log('✅ Found elements array structure');
+  } else if (responseData.profileView) {
+    // ProfileView structure
+    profile = responseData.profileView;
+    included = responseData.included || [];
+    console.log('✅ Found profileView structure');
+  } else {
+    // Try to use the response directly
+    profile = responseData;
+    included = [];
+    console.log('⚠️ Using response data directly');
+  }
+
+  if (!profile) {
+    console.error('❌ Profile data structure:', JSON.stringify(responseData, null, 2));
+    throw new Error('Invalid LinkedIn response: No profile data found');
+  }
+
+  // Extract basic profile information with fallbacks
+  const extractedProfile = {
+    profileId: profileId,
+    timestamp: Date.now(),
+    success: true,
+    rawData: responseData, // Keep raw data for debugging
+    profile: {
+      // Try multiple possible field names
+      firstName: profile.firstName || profile.name?.first || profile.localizedFirstName || 
+                profile.miniProfile?.firstName || extractFromPath(profile, 'firstName'),
+      lastName: profile.lastName || profile.name?.last || profile.localizedLastName || 
+               profile.miniProfile?.lastName || extractFromPath(profile, 'lastName'),
+      headline: profile.headline || profile.localizedHeadline || extractFromPath(profile, 'headline'),
+      summary: profile.summary || profile.localizedSummary || extractFromPath(profile, 'summary'),
+      location: profile.geoLocationName || profile.location?.name || profile.locationName || 
+               extractFromPath(profile, 'location'),
+      industry: profile.industryName || profile.industry?.name || extractFromPath(profile, 'industry'),
+      publicIdentifier: profile.publicIdentifier || profile.publicContactInfo?.publicIdentifier || 
+                       extractFromPath(profile, 'publicIdentifier'),
+      profilePicture: profile.displayPictureUrl || profile.profilePicture?.displayImageUrl || 
+                     profile.picture?.rootUrl || extractFromPath(profile, 'profilePicture'),
+      // Add connection info if available
+      connectionCount: profile.numConnections || extractFromPath(profile, 'connections'),
+      followersCount: profile.numFollowers || extractFromPath(profile, 'followers'),
+    }
+  };
+
+  // Try to extract additional information from included array
+  if (included && Array.isArray(included)) {
+    console.log(`📋 Processing ${included.length} included items`);
+    
+    // Look for contact information
+    const contactInfo = included.find(item => 
+      item.entityUrn && item.entityUrn.includes('contactInfo')
+    );
+    
+    if (contactInfo) {
+      extractedProfile.contactInfo = {
+        email: contactInfo.emailAddress || extractFromPath(contactInfo, 'email'),
+        phone: contactInfo.phoneNumbers?.[0]?.number || extractFromPath(contactInfo, 'phone'),
+        websites: contactInfo.websites?.map(w => w.url) || [],
+        twitter: contactInfo.twitterHandles?.[0]?.name || extractFromPath(contactInfo, 'twitter')
+      };
+    }
+
+    // Look for experience information
+    const experiences = included.filter(item => 
+      item.entityUrn && item.entityUrn.includes('experience')
+    );
+    
+    if (experiences.length > 0) {
+      extractedProfile.experience = experiences.map(exp => ({
+        title: exp.title || extractFromPath(exp, 'title'),
+        company: exp.companyName || exp.company?.name || extractFromPath(exp, 'company'),
+        startDate: exp.timePeriod?.startDate || extractFromPath(exp, 'startDate'),
+        endDate: exp.timePeriod?.endDate || extractFromPath(exp, 'endDate'),
+        description: exp.description || extractFromPath(exp, 'description')
+      }));
+    }
+  }
+
+  // Log what we extracted
+  console.log('✅ Extracted profile data:', {
+    firstName: extractedProfile.profile.firstName,
+    lastName: extractedProfile.profile.lastName,
+    headline: extractedProfile.profile.headline ? 'Present' : 'Missing',
+    location: extractedProfile.profile.location ? 'Present' : 'Missing',
+    contactInfo: extractedProfile.contactInfo ? 'Present' : 'Missing'
+  });
+
+  return extractedProfile;
+};
+
+// Helper function to extract data from nested objects
+const extractFromPath = (obj, searchKey) => {
+  if (!obj || typeof obj !== 'object') return null;
+  
+  // Direct key match
+  if (obj[searchKey]) return obj[searchKey];
+  
+  // Search recursively
+  for (const key in obj) {
+    if (key.toLowerCase().includes(searchKey.toLowerCase())) {
+      return obj[key];
+    }
+    
+    if (typeof obj[key] === 'object') {
+      const result = extractFromPath(obj[key], searchKey);
+      if (result) return result;
+    }
+  }
+  
+  return null;
+};
 
 // Main LinkedIn Client
 class LinkedInClient {
@@ -287,13 +431,15 @@ class LinkedInClient {
             .join('; ');
         }
 
-        console.log(`🔄 Attempt ${attempt}/${retries} - Making request to LinkedIn`);
+        console.log(`🔄 Attempt ${attempt}/${retries} - Making request to: ${url}`);
 
         const response = await fetchWithTimeout(url, {
           ...options,
           headers,
           method: options.method || 'GET'
         });
+
+        console.log(`📡 Response status: ${response.status} ${response.statusText}`);
 
         if (response.ok) {
           console.log(`✅ Request successful on attempt ${attempt}`);
@@ -306,8 +452,15 @@ class LinkedInClient {
           continue;
         } else if (response.status === 403 || response.status === 401) {
           // Blocked or unauthorized
+          const errorText = await response.text().catch(() => 'Unknown error');
+          console.error(`🚫 Access denied (${response.status}):`, errorText);
           throw new Error(`Access denied (${response.status}). May be blocked or need re-authentication.`);
+        } else if (response.status === 404) {
+          // Profile not found
+          throw new Error(`Profile not found (404). The LinkedIn profile may be private or deleted.`);
         } else {
+          const errorText = await response.text().catch(() => 'Unknown error');
+          console.error(`❌ HTTP Error (${response.status}):`, errorText);
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
@@ -327,7 +480,7 @@ class LinkedInClient {
     throw new Error(`Request failed after ${retries} attempts. Last error: ${lastError?.message}`);
   }
 
-  // Fetch LinkedIn profile
+  // Fetch LinkedIn profile with enhanced error handling
   async fetchLinkedInProfile(profileId, cookies = {}) {
     try {
       console.log(`🔍 Fetching LinkedIn profile: ${profileId}`);
@@ -335,44 +488,23 @@ class LinkedInClient {
       // Generate session ID for tracking
       const sessionId = this.generateSessionId();
       
-      // LinkedIn Voyager API endpoints
-      const endpoints = {
-        profile: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`,
-        contact: `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`
-      };
+      // Try multiple LinkedIn endpoints
+      const endpoints = [
+        `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`,
+        `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}`,
+        `https://www.linkedin.com/voyager/api/graphql?variables=(profileId:${profileId})&queryId=voyagerIdentityDashProfileCards.6c5d6b965e1e1f57e9f5f7c1a0b0b6f5`,
+      ];
 
-      const results = {};
+      const results = { errors: [] };
+      let profileData = null;
       
-      // Fetch main profile data first (most important)
-      try {
-        const profileResponse = await this.makeLinkedInRequest(endpoints.profile, {
-          headers: {
-            'Accept': 'application/vnd.linkedin.normalized+json+2.1',
-            'x-restli-protocol-version': '2.0.0'
-          },
-          cookies
-        });
-
-        if (profileResponse.ok) {
-          results.profileView = await profileResponse.json();
-          console.log(`✅ Profile data fetched for ${profileId}`);
-        }
-      } catch (error) {
-        console.error(`❌ Failed to fetch profile data: ${error.message}`);
-        results.profileView = { error: error.message };
-      }
-
-      // Add delay between requests
-      const delay = this.getRandomDelay();
-      console.log(`⏳ Waiting ${delay}ms before next request`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-
-      // Fetch contact info (if rate limits allow)
-      const contactLimit = await this.rateLimiter.checkLimit('contact_info', false);
-      if (contactLimit.allowed) {
+      // Try each endpoint until one works
+      for (let i = 0; i < endpoints.length; i++) {
+        const endpoint = endpoints[i];
+        console.log(`🎯 Trying endpoint ${i + 1}/${endpoints.length}: ${endpoint.split('?')[0]}`);
+        
         try {
-          await this.rateLimiter.checkLimit('contact_info', true); // Increment counter
-          const contactResponse = await this.makeLinkedInRequest(endpoints.contact, {
+          const profileResponse = await this.makeLinkedInRequest(endpoint, {
             headers: {
               'Accept': 'application/vnd.linkedin.normalized+json+2.1',
               'x-restli-protocol-version': '2.0.0'
@@ -380,36 +512,119 @@ class LinkedInClient {
             cookies
           });
 
-          if (contactResponse.ok) {
-            results.contactInfo = await contactResponse.json();
-            console.log(`✅ Contact info fetched for ${profileId}`);
+          if (profileResponse.ok) {
+            const responseData = await profileResponse.json();
+            console.log(`✅ Got response from endpoint ${i + 1}`);
+            
+            // Try to parse the response
+            try {
+              profileData = parseLinkedInProfile(responseData, profileId);
+              console.log(`✅ Successfully parsed profile data from endpoint ${i + 1}`);
+              break; // Success! Exit the loop
+            } catch (parseError) {
+              console.warn(`⚠️ Failed to parse response from endpoint ${i + 1}: ${parseError.message}`);
+              results.errors.push({
+                endpoint: i + 1,
+                type: 'parse_error',
+                message: parseError.message
+              });
+              
+              // If this is the last endpoint, we'll still try to return something
+              if (i === endpoints.length - 1) {
+                console.log('📋 Attempting to return raw response data...');
+                profileData = {
+                  profileId,
+                  sessionId,
+                  timestamp: Date.now(),
+                  success: false,
+                  error: 'Failed to parse profile data',
+                  rawData: responseData,
+                  profile: {
+                    firstName: 'Unknown',
+                    lastName: 'User',
+                    headline: 'Profile parsing failed',
+                    publicIdentifier: profileId
+                  }
+                };
+              }
+            }
           }
-        } catch (error) {
-          console.warn(`⚠️ Failed to fetch contact info: ${error.message}`);
-          results.contactInfo = { error: error.message };
+        } catch (requestError) {
+          console.warn(`⚠️ Endpoint ${i + 1} failed: ${requestError.message}`);
+          results.errors.push({
+            endpoint: i + 1,
+            type: 'request_error',
+            message: requestError.message
+          });
         }
-      } else {
-        console.log(`⏸️ Contact info rate limit reached (${contactLimit.current}/${contactLimit.limit})`);
-        results.contactInfo = { error: 'Rate limit exceeded' };
+
+        // Add delay between endpoint attempts
+        if (i < endpoints.length - 1) {
+          const delay = this.getRandomDelay();
+          console.log(`⏳ Waiting ${delay}ms before trying next endpoint...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
 
-      // Return combined results
+      if (!profileData) {
+        throw new Error(`All endpoints failed. Errors: ${JSON.stringify(results.errors)}`);
+      }
+
+      // Try to fetch contact info if main profile was successful
+      if (profileData.success) {
+        const contactLimit = await this.rateLimiter.checkLimit('contact_info', false);
+        if (contactLimit.allowed) {
+          try {
+            await this.rateLimiter.checkLimit('contact_info', true);
+            
+            const delay = this.getRandomDelay();
+            console.log(`⏳ Waiting ${delay}ms before contact info request`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            const contactResponse = await this.makeLinkedInRequest(
+              `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`,
+              {
+                headers: {
+                  'Accept': 'application/vnd.linkedin.normalized+json+2.1',
+                  'x-restli-protocol-version': '2.0.0'
+                },
+                cookies
+              }
+            );
+
+            if (contactResponse.ok) {
+              const contactData = await contactResponse.json();
+              profileData.contactInfo = contactData;
+              console.log(`✅ Contact info fetched for ${profileId}`);
+            }
+          } catch (contactError) {
+            console.warn(`⚠️ Failed to fetch contact info: ${contactError.message}`);
+            profileData.contactInfoError = contactError.message;
+          }
+        } else {
+          console.log(`⏸️ Contact info rate limit reached (${contactLimit.current}/${contactLimit.limit})`);
+        }
+      }
+
+      // Create combined data
       const combinedData = {
         profileId,
         sessionId,
         timestamp: Date.now(),
-        success: !!results.profileView && !results.profileView.error,
-        ...results, // This spreads profileView and contactInfo at the top level for compatibility
-        data: results,
-        // Simplified combined data for easier processing
-        combined: this.combineProfileData(results)
+        success: profileData.success,
+        data: profileData,
+        profile: profileData.profile,
+        contactInfo: profileData.contactInfo,
+        errors: results.errors,
+        // Create simplified combined data for transform function
+        combined: this.combineProfileData(profileData)
       };
 
       // Save session data
       this.sessionData[sessionId] = combinedData;
       await this.saveSessionData();
 
-      console.log(`🎯 Successfully fetched LinkedIn profile: ${profileId}`);
+      console.log(`🎯 Profile fetch completed for: ${profileId}, Success: ${profileData.success}`);
       return combinedData;
 
     } catch (error) {
@@ -419,42 +634,55 @@ class LinkedInClient {
         timestamp: Date.now(),
         success: false,
         error: error.message,
-        data: null
+        data: null,
+        profile: null,
+        contactInfo: null
       };
     }
   }
 
   // Combine profile data into a simplified format
-  combineProfileData(results) {
+  combineProfileData(profileData) {
     const combined = {};
     
     try {
-      // Extract profile basics
-      if (results.profileView && results.profileView.profile) {
-        const profile = results.profileView.profile;
+      if (profileData && profileData.profile) {
+        const profile = profileData.profile;
         combined.firstName = profile.firstName;
         combined.lastName = profile.lastName;
         combined.headline = profile.headline;
         combined.summary = profile.summary;
-        combined.location = profile.geoLocationName;
-        combined.industry = profile.industryName;
-        combined.profilePicture = profile.displayPictureUrl;
+        combined.location = profile.location;
+        combined.industry = profile.industry;
+        combined.profilePicture = profile.profilePicture;
         combined.publicIdentifier = profile.publicIdentifier;
+        combined.connectionCount = profile.connectionCount;
+        combined.followersCount = profile.followersCount;
       }
 
       // Extract contact info
-      if (results.contactInfo && results.contactInfo.data) {
-        const contact = results.contactInfo.data;
-        combined.email = contact.emailAddress;
-        combined.phone = contact.phoneNumbers?.[0]?.number;
-        combined.websites = contact.websites?.map(w => w.url);
-        combined.twitter = contact.twitterHandles?.[0]?.name;
+      if (profileData && profileData.contactInfo) {
+        const contact = profileData.contactInfo;
+        combined.email = contact.emailAddress || contact.email;
+        combined.phone = contact.phoneNumbers?.[0]?.number || contact.phone;
+        combined.websites = contact.websites?.map(w => w.url) || contact.websites || [];
+        combined.twitter = contact.twitterHandles?.[0]?.name || contact.twitter;
+      }
+
+      // Add experience if available
+      if (profileData && profileData.experience) {
+        combined.experience = profileData.experience;
       }
 
       return combined;
     } catch (error) {
       console.warn(`⚠️ Error combining profile data: ${error.message}`);
-      return { error: 'Failed to combine profile data' };
+      return { 
+        error: 'Failed to combine profile data',
+        firstName: 'Unknown',
+        lastName: 'User',
+        publicIdentifier: profileData?.profileId || 'unknown'
+      };
     }
   }
 
