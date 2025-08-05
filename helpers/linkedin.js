@@ -487,15 +487,15 @@ class FreeProxyLinkedInClient {
     }
   }
 
-  generateFingerprint() {
-    return {
-      sessionId: `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`,
-      userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
-      acceptLanguage: 'en-US,en;q=0.9',
-      bcookie: `"v=2&${crypto.randomUUID()}"`,
-      bscookie: `"v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}"`,
-    };
-  }
+generateFingerprint() {
+  return {
+    sessionId: generateSessionId(),
+    userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+    acceptLanguage: 'en-US,en;q=0.9',
+    bcookie: `"v=2&${crypto.randomUUID()}"`,
+    bscookie: `"v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}"`,
+  };
+}
 
   generateHeaders(csrf, cookies, profileId, fingerprint) {
     const cookieHeader = Object.entries(cookies)
@@ -668,7 +668,7 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
 }
 
 function generateSessionId() {
-  return `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`;
+  return `"ajax:${crypto.randomInt(1000000000000000, Number.MAX_SAFE_INTEGER)}"`;
 }
 
 function getRateLimitStatus() {
