@@ -12,13 +12,13 @@ const {
   DAILY_LIMITS 
 } = require("../helpers/linkedin");
 
-// Free LinkedIn Client (no proxies needed)
+// Direct LinkedIn Client (no proxies, real browser simulation)
 const { 
-  initializeFreeLinkedInClient, 
-  fetchLinkedInProfile: fetchLinkedInProfileFree,
-  getStats: getFreeClientStats,
-  refreshSessions 
-} = require("../helpers/free_linkedin_client");
+  initializeDirectLinkedInClient, 
+  fetchLinkedInProfile: fetchLinkedInProfileDirect,
+  getStats: getDirectClientStats,
+  refreshSessions: refreshDirectSessions 
+} = require("../helpers/direct_linkedin_client");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
@@ -32,7 +32,7 @@ const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 
 // Global LinkedIn client state
 let linkedInClientInitialized = false;
-let freeLinkedInClientInitialized = false;
+let directLinkedInClientInitialized = false;
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
@@ -61,20 +61,20 @@ const initializeLinkedInClient = async () => {
   }
 };
 
-// Initialize Free LinkedIn Client (no proxies needed)
-const initializeFreeLinkedInClientAPI = async () => {
-  if (freeLinkedInClientInitialized) {
-    console.log('✅ Free LinkedIn client already initialized');
+// Initialize Direct LinkedIn Client (no proxies, real browser simulation)
+const initializeDirectLinkedInClientAPI = async () => {
+  if (directLinkedInClientInitialized) {
+    console.log('✅ Direct LinkedIn client already initialized');
     return;
   }
 
   try {
-    console.log('🚀 Initializing Free LinkedIn Client (Session Rotation Mode)...');
-    await initializeFreeLinkedInClient();
-    freeLinkedInClientInitialized = true;
-    console.log('✅ Free LinkedIn client initialized successfully');
+    console.log('🚀 Initializing Direct LinkedIn Client (Real Browser Simulation)...');
+    await initializeDirectLinkedInClient();
+    directLinkedInClientInitialized = true;
+    console.log('✅ Direct LinkedIn client initialized successfully');
   } catch (error) {
-    console.error('❌ Failed to initialize free LinkedIn client:', error);
+    console.error('❌ Failed to initialize direct LinkedIn client:', error);
     throw error;
   }
 };
@@ -120,12 +120,12 @@ const generateJobId = () => {
   return `job_${Date.now()}_${Math.random().toString(36).substring(2)}`;
 };
 
-// Enhanced dynamic batch configuration for free client (no proxies)
+// Enhanced dynamic batch configuration for direct client (no proxies)
 const getDynamicBatchConfig = () => {
   const stats = getRateLimitStatus();
-  const freeStats = getFreeClientStats();
+  const directStats = getDirectClientStats();
   
-  if (stats.error && freeStats.error) {
+  if (stats.error && directStats.error) {
     // Fallback config if both clients not initialized
     return {
       batchSize: 1,
@@ -139,11 +139,11 @@ const getDynamicBatchConfig = () => {
   const rateLimitStats = stats.rateLimitStats;
   const proxyStats = stats.proxyStats;
   
-  // Free client stats
-  const activeSessions = freeStats.activeSessions || 0;
-  const successRate = freeStats.successRate || 0;
+  // Direct client stats
+  const activeSessions = directStats.activeSessions || 0;
+  const successRate = directStats.successRate || 0;
   
-  // Conservative configuration for free client (no proxies needed)
+  // Conservative configuration for direct client (no proxies needed)
   return {
     batchSize: rateLimitStats?.suspiciousActivity ? 1 : 2, // Much smaller batches
     waitBetweenBatches: rateLimitStats?.suspiciousActivity ? 300000 : 120000, // 2-5 minutes
@@ -563,9 +563,9 @@ const processJobInBackground = async (jobId) => {
           console.log(`⚠️ Proxy refresh failed, trying session refresh...`);
         }
         
-        // Also refresh free client sessions
+        // Also refresh direct client sessions
         try {
-          await refreshSessions(5);
+          await refreshDirectSessions(5);
         } catch (sessionError) {
           console.log(`⚠️ Session refresh failed:`, sessionError.message);
         }
@@ -637,10 +637,10 @@ const processJobInBackground = async (jobId) => {
 
       console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`);
       const stats = getRateLimitStatus();
-      const freeStats = getFreeClientStats();
+      const directStats = getDirectClientStats();
       console.log(`📈 Rate limit status: ${stats.rateLimitStats?.profileViews || 0}/${DAILY_LIMITS.profile_views} daily profile views`);
       console.log(`🔗 Proxy status: ${stats.proxyStats?.workingProxies || 0} working proxies`);
-      console.log(`🆓 Free client status: ${freeStats.activeSessions || 0} active sessions, ${freeStats.successRate || 0}% success rate`);
+      console.log(`🎯 Direct client status: ${directStats.activeSessions || 0} active sessions, ${directStats.successRate || 0}% success rate`);
 
       // Process batch sequentially for free proxies (safer)
       for (const contact of batch) {
@@ -659,16 +659,16 @@ const processJobInBackground = async (jobId) => {
             jsession: currentUserSession.jsessionid,
           };
 
-          // Enhanced LinkedIn profile fetching with free client (no proxies needed)
-          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Free Session Mode)`);
+          // Enhanced LinkedIn profile fetching with direct client (no proxies needed)
+          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Direct Browser Mode)`);
           
           let profileData;
           try {
-            // Try free client first (no proxies needed)
-            profileData = await fetchLinkedInProfileFree(profileId);
-            console.log(`✅ Successfully fetched with free client (session rotation)`);
-          } catch (freeError) {
-            console.log(`⚠️ Free client failed, trying proxy client: ${freeError.message}`);
+            // Try direct client first (no proxies needed)
+            profileData = await fetchLinkedInProfileDirect(profileId);
+            console.log(`✅ Successfully fetched with direct client (real browser simulation)`);
+          } catch (directError) {
+            console.log(`⚠️ Direct client failed, trying proxy client: ${directError.message}`);
             // Fallback to proxy client
             profileData = await fetchLinkedInProfile(
               profileId,
@@ -904,9 +904,9 @@ app.get("/user-job/:userId", async (req, res) => {
         completedAt: job.completedAt,
       },
       rateLimitStatus: getRateLimitStatus(),
-      freeClientStats: getFreeClientStats(),
+      directClientStats: getDirectClientStats(),
       proxyClientInitialized: linkedInClientInitialized,
-      freeClientInitialized: freeLinkedInClientInitialized,
+      directClientInitialized: directLinkedInClientInitialized,
       dailyLimits: DAILY_LIMITS
     });
   } catch (error) {
@@ -968,31 +968,31 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
-// Initialize free LinkedIn client endpoint
-app.post("/initialize-free-client", async (req, res) => {
+// Initialize direct LinkedIn client endpoint
+app.post("/initialize-direct-client", async (req, res) => {
   try {
-    console.log('🚀 Initializing free LinkedIn client...');
-    await initializeFreeLinkedInClientAPI();
+    console.log('🚀 Initializing direct LinkedIn client...');
+    await initializeDirectLinkedInClientAPI();
     
-    const freeStats = getFreeClientStats();
+    const directStats = getDirectClientStats();
     
     res.json({
       success: true,
-      message: "Free LinkedIn client initialized successfully",
-      freeClientStats: freeStats,
-      clientInitialized: freeLinkedInClientInitialized
+      message: "Direct LinkedIn client initialized successfully",
+      directClientStats: directStats,
+      clientInitialized: directLinkedInClientInitialized
     });
   } catch (error) {
-    console.error("❌ Free client initialization failed:", error);
+    console.error("❌ Direct client initialization failed:", error);
     res.status(500).json({
       success: false,
       error: error.message,
-      suggestion: "Check if the free client module is available"
+      suggestion: "Check if the direct client module is available"
     });
   }
 });
 
-// Enhanced test route with free LinkedIn client (no proxies)
+// Enhanced test route with direct LinkedIn client (no proxies)
 app.get("/simuratli", async (req, res) => {
   const profileId = "simuratli";
   try {
@@ -1000,57 +1000,57 @@ app.get("/simuratli", async (req, res) => {
     if (!linkedInClientInitialized) {
       await initializeLinkedInClient();
     }
-    if (!freeLinkedInClientInitialized) {
-      await initializeFreeLinkedInClientAPI();
+    if (!directLinkedInClientInitialized) {
+      await initializeDirectLinkedInClientAPI();
     }
 
-    console.log(`🔍 Testing free LinkedIn fetch for: ${profileId}`);
+    console.log(`🔍 Testing direct LinkedIn fetch for: ${profileId}`);
     
     let data;
     let clientUsed = 'proxy';
     
     try {
-      // Try free client first (no proxies needed)
-      data = await fetchLinkedInProfileFree(profileId);
-      clientUsed = 'free';
-      console.log(`✅ Successfully fetched with free client (session rotation)`);
-    } catch (freeError) {
-      console.log(`⚠️ Free client failed, trying proxy client: ${freeError.message}`);
+      // Try direct client first (no proxies needed)
+      data = await fetchLinkedInProfileDirect(profileId);
+      clientUsed = 'direct';
+      console.log(`✅ Successfully fetched with direct client (real browser simulation)`);
+    } catch (directError) {
+      console.log(`⚠️ Direct client failed, trying proxy client: ${directError.message}`);
       // Fallback to proxy client
       data = await fetchLinkedInProfile(profileId);
       clientUsed = 'proxy';
     }
     
     const stats = getRateLimitStatus();
-    const freeStats = getFreeClientStats();
+    const directStats = getDirectClientStats();
     
     console.log("🔍 Fetched Data:", data);
     console.log("📊 Rate limit stats:", stats);
-    console.log("🆓 Free client stats:", freeStats);
+    console.log("🎯 Direct client stats:", directStats);
     
     res.json({
       success: true,
       data: data,
       clientUsed: clientUsed,
       rateLimitStatus: stats,
-      freeClientStats: freeStats,
+      directClientStats: directStats,
       proxyClientInitialized: linkedInClientInitialized,
-      freeClientInitialized: freeLinkedInClientInitialized,
+      directClientInitialized: directLinkedInClientInitialized,
       dailyLimits: DAILY_LIMITS
     });
   } catch (error) {
     console.error("❌ Test endpoint error:", error);
     const stats = getRateLimitStatus();
-    const freeStats = getFreeClientStats();
+    const directStats = getDirectClientStats();
     
     res.status(500).json({
       success: false,
       error: error.message,
       rateLimitStatus: stats,
-      freeClientStats: freeStats,
+      directClientStats: directStats,
       proxyClientInitialized: linkedInClientInitialized,
-      freeClientInitialized: freeLinkedInClientInitialized,
-      suggestion: error.message.includes('not initialized') ? 'Try calling /initialize-free-client first' : 'Check client health'
+      directClientInitialized: directLinkedInClientInitialized,
+      suggestion: error.message.includes('not initialized') ? 'Try calling /initialize-direct-client first' : 'Check client health'
     });
   }
 });
@@ -1059,16 +1059,16 @@ app.get("/simuratli", async (req, res) => {
 app.get("/health", async (req, res) => {
   try {
     const stats = getRateLimitStatus();
-    const freeStats = getFreeClientStats();
+    const directStats = getDirectClientStats();
     const config = getDynamicBatchConfig();
     
     res.status(200).json({
       success: true,
       status: "healthy",
       proxyClientInitialized: linkedInClientInitialized,
-      freeClientInitialized: freeLinkedInClientInitialized,
+      directClientInitialized: directLinkedInClientInitialized,
       rateLimitStatus: stats,
-      freeClientStats: freeStats,
+      directClientStats: directStats,
       config: config,
       dailyLimits: DAILY_LIMITS,
       timestamp: new Date().toISOString()

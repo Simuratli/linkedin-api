@@ -1,0 +1,12 @@
+{
+  "sessions": [],
+  "stats": {
+    "totalRequests": 0,
+    "successfulRequests": 0,
+    "failedRequests": 0,
+    "sessionsCreated": 0,
+    "sessionsExpired": 0,
+    "lastError": null
+  },
+  "lastUpdate": ""
+} 
