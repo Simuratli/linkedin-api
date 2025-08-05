@@ -600,7 +600,7 @@ generateFingerprint() {
       // Ana profil verisini al
       const profileHeaders = this.generateHeaders(csrfToken, cookies, profileId, fingerprint);
       const profileData = await this.makeRequest(profileViewUrl, profileHeaders, 'profile_views');
-
+      console.log(JSON.stringify(profileData),'profiledata request')
       // İki istek arası uzun gecikme
       const interRequestDelay = Math.floor(Math.random() * 20000) + 15000; // 15-35 saniye
       console.log(`⏳ Waiting ${interRequestDelay/1000}s between profile and contact requests`);
