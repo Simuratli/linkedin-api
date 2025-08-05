@@ -489,7 +489,7 @@ class FreeProxyLinkedInClient {
 
 generateFingerprint() {
   return {
-    sessionId: generateSessionId(),
+    sessionId: this.generateSessionId(),
     userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
     acceptLanguage: 'en-US,en;q=0.9',
     bcookie: `"v=2&${crypto.randomUUID()}"`,
@@ -668,8 +668,8 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
 }
 
 function generateSessionId() {
-  const timestamp = Date.now(); // Current timestamp
-  const random = Math.floor(Math.random() * 1000000); // 6-digit random
+  const timestamp = Date.now();
+  const random = Math.floor(Math.random() * 1000000);
   return `"ajax:${timestamp}${random.toString().padStart(6, '0')}"`;
 }
 
