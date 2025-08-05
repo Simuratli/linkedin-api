@@ -538,6 +538,7 @@ generateFingerprint() {
 
     try {
       console.log(`🔍 Making ${requestType} request via free proxy`);
+      console.log(`🔍 Making ${headers} request via free proxy`);
       
       const response = await fetch(url, {
         method: 'GET',
