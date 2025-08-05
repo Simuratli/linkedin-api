@@ -12,13 +12,12 @@ const {
   DAILY_LIMITS 
 } = require("../helpers/linkedin");
 
-// Direct LinkedIn Client (no proxies, real browser simulation)
+// Simple LinkedIn Client (no proxies, direct requests)
 const { 
-  initializeDirectLinkedInClient, 
-  fetchLinkedInProfile: fetchLinkedInProfileDirect,
-  getStats: getDirectClientStats,
-  refreshSessions: refreshDirectSessions 
-} = require("../helpers/direct_linkedin_client");
+  initializeSimpleLinkedInClient, 
+  fetchLinkedInProfile: fetchLinkedInProfileSimple,
+  getStats: getSimpleClientStats
+} = require("../helpers/simple_linkedin_client");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
@@ -32,7 +31,7 @@ const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 
 // Global LinkedIn client state
 let linkedInClientInitialized = false;
-let directLinkedInClientInitialized = false;
+let simpleLinkedInClientInitialized = false;
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
@@ -61,20 +60,20 @@ const initializeLinkedInClient = async () => {
   }
 };
 
-// Initialize Direct LinkedIn Client (no proxies, real browser simulation)
-const initializeDirectLinkedInClientAPI = async () => {
-  if (directLinkedInClientInitialized) {
-    console.log('✅ Direct LinkedIn client already initialized');
+// Initialize Simple LinkedIn Client (no proxies needed)
+const initializeSimpleLinkedInClientAPI = async () => {
+  if (simpleLinkedInClientInitialized) {
+    console.log('✅ Simple LinkedIn client already initialized');
     return;
   }
 
   try {
-    console.log('🚀 Initializing Direct LinkedIn Client (Real Browser Simulation)...');
-    await initializeDirectLinkedInClient();
-    directLinkedInClientInitialized = true;
-    console.log('✅ Direct LinkedIn client initialized successfully');
+    console.log('🚀 Initializing Simple LinkedIn Client (Direct Requests)...');
+    await initializeSimpleLinkedInClient();
+    simpleLinkedInClientInitialized = true;
+    console.log('✅ Simple LinkedIn client initialized successfully');
   } catch (error) {
-    console.error('❌ Failed to initialize direct LinkedIn client:', error);
+    console.error('❌ Failed to initialize simple LinkedIn client:', error);
     throw error;
   }
 };
@@ -120,13 +119,12 @@ const generateJobId = () => {
   return `job_${Date.now()}_${Math.random().toString(36).substring(2)}`;
 };
 
-// Enhanced dynamic batch configuration for direct client (no proxies)
+// Simple batch configuration (no proxies at all)
 const getDynamicBatchConfig = () => {
-  const stats = getRateLimitStatus();
-  const directStats = getDirectClientStats();
+  const simpleStats = getSimpleClientStats();
   
-  if (stats.error && directStats.error) {
-    // Fallback config if both clients not initialized
+  if (simpleStats.error) {
+    // Fallback config if simple client not initialized
     return {
       batchSize: 1,
       waitBetweenBatches: 60000,
@@ -136,22 +134,18 @@ const getDynamicBatchConfig = () => {
     };
   }
 
-  const rateLimitStats = stats.rateLimitStats;
-  const proxyStats = stats.proxyStats;
+  // Simple client stats
+  const successRate = simpleStats.successRate || 0;
   
-  // Direct client stats
-  const activeSessions = directStats.activeSessions || 0;
-  const successRate = directStats.successRate || 0;
-  
-  // Conservative configuration for direct client (no proxies needed)
+  // Simple configuration (no proxies needed)
   return {
-    batchSize: rateLimitStats?.suspiciousActivity ? 1 : 2, // Much smaller batches
-    waitBetweenBatches: rateLimitStats?.suspiciousActivity ? 300000 : 120000, // 2-5 minutes
-    shouldPause: rateLimitStats?.profileViews > (DAILY_LIMITS.profile_views * 0.85), // Pause at 85%
-    shouldSlowDown: rateLimitStats?.profileViews > (DAILY_LIMITS.profile_views * 0.7), // Slow at 70%
-    maxDailyProcessing: Math.max(10, DAILY_LIMITS.profile_views - (rateLimitStats?.profileViews || 0)), // Conservative daily limit
-    proxyHealthy: (proxyStats?.workingProxies > 5) || (activeSessions >= 5), // Need proxies OR active sessions
-    needsProxyRefresh: (proxyStats?.workingProxies < 3) && (activeSessions < 3) // Refresh if both are low
+    batchSize: 1, // Very small batches
+    waitBetweenBatches: 120000, // 2 minutes between batches
+    shouldPause: false, // Don't pause
+    shouldSlowDown: successRate < 30, // Slow down if success rate is low
+    maxDailyProcessing: 100, // Conservative daily limit
+    proxyHealthy: successRate > 30, // Healthy if success rate > 30%
+    needsProxyRefresh: false // No proxy refresh needed
   };
 };
 
@@ -552,33 +546,8 @@ const processJobInBackground = async (jobId) => {
       needsProxyRefresh: config.needsProxyRefresh
     });
 
-    // Check proxy/session health
-    if (config.needsProxyRefresh) {
-      console.log(`🔄 Refreshing proxies/sessions before processing job ${jobId}`);
-      try {
-        // Try to refresh proxies first
-        try {
-          await refreshProxies();
-        } catch (proxyError) {
-          console.log(`⚠️ Proxy refresh failed, trying session refresh...`);
-        }
-        
-        // Also refresh direct client sessions
-        try {
-          await refreshDirectSessions(5);
-        } catch (sessionError) {
-          console.log(`⚠️ Session refresh failed:`, sessionError.message);
-        }
-        
-        config = getDynamicBatchConfig(); // Update config after refresh
-      } catch (error) {
-        console.error(`❌ Refresh failed for job ${jobId}:`, error);
-        job.status = "paused";
-        job.pauseReason = "refresh_failed";
-        await saveJobs({ ...(await loadJobs()), [jobId]: job });
-        return;
-      }
-    }
+    // No proxy refresh needed - simple client doesn't use proxies
+    console.log(`📊 Simple client doesn't require any proxy refresh`);
 
     // Daily limit check
     if (config.shouldPause) {
@@ -614,11 +583,11 @@ const processJobInBackground = async (jobId) => {
         return;
       }
 
-      // Check proxy health
+      // Check simple client health
       if (!config.proxyHealthy) {
-        console.log(`⏸️ Proxy health degraded, pausing job ${jobId}`);
+        console.log(`⏸️ Simple client health degraded, pausing job ${jobId}`);
         job.status = "paused";
-        job.pauseReason = "proxy_health_degraded";
+        job.pauseReason = "simple_client_health_degraded";
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
         return;
       }
@@ -636,11 +605,8 @@ const processJobInBackground = async (jobId) => {
       }
 
       console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`);
-      const stats = getRateLimitStatus();
-      const directStats = getDirectClientStats();
-      console.log(`📈 Rate limit status: ${stats.rateLimitStats?.profileViews || 0}/${DAILY_LIMITS.profile_views} daily profile views`);
-      console.log(`🔗 Proxy status: ${stats.proxyStats?.workingProxies || 0} working proxies`);
-      console.log(`🎯 Direct client status: ${directStats.activeSessions || 0} active sessions, ${directStats.successRate || 0}% success rate`);
+      const simpleStats = getSimpleClientStats();
+      console.log(`🎯 Simple client status: ${simpleStats.successRate || 0}% success rate, ${simpleStats.totalRequests || 0} total requests`);
 
       // Process batch sequentially for free proxies (safer)
       for (const contact of batch) {
@@ -659,22 +625,12 @@ const processJobInBackground = async (jobId) => {
             jsession: currentUserSession.jsessionid,
           };
 
-          // Enhanced LinkedIn profile fetching with direct client (no proxies needed)
-          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Direct Browser Mode)`);
+          // Direct LinkedIn profile fetching (no proxies at all)
+          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Direct Request)`);
           
-          let profileData;
-          try {
-            // Try direct client first (no proxies needed)
-            profileData = await fetchLinkedInProfileDirect(profileId);
-            console.log(`✅ Successfully fetched with direct client (real browser simulation)`);
-          } catch (directError) {
-            console.log(`⚠️ Direct client failed, trying proxy client: ${directError.message}`);
-            // Fallback to proxy client
-            profileData = await fetchLinkedInProfile(
-              profileId,
-              customCookies
-            );
-          }
+          // Use only simple client - no proxy fallback
+          const profileData = await fetchLinkedInProfileSimple(profileId);
+          console.log(`✅ Successfully fetched with direct request`);
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
@@ -903,11 +859,8 @@ app.get("/user-job/:userId", async (req, res) => {
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
       },
-      rateLimitStatus: getRateLimitStatus(),
-      directClientStats: getDirectClientStats(),
-      proxyClientInitialized: linkedInClientInitialized,
-      directClientInitialized: directLinkedInClientInitialized,
-      dailyLimits: DAILY_LIMITS
+      simpleClientStats: getSimpleClientStats(),
+      simpleClientInitialized: simpleLinkedInClientInitialized
     });
   } catch (error) {
     console.error("❌ Error getting user job:", error);
@@ -968,89 +921,65 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
-// Initialize direct LinkedIn client endpoint
-app.post("/initialize-direct-client", async (req, res) => {
+// Initialize simple LinkedIn client endpoint
+app.post("/initialize-simple-client", async (req, res) => {
   try {
-    console.log('🚀 Initializing direct LinkedIn client...');
-    await initializeDirectLinkedInClientAPI();
+    console.log('🚀 Initializing simple LinkedIn client...');
+    await initializeSimpleLinkedInClientAPI();
     
-    const directStats = getDirectClientStats();
+    const simpleStats = getSimpleClientStats();
     
     res.json({
       success: true,
-      message: "Direct LinkedIn client initialized successfully",
-      directClientStats: directStats,
-      clientInitialized: directLinkedInClientInitialized
+      message: "Simple LinkedIn client initialized successfully",
+      simpleClientStats: simpleStats,
+      clientInitialized: simpleLinkedInClientInitialized
     });
   } catch (error) {
-    console.error("❌ Direct client initialization failed:", error);
+    console.error("❌ Simple client initialization failed:", error);
     res.status(500).json({
       success: false,
       error: error.message,
-      suggestion: "Check if the direct client module is available"
+      suggestion: "Check if the simple client module is available"
     });
   }
 });
 
-// Enhanced test route with direct LinkedIn client (no proxies)
+// Test route with simple LinkedIn client (no proxies at all)
 app.get("/simuratli", async (req, res) => {
   const profileId = "simuratli";
   try {
-    // Initialize both clients if not done yet
-    if (!linkedInClientInitialized) {
-      await initializeLinkedInClient();
-    }
-    if (!directLinkedInClientInitialized) {
-      await initializeDirectLinkedInClientAPI();
+    // Initialize simple client if not done yet
+    if (!simpleLinkedInClientInitialized) {
+      await initializeSimpleLinkedInClientAPI();
     }
 
-    console.log(`🔍 Testing direct LinkedIn fetch for: ${profileId}`);
+    console.log(`🔍 Testing simple LinkedIn fetch for: ${profileId}`);
     
-    let data;
-    let clientUsed = 'proxy';
-    
-    try {
-      // Try direct client first (no proxies needed)
-      data = await fetchLinkedInProfileDirect(profileId);
-      clientUsed = 'direct';
-      console.log(`✅ Successfully fetched with direct client (real browser simulation)`);
-    } catch (directError) {
-      console.log(`⚠️ Direct client failed, trying proxy client: ${directError.message}`);
-      // Fallback to proxy client
-      data = await fetchLinkedInProfile(profileId);
-      clientUsed = 'proxy';
-    }
-    
-    const stats = getRateLimitStatus();
-    const directStats = getDirectClientStats();
+    // Use only simple client - no proxy fallback
+    const data = await fetchLinkedInProfileSimple(profileId);
+    const simpleStats = getSimpleClientStats();
     
     console.log("🔍 Fetched Data:", data);
-    console.log("📊 Rate limit stats:", stats);
-    console.log("🎯 Direct client stats:", directStats);
+    console.log("🎯 Simple client stats:", simpleStats);
     
     res.json({
       success: true,
       data: data,
-      clientUsed: clientUsed,
-      rateLimitStatus: stats,
-      directClientStats: directStats,
-      proxyClientInitialized: linkedInClientInitialized,
-      directClientInitialized: directLinkedInClientInitialized,
-      dailyLimits: DAILY_LIMITS
+      clientUsed: 'simple',
+      simpleClientStats: simpleStats,
+      simpleClientInitialized: simpleLinkedInClientInitialized
     });
   } catch (error) {
     console.error("❌ Test endpoint error:", error);
-    const stats = getRateLimitStatus();
-    const directStats = getDirectClientStats();
+    const simpleStats = getSimpleClientStats();
     
     res.status(500).json({
       success: false,
       error: error.message,
-      rateLimitStatus: stats,
-      directClientStats: directStats,
-      proxyClientInitialized: linkedInClientInitialized,
-      directClientInitialized: directLinkedInClientInitialized,
-      suggestion: error.message.includes('not initialized') ? 'Try calling /initialize-direct-client first' : 'Check client health'
+      simpleClientStats: simpleStats,
+      simpleClientInitialized: simpleLinkedInClientInitialized,
+      suggestion: error.message.includes('not initialized') ? 'Try calling /initialize-simple-client first' : 'Check client health'
     });
   }
 });
@@ -1058,19 +987,15 @@ app.get("/simuratli", async (req, res) => {
 // Health check endpoint
 app.get("/health", async (req, res) => {
   try {
-    const stats = getRateLimitStatus();
-    const directStats = getDirectClientStats();
+    const simpleStats = getSimpleClientStats();
     const config = getDynamicBatchConfig();
     
     res.status(200).json({
       success: true,
       status: "healthy",
-      proxyClientInitialized: linkedInClientInitialized,
-      directClientInitialized: directLinkedInClientInitialized,
-      rateLimitStatus: stats,
-      directClientStats: directStats,
+      simpleClientInitialized: simpleLinkedInClientInitialized,
+      simpleClientStats: simpleStats,
       config: config,
-      dailyLimits: DAILY_LIMITS,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
