@@ -1,29 +1,30 @@
-// LinkedIn Client with Free Proxy Support - Enhanced Version
+// Enhanced LinkedIn Client with Free Proxy Support - Güvenli ve Dikkatli Yaklaşım
 const crypto = require('crypto');
+const fetch = require('node-fetch');
 const fs = require('fs').promises;
 const path = require('path');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
-// File paths
+// Dosya yolları
 const RATE_LIMIT_FILE = path.join(__dirname, '../data/daily_rate_limits.json');
 const PROXY_STATS_FILE = path.join(__dirname, '../data/free_proxy_stats.json');
 const WORKING_PROXIES_FILE = path.join(__dirname, '../data/working_proxies.json');
 
-// Conservative limits for free proxies
+// Free proxy'ler için çok konservatif limitler
 const DAILY_LIMITS = {
-  profile_views: 200,          // Reduced from 300 for safety
-  contact_info: 30,            // Reduced from 50
-  search_queries: 80,          // Reduced from 100
-  max_requests_per_hour: 40,   // Reduced from 50
-  max_burst_requests: 2,       // Keep at 2
-  proxy_rotation_after: 10,    // Rotate more frequently (was 15)
-  proxy_test_timeout: 15000,   // Increased from 10s
-  request_timeout: 25000,      // Increased from 20s
-  min_delay_between: 20000,    // Increased from 15s
-  max_delay_between: 60000,    // Increased from 45s
+  profile_views: 300,          // Günde maksimum 300 (güvenli)
+  contact_info: 50,            // Contact info çok sınırlı
+  search_queries: 100,         // Arama limiti
+  max_requests_per_hour: 50,   // Saatte max 50 (çok konservatif)
+  max_burst_requests: 2,       // Ard arda max 2 istek
+  proxy_rotation_after: 15,    // Her 15 request'te proxy değiş
+  proxy_test_timeout: 10000,   // 10 saniye proxy test timeout
+  request_timeout: 20000,      // 20 saniye request timeout
+  min_delay_between: 15000,    // En az 15 saniye ara
+  max_delay_between: 45000,    // En fazla 45 saniye ara
 };
 
-// Free Proxy APIs
+// Popüler Free Proxy API'leri
 const FREE_PROXY_APIS = [
   'https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all',
   'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
@@ -31,47 +32,18 @@ const FREE_PROXY_APIS = [
   'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt'
 ];
 
-// Updated User Agents
+// User Agent'lar (daha geniş çeşitlilik)
 const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/121.0.0.0'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0'
 ];
 
-class LinkedInSession {
-  constructor(cookies) {
-    this.cookies = cookies;
-    this.createdAt = Date.now();
-    this.requestCount = 0;
-    this.lastRequestTime = 0;
-    this.fingerprint = this.generateFingerprint();
-  }
-
-  generateFingerprint() {
-    return {
-      sessionId: generateSessionId(),
-      userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
-      acceptLanguage: 'en-US,en;q=0.9',
-      bcookie: `v=2&${crypto.randomUUID()}`,
-      bscookie: `v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}`,
-    };
-  }
-
-  isValid() {
-    // Sessions expire after 1 hour or 20 requests
-    return Date.now() - this.createdAt < 3600000 && this.requestCount < 20;
-  }
-
-  recordRequest() {
-    this.requestCount++;
-    this.lastRequestTime = Date.now();
-  }
-}
-
+// Free Proxy Manager
 class FreeProxyManager {
   constructor() {
     this.allProxies = [];
@@ -86,11 +58,13 @@ class FreeProxyManager {
 
   async loadStoredData() {
     try {
+      // Çalışan proxy'leri yükle
       const workingData = await fs.readFile(WORKING_PROXIES_FILE, 'utf8');
       const workingParsed = JSON.parse(workingData);
       this.workingProxies = workingParsed.proxies || [];
       this.lastProxyFetch = workingParsed.lastFetch || 0;
       
+      // Proxy istatistiklerini yükle
       const statsData = await fs.readFile(PROXY_STATS_FILE, 'utf8');
       const statsParsed = JSON.parse(statsData);
       this.proxyStats = statsParsed.stats || {};
@@ -107,12 +81,14 @@ class FreeProxyManager {
       const dataDir = path.dirname(WORKING_PROXIES_FILE);
       await fs.mkdir(dataDir, { recursive: true });
       
+      // Çalışan proxy'leri kaydet
       await fs.writeFile(WORKING_PROXIES_FILE, JSON.stringify({
         proxies: this.workingProxies,
         lastFetch: this.lastProxyFetch,
         lastUpdate: new Date().toISOString()
       }, null, 2));
       
+      // İstatistikleri kaydet
       await fs.writeFile(PROXY_STATS_FILE, JSON.stringify({
         stats: this.proxyStats,
         failed: Array.from(this.failedProxies),
@@ -124,10 +100,12 @@ class FreeProxyManager {
     }
   }
 
+  // Free proxy'leri API'lerden çek
   async fetchFreeProxies() {
     const now = Date.now();
     const oneHour = 60 * 60 * 1000;
     
+    // Eğer son 1 saat içinde çektiyse ve çalışan proxy'ler varsa skip et
     if (this.workingProxies.length > 10 && (now - this.lastProxyFetch) < oneHour) {
       console.log('📋 Using cached proxies (fetched recently)');
       return;
@@ -157,9 +135,11 @@ class FreeProxyManager {
         console.warn(`⚠️ Failed to fetch from API: ${error.message}`);
       }
       
+      // API'ler arası kısa bekleme
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
+    // Duplicate'leri temizle
     this.allProxies = [...new Set(this.allProxies)];
     console.log(`📊 Total unique proxies found: ${this.allProxies.length}`);
     
@@ -173,9 +153,13 @@ class FreeProxyManager {
     
     for (const line of lines) {
       const cleanLine = line.trim();
+      
+      // IP:PORT formatını kontrol et
       const match = cleanLine.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{1,5})$/);
       if (match) {
         const [, ip, port] = match;
+        
+        // Temel IP validasyonu
         const ipParts = ip.split('.').map(Number);
         if (ipParts.every(part => part >= 0 && part <= 255)) {
           proxies.push(`http://${ip}:${port}`);
@@ -186,13 +170,15 @@ class FreeProxyManager {
     return proxies;
   }
 
+  // Proxy'leri test et ve çalışanları filtrele
   async testAndFilterProxies() {
     if (this.allProxies.length === 0) return;
 
     console.log('🧪 Testing proxies for functionality...');
-    const batchSize = 20;
+    const batchSize = 20; // Paralel test sayısı
     const workingProxies = [];
     
+    // Proxy'leri batch'lere ayır
     for (let i = 0; i < Math.min(this.allProxies.length, 200); i += batchSize) {
       const batch = this.allProxies.slice(i, i + batchSize);
       
@@ -210,23 +196,28 @@ class FreeProxyManager {
       });
       
       console.log(`📊 Tested batch ${Math.floor(i/batchSize) + 1}, found ${workingProxies.length} working proxies so far`);
+      
+      // Batch'ler arası kısa bekleme
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
+    // Response time'a göre sırala (hızlı olanlar önce)
     this.workingProxies = workingProxies
       .sort((a, b) => a.responseTime - b.responseTime)
-      .slice(0, 50);
+      .slice(0, 50); // En iyi 50 tanesini al
 
     console.log(`✅ Found ${this.workingProxies.length} working proxies`);
     await this.saveStoredData();
   }
 
+  // Tek proxy test et
   async testProxy(proxyUrl) {
     const startTime = Date.now();
     
     try {
       const proxyAgent = new HttpsProxyAgent(proxyUrl);
       
+      // Basit HTTP test
       const response = await fetch('http://httpbin.org/ip', {
         method: 'GET',
         agent: proxyAgent,
@@ -247,7 +238,7 @@ class FreeProxyManager {
         };
       }
     } catch (error) {
-      // Test failed
+      // Test başarısız
     }
 
     return { working: false };
@@ -257,27 +248,32 @@ class FreeProxyManager {
     return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
   }
 
+  // En iyi proxy'yi seç
   getBestProxy() {
     if (this.workingProxies.length === 0) {
       throw new Error('No working proxies available. Please fetch new proxies.');
     }
 
+    // Failed proxy'leri filtrele
     const availableProxies = this.workingProxies.filter(proxy => 
       !this.failedProxies.has(proxy.url)
     );
 
     if (availableProxies.length === 0) {
+      // Tüm proxy'ler failed ise, failed list'i temizle ve tekrar dene
       console.log('⚠️ All proxies marked as failed, clearing failed list...');
       this.failedProxies.clear();
       return this.getBestProxy();
     }
 
+    // Round-robin seçim
     const selectedProxy = availableProxies[this.currentProxyIndex % availableProxies.length];
     this.currentProxyIndex++;
 
     return selectedProxy;
   }
 
+  // Proxy sonucunu kaydet
   recordProxyResult(proxy, success, errorType = null) {
     const proxyUrl = proxy.url || proxy;
     
@@ -287,6 +283,7 @@ class FreeProxyManager {
 
     if (success) {
       this.proxyStats[proxyUrl].success++;
+      // Başarılı ise failed list'ten çıkar
       this.failedProxies.delete(proxyUrl);
     } else {
       this.proxyStats[proxyUrl].failed++;
@@ -298,6 +295,7 @@ class FreeProxyManager {
         this.proxyStats[proxyUrl].errors[errorType]++;
       }
 
+      // 3 kez başarısız ise failed list'e ekle
       if (this.proxyStats[proxyUrl].failed >= 3) {
         this.failedProxies.add(proxyUrl);
         console.log(`🚫 Proxy marked as failed: ${proxyUrl.substring(0, 30)}...`);
@@ -317,13 +315,15 @@ class FreeProxyManager {
     };
   }
 
+  // Proxy'leri manuel olarak refresh et
   async refreshProxies() {
     console.log('🔄 Manual proxy refresh initiated...');
-    this.lastProxyFetch = 0;
+    this.lastProxyFetch = 0; // Force refresh
     await this.fetchFreeProxies();
   }
 }
 
+// Rate Limiting (Free proxy'ler için çok konservatif)
 class ConservativeRateLimit {
   constructor() {
     this.dailyCounters = {};
@@ -418,6 +418,7 @@ class ConservativeRateLimit {
   }
 
   getRandomDelay() {
+    // Free proxy'ler için çok uzun gecikmeler
     const baseMin = DAILY_LIMITS.min_delay_between;
     const baseMax = DAILY_LIMITS.max_delay_between;
     
@@ -454,17 +455,19 @@ class ConservativeRateLimit {
   }
 }
 
+// Ana LinkedIn Client
 class FreeProxyLinkedInClient {
   constructor() {
     this.proxyManager = new FreeProxyManager();
     this.rateLimit = new ConservativeRateLimit();
     this.currentProxy = null;
     this.requestCount = 0;
-    this.activeSessions = new Map();
+    this.sessionFingerprints = new Map();
     
     console.log('🚀 Free Proxy LinkedIn Client initialized');
   }
 
+  // Proxy'leri initialize et
   async initializeProxies() {
     await this.proxyManager.fetchFreeProxies();
     if (this.proxyManager.workingProxies.length === 0) {
@@ -485,6 +488,16 @@ class FreeProxyLinkedInClient {
     }
   }
 
+  generateFingerprint() {
+    return {
+      sessionId: `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`,
+      userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+      acceptLanguage: 'en-US,en;q=0.9',
+      bcookie: `"v=2&${crypto.randomUUID()}"`,
+      bscookie: `"v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}"`,
+    };
+  }
+
   generateHeaders(csrf, cookies, profileId, fingerprint) {
     const cookieHeader = Object.entries(cookies)
       .map(([k, v]) => `${k}=${v}`)
@@ -501,36 +514,31 @@ class FreeProxyLinkedInClient {
       'user-agent': fingerprint.userAgent,
       'x-li-lang': 'en_US',
       'x-restli-protocol-version': '2.0.0',
-      'x-li-track': '{"clientVersion":"1.13.8514","mpVersion":"1.13.8514","osName":"web","timezoneOffset":-5,"deviceFormFactor":"DESKTOP","mpName":"voyager-web"}',
-      'x-li-page-instance': `urn:li:page:d_flagship3_profile_view_base;${crypto.randomUUID()}`,
-      'sec-ch-ua': '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-origin'
     };
   }
 
   async makeRequest(url, headers, requestType = 'profile_views') {
+    // Rate limiting kontrolü
     const permission = await this.rateLimit.shouldAllowRequest(requestType);
     
     if (!permission.allowed) {
       throw new Error(`Rate limit exceeded`);
     }
 
+    // Proxy rotation kontrolü
     if (!this.currentProxy || this.requestCount >= DAILY_LIMITS.proxy_rotation_after) {
       this.rotateProxy();
     }
 
+    // Uzun gecikme (free proxy'ler için kritik)
     const delay = permission.recommendedDelay;
-    console.log(`⏳ Waiting ${delay/1000}s before request`);
+    console.log(`⏳ Waiting ${delay/1000}s before request (conservative approach)`);
     await new Promise(resolve => setTimeout(resolve, delay));
 
     const proxyAgent = new HttpsProxyAgent(this.currentProxy.url);
 
     try {
-      console.log(`🔍 Making ${requestType} request to: ${url.substring(0, 50)}...`);
+      console.log(`🔍 Making ${requestType} request via free proxy`);
       
       const response = await fetch(url, {
         method: 'GET',
@@ -543,18 +551,17 @@ class FreeProxyLinkedInClient {
       this.rateLimit.incrementCounter(requestType);
 
       if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        console.error('Error response:', errorBody);
-        
         this.proxyManager.recordProxyResult(this.currentProxy, false, response.status.toString());
         
-        if (response.status === 429 || response.status === 403 || response.status === 999) {
+        if (response.status === 429 || response.status === 403) {
+          // Bu proxy'yi failed olarak işaretle ve yeni proxy dene
           throw new Error(`LinkedIn blocked proxy: ${response.status}`);
         }
         
         throw new Error(`Request failed: ${response.status}`);
       }
 
+      // Başarılı istek
       this.proxyManager.recordProxyResult(this.currentProxy, true);
       
       const data = await response.json();
@@ -569,100 +576,48 @@ class FreeProxyLinkedInClient {
     }
   }
 
-  async makeRequestWithRetry(url, headers, requestType = 'profile_views', retries = 3) {
-    let lastError;
-    
-    for (let i = 0; i < retries; i++) {
-      try {
-        return await this.makeRequest(url, headers, requestType);
-      } catch (error) {
-        lastError = error;
-        if (i < retries - 1) {
-          const delay = Math.pow(2, i) * 1000;
-          console.log(`⏳ Retry ${i+1}/${retries} in ${delay/1000}s...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          this.rotateProxy();
-        }
-      }
-    }
-    
-    throw lastError;
-  }
-
-  async createSession(customCookies = {}) {
-    if (!customCookies.li_at) {
-      throw new Error('Valid li_at cookie is required');
-    }
-
-    const sessionId = generateSessionId();
-    const session = new LinkedInSession({
-      JSESSIONID: sessionId,
-      li_at: customCookies.li_at,
-      liap: 'true',
-      bcookie: `v=2&${crypto.randomUUID()}`,
-      bscookie: `v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}`
-    });
-
-    this.activeSessions.set(sessionId, session);
-    return sessionId;
-  }
-
-  async fetchLinkedInProfile(profileId, customCookies = { li_at: null, jsessionid: null }) {
-    if (!customCookies.li_at) {
-      throw new Error('Valid li_at cookie is required');
-    }
-
+  async fetchLinkedInProfile(profileId, customCookies = null) {
     if (!this.currentProxy) {
       this.rotateProxy();
     }
 
-    const sessionId = customCookies.jsessionid || generateSessionId();
-    let session = this.activeSessions.get(sessionId);
+    const fingerprint = this.generateFingerprint();
     
-    if (!session) {
-      session = new LinkedInSession({
-        JSESSIONID: sessionId,
-        li_at: customCookies.li_at,
-        liap: 'true',
-        bcookie: `v=2&${crypto.randomUUID()}`,
-        bscookie: `v=1&${Date.now()}${crypto.randomUUID().substring(0, 8)}`
-      });
-      this.activeSessions.set(sessionId, session);
-    }
-
-    if (!session.isValid()) {
-      this.activeSessions.delete(sessionId);
-      throw new Error('Session expired or request limit reached');
-    }
-
     const profileViewUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileView`;
     const contactInfoUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${profileId}/profileContactInfo`;
 
-    const csrfToken = sessionId.replace(/"/g, '');
+    const cookies = {
+      JSESSIONID: fingerprint.sessionId,
+      li_at: customCookies?.li_at || 'YOUR_LI_AT_TOKEN_HERE',
+      liap: 'true',
+      bcookie: fingerprint.bcookie,
+      bscookie: fingerprint.bscookie,
+    };
+
+    const csrfToken = fingerprint.sessionId.replace(/"/g, '');
 
     try {
-      // Get profile data
-      const profileHeaders = this.generateHeaders(csrfToken, session.cookies, profileId, session.fingerprint);
-      const profileData = await this.makeRequestWithRetry(profileViewUrl, profileHeaders, 'profile_views');
-      session.recordRequest();
+      // Ana profil verisini al
+      const profileHeaders = this.generateHeaders(csrfToken, cookies, profileId, fingerprint);
+      const profileData = await this.makeRequest(profileViewUrl, profileHeaders, 'profile_views');
 
-      // Random delay between requests
-      const interRequestDelay = Math.floor(Math.random() * 25000) + 15000;
+      // İki istek arası uzun gecikme
+      const interRequestDelay = Math.floor(Math.random() * 20000) + 15000; // 15-35 saniye
       console.log(`⏳ Waiting ${interRequestDelay/1000}s between profile and contact requests`);
       await new Promise(resolve => setTimeout(resolve, interRequestDelay));
 
-      // Get contact info (with lower probability)
+      // Contact info'yu al (çok sınırlı)
       let contactInfoData = null;
-      if (Math.random() < 0.3) {
-        try {
-          const contactHeaders = this.generateHeaders(csrfToken, session.cookies, profileId, session.fingerprint);
-          contactInfoData = await this.makeRequestWithRetry(contactInfoUrl, contactHeaders, 'contact_info');
-          session.recordRequest();
-        } catch (contactError) {
-          console.warn(`⚠️ Contact info failed for ${profileId}:`, contactError.message);
+      try {
+        // Contact info'yu sadece %30 olasılıkla dene (çok riskli)
+        if (Math.random() < 0.3) {
+          const contactHeaders = this.generateHeaders(csrfToken, cookies, profileId, fingerprint);
+          contactInfoData = await this.makeRequest(contactInfoUrl, contactHeaders, 'contact_info');
+        } else {
+          console.log('📊 Skipping contact info to reduce risk');
         }
-      } else {
-        console.log('📊 Skipping contact info to reduce risk');
+      } catch (contactError) {
+        console.warn(`⚠️ Contact info failed for ${profileId}:`, contactError.message);
       }
 
       return {
@@ -676,11 +631,11 @@ class FreeProxyLinkedInClient {
 
     } catch (error) {
       console.error(`❌ Profile fetch failed for ${profileId}:`, error.message);
-      this.activeSessions.delete(sessionId);
       throw error;
     }
   }
 
+  // Manual proxy refresh
   async refreshProxies() {
     await this.proxyManager.refreshProxies();
   }
@@ -690,8 +645,7 @@ class FreeProxyLinkedInClient {
       rateLimitStats: this.rateLimit.getStats(),
       proxyStats: this.proxyManager.getStats(),
       currentProxy: this.currentProxy ? this.currentProxy.url.substring(0, 30) + '...' : null,
-      requestCount: this.requestCount,
-      activeSessions: this.activeSessions.size
+      requestCount: this.requestCount
     };
   }
 }
@@ -701,13 +655,18 @@ let linkedInClient = null;
 
 // Initialize function
 async function initializeFreeProxyClient() {
+  if (linkedInClient) {
+    console.log('✅ LinkedIn client already exists');
+    return linkedInClient;
+  }
+  
   linkedInClient = new FreeProxyLinkedInClient();
   await linkedInClient.initializeProxies();
   return linkedInClient;
 }
 
 // Export functions
-async function fetchLinkedInProfile(profileId, customCookies = { li_at: null, jsessionid: null }) {
+async function fetchLinkedInProfile(profileId, customCookies = null) {
   if (!linkedInClient) {
     throw new Error('LinkedIn client not initialized. Call initializeFreeProxyClient() first.');
   }
@@ -715,18 +674,21 @@ async function fetchLinkedInProfile(profileId, customCookies = { li_at: null, js
 }
 
 function generateSessionId() {
-  const timestamp = Date.now();
-  const random = Math.floor(Math.random() * 1000000);
-  return `ajax:${timestamp}${random.toString().padStart(6, '0')}`;
+  return `"ajax:${crypto.randomInt(1e18, 1e19 - 1)}"`;
 }
 
 function getRateLimitStatus() {
   if (!linkedInClient) {
-    return { error: 'Client not initialized' };
+    return { 
+      error: 'Client not initialized',
+      rateLimitStats: { profileViews: 0, contactInfo: 0, limits: DAILY_LIMITS },
+      proxyStats: { workingProxies: 0, totalProxies: 0 }
+    };
   }
   return linkedInClient.getStats();
 }
 
+// Proxy yenileme fonksiyonu
 async function refreshProxies() {
   if (!linkedInClient) {
     throw new Error('LinkedIn client not initialized');
