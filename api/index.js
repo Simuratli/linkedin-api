@@ -11,6 +11,14 @@ const {
   refreshProxies,
   DAILY_LIMITS 
 } = require("../helpers/linkedin");
+
+// Free LinkedIn Client (no proxies needed)
+const { 
+  initializeFreeLinkedInClient, 
+  fetchLinkedInProfile: fetchLinkedInProfileFree,
+  getStats: getFreeClientStats,
+  refreshSessions 
+} = require("../helpers/free_linkedin_client");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
@@ -24,6 +32,7 @@ const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 
 // Global LinkedIn client state
 let linkedInClientInitialized = false;
+let freeLinkedInClientInitialized = false;
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
@@ -48,6 +57,24 @@ const initializeLinkedInClient = async () => {
     console.log('✅ LinkedIn client initialized successfully');
   } catch (error) {
     console.error('❌ Failed to initialize LinkedIn client:', error);
+    throw error;
+  }
+};
+
+// Initialize Free LinkedIn Client (no proxies needed)
+const initializeFreeLinkedInClientAPI = async () => {
+  if (freeLinkedInClientInitialized) {
+    console.log('✅ Free LinkedIn client already initialized');
+    return;
+  }
+
+  try {
+    console.log('🚀 Initializing Free LinkedIn Client (Session Rotation Mode)...');
+    await initializeFreeLinkedInClient();
+    freeLinkedInClientInitialized = true;
+    console.log('✅ Free LinkedIn client initialized successfully');
+  } catch (error) {
+    console.error('❌ Failed to initialize free LinkedIn client:', error);
     throw error;
   }
 };
@@ -93,12 +120,13 @@ const generateJobId = () => {
   return `job_${Date.now()}_${Math.random().toString(36).substring(2)}`;
 };
 
-// Enhanced dynamic batch configuration for free proxies
+// Enhanced dynamic batch configuration for free client (no proxies)
 const getDynamicBatchConfig = () => {
   const stats = getRateLimitStatus();
+  const freeStats = getFreeClientStats();
   
-  if (stats.error) {
-    // Fallback config if client not initialized
+  if (stats.error && freeStats.error) {
+    // Fallback config if both clients not initialized
     return {
       batchSize: 1,
       waitBetweenBatches: 60000,
@@ -111,15 +139,19 @@ const getDynamicBatchConfig = () => {
   const rateLimitStats = stats.rateLimitStats;
   const proxyStats = stats.proxyStats;
   
-  // Very conservative configuration for free proxies
+  // Free client stats
+  const activeSessions = freeStats.activeSessions || 0;
+  const successRate = freeStats.successRate || 0;
+  
+  // Conservative configuration for free client (no proxies needed)
   return {
-    batchSize: rateLimitStats.suspiciousActivity ? 1 : 2, // Much smaller batches
-    waitBetweenBatches: rateLimitStats.suspiciousActivity ? 300000 : 120000, // 2-5 minutes
-    shouldPause: rateLimitStats.profileViews > (DAILY_LIMITS.profile_views * 0.85), // Pause at 85%
-    shouldSlowDown: rateLimitStats.profileViews > (DAILY_LIMITS.profile_views * 0.7), // Slow at 70%
-    maxDailyProcessing: Math.max(10, DAILY_LIMITS.profile_views - rateLimitStats.profileViews), // Conservative daily limit
-    proxyHealthy: proxyStats.workingProxies > 5, // Need at least 5 working proxies
-    needsProxyRefresh: proxyStats.workingProxies < 3 // Refresh if less than 3 proxies
+    batchSize: rateLimitStats?.suspiciousActivity ? 1 : 2, // Much smaller batches
+    waitBetweenBatches: rateLimitStats?.suspiciousActivity ? 300000 : 120000, // 2-5 minutes
+    shouldPause: rateLimitStats?.profileViews > (DAILY_LIMITS.profile_views * 0.85), // Pause at 85%
+    shouldSlowDown: rateLimitStats?.profileViews > (DAILY_LIMITS.profile_views * 0.7), // Slow at 70%
+    maxDailyProcessing: Math.max(10, DAILY_LIMITS.profile_views - (rateLimitStats?.profileViews || 0)), // Conservative daily limit
+    proxyHealthy: (proxyStats?.workingProxies > 5) || (activeSessions >= 5), // Need proxies OR active sessions
+    needsProxyRefresh: (proxyStats?.workingProxies < 3) && (activeSessions < 3) // Refresh if both are low
   };
 };
 
@@ -520,16 +552,29 @@ const processJobInBackground = async (jobId) => {
       needsProxyRefresh: config.needsProxyRefresh
     });
 
-    // Check proxy health
+    // Check proxy/session health
     if (config.needsProxyRefresh) {
-      console.log(`🔄 Refreshing proxies before processing job ${jobId}`);
+      console.log(`🔄 Refreshing proxies/sessions before processing job ${jobId}`);
       try {
-        await refreshProxies();
+        // Try to refresh proxies first
+        try {
+          await refreshProxies();
+        } catch (proxyError) {
+          console.log(`⚠️ Proxy refresh failed, trying session refresh...`);
+        }
+        
+        // Also refresh free client sessions
+        try {
+          await refreshSessions(5);
+        } catch (sessionError) {
+          console.log(`⚠️ Session refresh failed:`, sessionError.message);
+        }
+        
         config = getDynamicBatchConfig(); // Update config after refresh
-      } catch (proxyError) {
-        console.error(`❌ Proxy refresh failed for job ${jobId}:`, proxyError);
+      } catch (error) {
+        console.error(`❌ Refresh failed for job ${jobId}:`, error);
         job.status = "paused";
-        job.pauseReason = "proxy_refresh_failed";
+        job.pauseReason = "refresh_failed";
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
         return;
       }
@@ -592,8 +637,10 @@ const processJobInBackground = async (jobId) => {
 
       console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`);
       const stats = getRateLimitStatus();
+      const freeStats = getFreeClientStats();
       console.log(`📈 Rate limit status: ${stats.rateLimitStats?.profileViews || 0}/${DAILY_LIMITS.profile_views} daily profile views`);
       console.log(`🔗 Proxy status: ${stats.proxyStats?.workingProxies || 0} working proxies`);
+      console.log(`🆓 Free client status: ${freeStats.activeSessions || 0} active sessions, ${freeStats.successRate || 0}% success rate`);
 
       // Process batch sequentially for free proxies (safer)
       for (const contact of batch) {
@@ -612,12 +659,22 @@ const processJobInBackground = async (jobId) => {
             jsession: currentUserSession.jsessionid,
           };
 
-          // Enhanced LinkedIn profile fetching with free proxy support
-          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Free Proxy Mode)`);
-          const profileData = await fetchLinkedInProfile(
-            profileId,
-            customCookies
-          );
+          // Enhanced LinkedIn profile fetching with free client (no proxies needed)
+          console.log(`🔍 Fetching LinkedIn profile: ${profileId} (Free Session Mode)`);
+          
+          let profileData;
+          try {
+            // Try free client first (no proxies needed)
+            profileData = await fetchLinkedInProfileFree(profileId);
+            console.log(`✅ Successfully fetched with free client (session rotation)`);
+          } catch (freeError) {
+            console.log(`⚠️ Free client failed, trying proxy client: ${freeError.message}`);
+            // Fallback to proxy client
+            profileData = await fetchLinkedInProfile(
+              profileId,
+              customCookies
+            );
+          }
 
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
@@ -847,7 +904,9 @@ app.get("/user-job/:userId", async (req, res) => {
         completedAt: job.completedAt,
       },
       rateLimitStatus: getRateLimitStatus(),
-      clientInitialized: linkedInClientInitialized,
+      freeClientStats: getFreeClientStats(),
+      proxyClientInitialized: linkedInClientInitialized,
+      freeClientInitialized: freeLinkedInClientInitialized,
       dailyLimits: DAILY_LIMITS
     });
   } catch (error) {
@@ -909,39 +968,89 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
-// Enhanced test route with free proxy LinkedIn client
+// Initialize free LinkedIn client endpoint
+app.post("/initialize-free-client", async (req, res) => {
+  try {
+    console.log('🚀 Initializing free LinkedIn client...');
+    await initializeFreeLinkedInClientAPI();
+    
+    const freeStats = getFreeClientStats();
+    
+    res.json({
+      success: true,
+      message: "Free LinkedIn client initialized successfully",
+      freeClientStats: freeStats,
+      clientInitialized: freeLinkedInClientInitialized
+    });
+  } catch (error) {
+    console.error("❌ Free client initialization failed:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      suggestion: "Check if the free client module is available"
+    });
+  }
+});
+
+// Enhanced test route with free LinkedIn client (no proxies)
 app.get("/simuratli", async (req, res) => {
   const profileId = "simuratli";
   try {
-    // Initialize client if not done yet
+    // Initialize both clients if not done yet
     if (!linkedInClientInitialized) {
       await initializeLinkedInClient();
     }
+    if (!freeLinkedInClientInitialized) {
+      await initializeFreeLinkedInClientAPI();
+    }
 
-    console.log(`🔍 Testing free proxy LinkedIn fetch for: ${profileId}`);
-    const data = await fetchLinkedInProfile(profileId);
+    console.log(`🔍 Testing free LinkedIn fetch for: ${profileId}`);
+    
+    let data;
+    let clientUsed = 'proxy';
+    
+    try {
+      // Try free client first (no proxies needed)
+      data = await fetchLinkedInProfileFree(profileId);
+      clientUsed = 'free';
+      console.log(`✅ Successfully fetched with free client (session rotation)`);
+    } catch (freeError) {
+      console.log(`⚠️ Free client failed, trying proxy client: ${freeError.message}`);
+      // Fallback to proxy client
+      data = await fetchLinkedInProfile(profileId);
+      clientUsed = 'proxy';
+    }
+    
     const stats = getRateLimitStatus();
+    const freeStats = getFreeClientStats();
     
     console.log("🔍 Fetched Data:", data);
     console.log("📊 Rate limit stats:", stats);
+    console.log("🆓 Free client stats:", freeStats);
     
     res.json({
       success: true,
       data: data,
+      clientUsed: clientUsed,
       rateLimitStatus: stats,
-      clientInitialized: linkedInClientInitialized,
+      freeClientStats: freeStats,
+      proxyClientInitialized: linkedInClientInitialized,
+      freeClientInitialized: freeLinkedInClientInitialized,
       dailyLimits: DAILY_LIMITS
     });
   } catch (error) {
     console.error("❌ Test endpoint error:", error);
     const stats = getRateLimitStatus();
+    const freeStats = getFreeClientStats();
     
     res.status(500).json({
       success: false,
       error: error.message,
       rateLimitStatus: stats,
-      clientInitialized: linkedInClientInitialized,
-      suggestion: error.message.includes('not initialized') ? 'Try calling /initialize-client first' : 'Check proxy health or refresh proxies'
+      freeClientStats: freeStats,
+      proxyClientInitialized: linkedInClientInitialized,
+      freeClientInitialized: freeLinkedInClientInitialized,
+      suggestion: error.message.includes('not initialized') ? 'Try calling /initialize-free-client first' : 'Check client health'
     });
   }
 });
@@ -950,13 +1059,16 @@ app.get("/simuratli", async (req, res) => {
 app.get("/health", async (req, res) => {
   try {
     const stats = getRateLimitStatus();
+    const freeStats = getFreeClientStats();
     const config = getDynamicBatchConfig();
     
     res.status(200).json({
       success: true,
       status: "healthy",
-      clientInitialized: linkedInClientInitialized,
+      proxyClientInitialized: linkedInClientInitialized,
+      freeClientInitialized: freeLinkedInClientInitialized,
       rateLimitStatus: stats,
+      freeClientStats: freeStats,
       config: config,
       dailyLimits: DAILY_LIMITS,
       timestamp: new Date().toISOString()
