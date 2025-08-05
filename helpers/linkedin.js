@@ -28,7 +28,8 @@ const FREE_PROXY_APIS = [
   'https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all',
   'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
   'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
-  'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt'
+  'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt',
+  '../proxies.txt',
 ];
 
 // User Agent'lar (daha geniş çeşitlilik)
