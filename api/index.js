@@ -345,8 +345,8 @@ const processJobInBackground = async (jobId) => {
     job.lastProcessedAt = new Date().toISOString();
     await saveJobs(jobs);
 
-    const BATCH_SIZE = 5;
-    const WAIT_BETWEEN_BATCHES_MS = 45000;
+    const BATCH_SIZE = 1;
+    const WAIT_BETWEEN_BATCHES_MS = 35000;
 
     // Get pending contacts
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");

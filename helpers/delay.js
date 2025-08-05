@@ -10,9 +10,10 @@ function chunkArray(array, size) {
   return result;
 }
 
-
-function getRandomDelay(min = 1500, max = 4000) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+function getRandomDelay() {
+  // 8-45 saniye arası rastgele bekleme (LinkedIn için ideal)
+  return Math.floor(Math.random() * 37000) + 8000;
 }
+
 
 module.exports = {sleep,chunkArray,getRandomDelay};
