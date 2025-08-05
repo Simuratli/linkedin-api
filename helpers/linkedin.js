@@ -668,7 +668,7 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
 }
 
 function generateSessionId() {
-  return `"ajax:${crypto.randomInt(1000000000000000000, 9999999999999999999)}"`;
+  return `"ajax:7381055659533468301"`;
 }
 
 function getRateLimitStatus() {
