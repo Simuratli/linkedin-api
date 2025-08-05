@@ -130,7 +130,7 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
     userRequest.address1_name =
       profile.address || profile.locationName || contactInfo.address || "";
     userRequest.description = profile.summary || "";
-
+    console.log("📤 Sending to Dynamics:", JSON.stringify(userRequest, null, 2));
     return userRequest;
   } catch (error) {
     console.error("Error transforming LinkedIn profile data:", error);
