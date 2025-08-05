@@ -33,7 +33,73 @@ const DAILY_LIMITS = {
 };
 
 // Your working proxy list (simple text format)
-const PROXY_LIST_URL = 'https://raw.githubusercontent.com/Simuratli/linkedin-api/refs/heads/master/proxies.txt';
+// Hardcoded proxy list from user
+const USER_PROXIES = [
+  '37.187.74.125:80',
+  '123.30.154.171:7777',
+  '113.160.132.195:8080',
+  '57.129.81.201:8080',
+  '181.174.164.221:80',
+  '4.156.78.45:80',
+  '23.247.136.248:80',
+  '38.147.98.190:8080',
+  '5.78.129.53:80',
+  '123.141.181.58:5031',
+  '23.247.136.254:80',
+  '4.245.123.244:80',
+  '92.67.186.210:80',
+  '4.195.16.140:80',
+  '45.146.163.31:80',
+  '59.7.246.4:80',
+  '108.141.130.146:80',
+  '14.241.80.37:8080',
+  '90.162.35.34:80',
+  '129.159.38.24:80',
+  '91.132.92.150:80',
+  '42.118.173.169:16000',
+  '1.54.73.223:16000',
+  '42.113.21.213:16000',
+  '58.187.70.8:16000',
+  '42.113.21.13:16000',
+  '42.119.98.149:16000',
+  '116.108.11.144:4001',
+  '27.79.148.128:16000',
+  '27.79.145.145:16000',
+  '173.209.63.66:8232',
+  '94.136.188.78:4326',
+  '123.18.234.145:8080',
+  '58.187.71.91:16000',
+  '27.79.170.65:16000',
+  '118.68.173.16:16000',
+  '42.119.154.222:16000',
+  '41.59.90.168:80',
+  '91.107.149.78:80',
+  '143.42.66.91:80',
+  '192.73.244.36:80',
+  '212.113.112.84:1080',
+  '31.56.78.170:8181',
+  '139.59.1.14:80',
+  '91.84.99.28:80',
+  '58.186.92.147:16000',
+  '51.79.152.84:60009',
+  '114.9.24.2:1452',
+  '27.79.183.77:16000',
+  '173.209.63.70:8192',
+  '45.59.117.2:8080',
+  '103.82.246.17:6080',
+  '112.211.133.231:8082',
+  '171.7.62.197:8080',
+  '38.54.71.67:80',
+  '42.113.20.0:16000',
+  '41.59.90.171:80',
+  '154.118.231.30:80',
+  '89.117.145.245:3128',
+  '47.90.205.231:33333',
+  '156.248.83.36:3129',
+  '156.228.110.62:3129',
+  '156.228.83.141:3129',
+  '156.248.80.210:3129'
+];
 
 // Enhanced User-Agent rotation with mobile and desktop variants
 const USER_AGENTS = [
@@ -158,73 +224,47 @@ class AdvancedProxyManager {
     return baseHeaders;
   }
 
-  // Fetch proxies from your simple text-based proxy list
+  // Use hardcoded proxy list from USER_PROXIES
   async fetchProxiesFromAPI() {
     try {
-      console.log('🔄 Fetching proxies from text list...');
-      const response = await TimeoutFetch.fetchWithTimeout(PROXY_LIST_URL, {
-        headers: this.generateRandomHeaders(),
-        method: 'GET'
-      }, 15000);
-
-      if (!response.ok) {
-        throw new Error(`Proxy list responded with status: ${response.status}`);
-      }
-
-      const textData = await response.text();
-      const lines = textData.split('\n').filter(line => line.trim());
-      
-      console.log(`📊 Found ${lines.length} proxy entries in text file`);
-
+      console.log('🔄 Loading proxies from hardcoded list...');
       const newProxies = [];
-      lines.forEach((line, index) => {
-        try {
-          const trimmedLine = line.trim();
-          if (!trimmedLine) return;
-          
-          // Parse IP:PORT format
-          const match = trimmedLine.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})$/);
-          if (match) {
-            const [, ip, port] = match;
-            const proxyUrl = `http://${ip}:${port}`;
-            
-            newProxies.push({
-              url: proxyUrl,
-              protocol: 'http',
-              ip: ip,
-              port: parseInt(port),
-              country: 'unknown',
-              countryCode: 'unknown',
-              city: 'unknown',
-              anonymity: 'unknown',
-              uptime: 95, // Assume good uptime since it's in your curated list
-              averageTimeout: 1000, // Assume reasonable timeout
-              isAlive: true,
-              lastTested: null,
-              successCount: 0,
-              failureCount: 0,
-              responseTime: null,
-              isWorking: null,
-              // Give higher priority to your curated list
-              priority: Math.max(100 - index, 1), // Higher priority for proxies listed first
-              source: 'curated_list'
-            });
-          } else {
-            console.warn(`⚠️ Invalid proxy format: ${trimmedLine}`);
-          }
-        } catch (e) {
-          console.warn(`⚠️ Error parsing proxy line: ${line} - ${e.message}`);
+      USER_PROXIES.forEach((proxyStr, index) => {
+        const trimmedLine = proxyStr.trim();
+        if (!trimmedLine) return;
+        const match = trimmedLine.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})$/);
+        if (match) {
+          const [, ip, port] = match;
+          const proxyUrl = `http://${ip}:${port}`;
+          newProxies.push({
+            url: proxyUrl,
+            protocol: 'http',
+            ip: ip,
+            port: parseInt(port),
+            country: 'unknown',
+            countryCode: 'unknown',
+            city: 'unknown',
+            anonymity: 'unknown',
+            uptime: 95,
+            averageTimeout: 1000,
+            isAlive: true,
+            lastTested: null,
+            successCount: 0,
+            failureCount: 0,
+            responseTime: null,
+            isWorking: null,
+            priority: Math.max(100 - index, 1),
+            source: 'curated_list'
+          });
+        } else {
+          console.warn(`⚠️ Invalid proxy format: ${trimmedLine}`);
         }
       });
-
-      // Sort by priority (first proxies in your list get higher priority)
       const sortedProxies = newProxies.sort((a, b) => b.priority - a.priority);
-
-      console.log(`✅ Successfully parsed ${sortedProxies.length} proxies from curated list`);
+      console.log(`✅ Loaded ${sortedProxies.length} proxies from hardcoded list`);
       return sortedProxies;
-
     } catch (error) {
-      console.error('❌ Failed to fetch proxies from text list:', error.message);
+      console.error('❌ Failed to load proxies from hardcoded list:', error.message);
       return [];
     }
   }
