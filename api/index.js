@@ -1012,6 +1012,7 @@ app.get("/daily-limits/:userId", async (req, res) => {
   }
 });
 
+
 // New endpoint to get human pattern information
 app.get("/human-patterns", (req, res) => {
   try {
