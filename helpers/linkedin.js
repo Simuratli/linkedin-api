@@ -15,46 +15,72 @@ const USER_AGENTS = [
 // Human behavior patterns based on time of day
 const HUMAN_PATTERNS = {
   morningBurst: {
-    time: '9-11 AM',
+    time: '9-11 AM (Weekdays)',
     profiles: 25,
     delay: '1-2 min',
     hourStart: 9,
     hourEnd: 11,
     minDelay: 60000,  // 1 min
     maxDelay: 120000, // 2 min
-    maxProfiles: 25
+    maxProfiles: 25,
+    weekdayOnly: true
   },
   lunchBreak: {
-    time: '12-1 PM',
+    time: '12-1 PM (Weekdays)',
     pause: true,
     hourStart: 12,
-    hourEnd: 13
+    hourEnd: 13,
+    weekdayOnly: true
   },
   afternoonWork: {
-    time: '2-5 PM',
+    time: '2-5 PM (Weekdays)',
     profiles: 35,
     delay: '2-3 min',
     hourStart: 14,
     hourEnd: 17,
     minDelay: 120000, // 2 min
     maxDelay: 180000, // 3 min
-    maxProfiles: 35
+    maxProfiles: 35,
+    weekdayOnly: true
   },
   eveningLight: {
-    time: '6-8 PM',
+    time: '6-8 PM (Weekdays)',
     profiles: 15,
     delay: '3-5 min',
     hourStart: 18,
     hourEnd: 20,
     minDelay: 180000, // 3 min
     maxDelay: 300000, // 5 min
-    maxProfiles: 15
+    maxProfiles: 15,
+    weekdayOnly: true
   },
   nightRest: {
-    time: '9 PM-8 AM',
+    time: '9 PM-8 AM (All days)',
     pause: true,
     hourStart: 21,
     hourEnd: 8
+  },
+  weekendBurst: {
+    time: '9 AM-12 PM (Weekends)',
+    profiles: 50,
+    delay: '1-2 min',
+    hourStart: 9,
+    hourEnd: 12,
+    minDelay: 60000,  // 1 min
+    maxDelay: 120000, // 2 min
+    maxProfiles: 50,
+    weekendOnly: true
+  },
+  weekendAfternoon: {
+    time: '1-4 PM (Weekends)',
+    profiles: 30,
+    delay: '2-3 min',
+    hourStart: 13,
+    hourEnd: 16,
+    minDelay: 120000, // 2 min
+    maxDelay: 180000, // 3 min
+    maxProfiles: 30,
+    weekendOnly: true
   }
 };
 
@@ -62,9 +88,14 @@ const HUMAN_PATTERNS = {
 function getCurrentHumanPattern() {
   const now = new Date();
   const currentHour = now.getHours();
-  
-  // Check each pattern
+  const isWeekend = [0, 6].includes(now.getDay()); // 0=Sunday, 6=Saturday
+
+  // Check each pattern with weekday/weekend awareness
   for (const [patternName, pattern] of Object.entries(HUMAN_PATTERNS)) {
+    // Skip if pattern doesn't match current day type
+    if (pattern.weekendOnly && !isWeekend) continue;
+    if (pattern.weekdayOnly && isWeekend) continue;
+
     if (pattern.hourStart <= pattern.hourEnd) {
       // Normal range (e.g., 9-11, 14-17)
       if (currentHour >= pattern.hourStart && currentHour < pattern.hourEnd) {
@@ -77,7 +108,7 @@ function getCurrentHumanPattern() {
       }
     }
   }
-  
+
   // Default to afternoon work if no pattern matches
   return { name: 'afternoonWork', ...HUMAN_PATTERNS.afternoonWork };
 }
@@ -181,7 +212,7 @@ class SimpleQueue {
     this.hourStart = Date.now();
     this.dailyCount = 0;
     this.dailyStart = this.getTodayStart();
-    this.currentPatternCount = 0; // Track requests in current time pattern
+    this.currentPatternCount = 0;
   }
 
   getTodayStart() {
@@ -204,12 +235,10 @@ class SimpleQueue {
   checkHumanPatternLimits() {
     const currentPattern = getCurrentHumanPattern();
     
-    // If we're in a pause period, return true to indicate we should wait
     if (currentPattern.pause) {
       return { shouldWait: true, reason: 'pause_period', pattern: currentPattern.name };
     }
     
-    // Check if we've hit the pattern's profile limit
     if (currentPattern.maxProfiles && this.currentPatternCount >= currentPattern.maxProfiles) {
       console.log(`📊 Pattern limit reached for ${currentPattern.name}: ${this.currentPatternCount}/${currentPattern.maxProfiles}`);
       return { shouldWait: true, reason: 'pattern_limit', pattern: currentPattern.name };
@@ -220,38 +249,32 @@ class SimpleQueue {
 
   async add(requestFn) {
     const now = Date.now();
-    
-    // Reset daily counter if needed
     this.resetDailyCountIfNeeded();
     
-    // Reset hourly counter
-    if (now - this.hourStart > 3600000) { // 1 hour
+    if (now - this.hourStart > 3600000) {
       this.requestCount = 0;
       this.hourStart = now;
-      this.currentPatternCount = 0; // Reset pattern count hourly as well
+      this.currentPatternCount = 0;
     }
     
-    // Check human pattern limits
     const patternCheck = this.checkHumanPatternLimits();
     if (patternCheck.shouldWait) {
       if (patternCheck.reason === 'pause_period') {
         const pauseDelay = getHumanPatternDelay();
         console.log(`⏸️ In ${patternCheck.pattern} - pausing for ${Math.round(pauseDelay / 60000)} minutes`);
         await new Promise(resolve => setTimeout(resolve, pauseDelay));
-        return this.add(requestFn); // Retry after pause
+        return this.add(requestFn);
       } else if (patternCheck.reason === 'pattern_limit') {
-        // Wait until next time period
         const nextHour = new Date();
         nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
         const waitTime = nextHour.getTime() - now;
         console.log(`⏳ Pattern limit reached. Waiting ${Math.round(waitTime / 60000)} minutes for next period...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
         this.currentPatternCount = 0;
-        return this.add(requestFn); // Retry in new time period
+        return this.add(requestFn);
       }
     }
 
-    // Check traditional hourly rate limit (fallback)
     if (this.requestCount >= 15) {
       const waitUntilNextHour = 3600000 - (now - this.hourStart);
       if (waitUntilNextHour > 0) {
@@ -263,7 +286,6 @@ class SimpleQueue {
       }
     }
 
-    // Use human pattern-based delays
     const patternDelay = getHumanPatternDelay();
     const timeSinceLastRequest = now - this.lastRequest;
 
@@ -273,8 +295,7 @@ class SimpleQueue {
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
-    // Add additional human-like jitter (reduced since pattern delays are longer)
-    const jitter = getRandomDelay(15000, 60000); // 15s - 1min jitter
+    const jitter = getRandomDelay(15000, 60000);
     console.log(`😴 Human behavior jitter: additional ${Math.round(jitter / 1000)} second pause...`);
     await new Promise(resolve => setTimeout(resolve, jitter));
 
@@ -302,9 +323,8 @@ async function withRetry(fn, maxRetries = 3) {
       }
 
       if (error.message.includes('429') || error.message.includes('403')) {
-        // Enhanced exponential backoff with human-like randomness
         const currentPattern = getCurrentHumanPattern();
-        const baseDelay = currentPattern.pause ? 30000 : 15000; // Longer delays during pause periods
+        const baseDelay = currentPattern.pause ? 30000 : 15000;
         const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
         const jitter = Math.random() * exponentialDelay * 0.5;
         const backoffDelay = exponentialDelay + jitter;
@@ -312,7 +332,6 @@ async function withRetry(fn, maxRetries = 3) {
         console.log(`⚠️ Rate limited (attempt ${attempt}) during ${currentPattern.name}, waiting ${Math.round(backoffDelay / 1000)} seconds...`);
         await new Promise(resolve => setTimeout(resolve, backoffDelay));
       } else {
-        // For other errors, use pattern-aware delays
         const errorDelay = isDuringPause() ? getRandomDelay(10000, 30000) : getRandomDelay(5000, 15000);
         console.log(`❌ Error on attempt ${attempt}, retrying in ${Math.round(errorDelay / 1000)} seconds...`);
         await new Promise(resolve => setTimeout(resolve, errorDelay));
@@ -321,48 +340,27 @@ async function withRetry(fn, maxRetries = 3) {
   }
 }
 
-// Enhanced simulate human browsing patterns
 async function simulateHumanBrowsing() {
   const currentPattern = getCurrentHumanPattern();
   
   const actions = [
-    { 
-      name: 'scroll', 
-      delay: currentPattern.pause ? getRandomDelay(1000, 4000) : getRandomDelay(500, 2000) 
-    },
-    { 
-      name: 'pause', 
-      delay: currentPattern.pause ? getRandomDelay(3000, 8000) : getRandomDelay(1000, 4000) 
-    },
-    { 
-      name: 'read', 
-      delay: getHumanReadingDelay() 
-    }
+    { name: 'scroll', delay: currentPattern.pause ? getRandomDelay(1000, 4000) : getRandomDelay(500, 2000) },
+    { name: 'pause', delay: currentPattern.pause ? getRandomDelay(3000, 8000) : getRandomDelay(1000, 4000) },
+    { name: 'read', delay: getHumanReadingDelay() }
   ];
   
-  // During morning burst, more quick actions; during evening, more reading
   let actionWeights;
   switch (currentPattern.name) {
-    case 'morningBurst':
-      actionWeights = [0.4, 0.4, 0.2]; // More scrolling/pausing, less reading
-      break;
-    case 'eveningLight':
-      actionWeights = [0.2, 0.3, 0.5]; // More reading, less quick actions
-      break;
-    default:
-      actionWeights = [0.33, 0.33, 0.34]; // Balanced
+    case 'morningBurst': actionWeights = [0.4, 0.4, 0.2]; break;
+    case 'eveningLight': actionWeights = [0.2, 0.3, 0.5]; break;
+    default: actionWeights = [0.33, 0.33, 0.34];
   }
   
-  // Weighted random selection
   const random = Math.random();
   let selectedAction;
-  if (random < actionWeights[0]) {
-    selectedAction = actions[0];
-  } else if (random < actionWeights[0] + actionWeights[1]) {
-    selectedAction = actions[1];
-  } else {
-    selectedAction = actions[2];
-  }
+  if (random < actionWeights[0]) selectedAction = actions[0];
+  else if (random < actionWeights[0] + actionWeights[1]) selectedAction = actions[1];
+  else selectedAction = actions[2];
   
   console.log(`🤖 ${currentPattern.name}: Simulating human ${selectedAction.name} for ${Math.round(selectedAction.delay / 1000)}s...`);
   await new Promise(resolve => setTimeout(resolve, selectedAction.delay));
@@ -389,7 +387,6 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
         const currentPattern = getCurrentHumanPattern();
         console.log(`🔍 Fetching LinkedIn profile: ${profileId} (${currentPattern.name} pattern)`);
 
-        // Simulate human behavior - browsing to profile first
         await simulateHumanBrowsing();
 
         const profileViewResponse = await fetch(profileViewUrl, {
@@ -398,50 +395,33 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
         });
 
         if (!profileViewResponse.ok) {
-          if (profileViewResponse.status === 429) {
-            throw new Error(`Rate limited: ${profileViewResponse.status}`);
-          }
-          if (profileViewResponse.status === 403) {
-            throw new Error(`Access forbidden - possible bot detection: ${profileViewResponse.status}`);
-          }
+          if (profileViewResponse.status === 429) throw new Error(`Rate limited: ${profileViewResponse.status}`);
+          if (profileViewResponse.status === 403) throw new Error(`Access forbidden: ${profileViewResponse.status}`);
           throw new Error(`Profile fetch error: ${profileViewResponse.status}`);
         }
 
-        // Human-like pause before requesting contact info (pattern-aware)
         const navigationDelay = getPageNavigationDelay();
         console.log(`🧑‍💻 Human navigation pause (${currentPattern.name}): ${Math.round(navigationDelay / 1000)}s before contact info...`);
         await new Promise(resolve => setTimeout(resolve, navigationDelay));
 
+        let contactInfoData = null;
         const contactInfoResponse = await fetch(contactInfoUrl, {
-          headers: {
-            ...headers,
-            referer: `https://www.linkedin.com/in/${profileId}/overlay/contact-info/`
-          },
+          headers: { ...headers, referer: `https://www.linkedin.com/in/${profileId}/overlay/contact-info/` },
           credentials: 'include'
         });
 
-        let contactInfoData = null;
-        if (contactInfoResponse.ok) {
-          contactInfoData = await contactInfoResponse.json();
-        } else {
-          console.warn(`⚠️ Contact info failed for ${profileId}: ${contactInfoResponse.status}`);
-        }
+        if (contactInfoResponse.ok) contactInfoData = await contactInfoResponse.json();
+        else console.warn(`⚠️ Contact info failed for ${profileId}: ${contactInfoResponse.status}`);
 
         const profileViewData = await profileViewResponse.json();
-
-        // Final human pause - simulate reading the data (pattern-aware)
         await simulateHumanBrowsing();
 
         return {
           profileView: profileViewData,
           contactInfo: contactInfoData,
-          combined: {
-            ...profileViewData,
-            contactInfo: contactInfoData
-          },
-          humanPattern: currentPattern.name // Include pattern info for debugging
+          combined: { ...profileViewData, contactInfo: contactInfoData },
+          humanPattern: currentPattern.name
         };
-
       } catch (error) {
         console.error(`❌ Error fetching ${profileId}:`, error.message);
         throw error;
@@ -450,7 +430,6 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
   });
 }
 
-// Export helper functions for external use
 module.exports = {
   fetchLinkedInProfile,
   generateSessionId,

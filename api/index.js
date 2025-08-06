@@ -23,9 +23,9 @@ const HOUR_IN_MS = 60 * 60 * 1000;
 
 // Human pattern-based limits
 const PATTERN_LIMITS = {
-  morningBurst: { max: 25, processed: 0 },
-  afternoonWork: { max: 35, processed: 0 },
-  eveningLight: { max: 15, processed: 0 }
+  morningBurst: { max: 60, processed: 0 },
+  afternoonWork: { max: 80 , processed: 0 },
+  eveningLight: { max: 40, processed: 0 }
 };
 
 // Ensure data directory exists
