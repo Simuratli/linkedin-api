@@ -3,7 +3,7 @@ const cors = require("cors");
 const fs = require("fs").promises;
 const path = require("path");
 const { transformToCreateUserRequest } = require("../helpers/transform");
-const { fetchLinkedInProfile } = require("../helpers/linkedin");
+const { fetchLinkedInProfile, getCurrentHumanPattern, isDuringPause, HUMAN_PATTERNS } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
@@ -16,10 +16,17 @@ const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
 const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 const DAILY_STATS_FILE = path.join(DATA_DIR, "daily_stats.json");
 
-// DAILY LIMIT CONFIGURATION
+// ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
-const BURST_LIMIT = 15; // Max profiles in one hour
+const BURST_LIMIT = 15; // Max profiles in one hour (fallback)
 const HOUR_IN_MS = 60 * 60 * 1000;
+
+// Human pattern-based limits
+const PATTERN_LIMITS = {
+  morningBurst: { max: 25, processed: 0 },
+  afternoonWork: { max: 35, processed: 0 },
+  eveningLight: { max: 15, processed: 0 }
+};
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
@@ -57,33 +64,104 @@ const getHourKey = () => {
   return `${now.toISOString().split('T')[0]}-${now.getHours()}`; // YYYY-MM-DD-HH
 };
 
+const getPatternKey = () => {
+  const now = new Date();
+  const currentPattern = getCurrentHumanPattern();
+  return `${getTodayKey()}-${currentPattern.name}`; // YYYY-MM-DD-patternName
+};
+
+// Enhanced limit checking with human patterns
 const checkDailyLimit = async (userId) => {
   const stats = await loadDailyStats();
   const today = getTodayKey();
   const hourKey = getHourKey();
+  const patternKey = getPatternKey();
+  const currentPattern = getCurrentHumanPattern();
   
   const userStats = stats[userId] || {};
   const todayCount = userStats[today] || 0;
   const hourCount = userStats[hourKey] || 0;
+  const patternCount = userStats[patternKey] || 0;
+  
+  // Check if in pause period
+  const inPause = isDuringPause();
+  
+  // Get pattern-specific limit
+  const patternLimit = currentPattern.maxProfiles || 0;
+  
+  // Determine if can process based on multiple factors
+  const canProcess = !inPause && 
+                    todayCount < DAILY_PROFILE_LIMIT && 
+                    hourCount < BURST_LIMIT &&
+                    (patternLimit === 0 || patternCount < patternLimit);
 
   return {
-    canProcess: todayCount < DAILY_PROFILE_LIMIT && hourCount < BURST_LIMIT,
+    canProcess,
     dailyCount: todayCount,
     hourlyCount: hourCount,
+    patternCount,
     dailyLimit: DAILY_PROFILE_LIMIT,
-    hourlyLimit: BURST_LIMIT
+    hourlyLimit: BURST_LIMIT,
+    patternLimit,
+    currentPattern: currentPattern.name,
+    inPause,
+    nextActivePattern: getNextActivePattern(),
+    estimatedResumeTime: getEstimatedResumeTime()
   };
+};
+
+// Get next active (non-pause) pattern
+const getNextActivePattern = () => {
+  const now = new Date();
+  const currentHour = now.getHours();
+  
+  // Check all patterns to find the next active one
+  const activePatterns = Object.entries(HUMAN_PATTERNS)
+    .filter(([name, pattern]) => !pattern.pause)
+    .sort((a, b) => a[1].hourStart - b[1].hourStart);
+  
+  for (const [name, pattern] of activePatterns) {
+    if (pattern.hourStart > currentHour) {
+      return { name, ...pattern };
+    }
+  }
+  
+  // If no pattern found today, return first pattern tomorrow
+  return { name: 'morningBurst', ...HUMAN_PATTERNS.morningBurst, tomorrow: true };
+};
+
+// Estimate when processing will resume
+const getEstimatedResumeTime = () => {
+  const currentPattern = getCurrentHumanPattern();
+  
+  if (!currentPattern.pause) {
+    return null; // Not in pause, can resume now
+  }
+  
+  const nextPattern = getNextActivePattern();
+  const now = new Date();
+  const resumeTime = new Date(now);
+  
+  if (nextPattern.tomorrow) {
+    resumeTime.setDate(resumeTime.getDate() + 1);
+  }
+  
+  resumeTime.setHours(nextPattern.hourStart, 0, 0, 0);
+  
+  return resumeTime.toISOString();
 };
 
 const updateDailyStats = async (userId) => {
   const stats = await loadDailyStats();
   const today = getTodayKey();
   const hourKey = getHourKey();
+  const patternKey = getPatternKey();
   
   if (!stats[userId]) stats[userId] = {};
   
   stats[userId][today] = (stats[userId][today] || 0) + 1;
   stats[userId][hourKey] = (stats[userId][hourKey] || 0) + 1;
+  stats[userId][patternKey] = (stats[userId][patternKey] || 0) + 1;
   
   // Clean old data (keep only last 7 days)
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -98,53 +176,67 @@ const updateDailyStats = async (userId) => {
   await saveDailyStats(stats);
 };
 
-// Human-like behavior patterns
-const getHumanLikeDelay = () => {
-  const baseDelay = 2 * 60 * 1000; // 2 minutes base
-  const maxDelay = 5 * 60 * 1000;  // 5 minutes max
+// Enhanced human-like behavior patterns with time awareness
+const getHumanPatternDelay = () => {
+  const currentPattern = getCurrentHumanPattern();
   
-  // Create more human-like distribution
-  const random1 = Math.random();
-  const random2 = Math.random();
-  const random3 = Math.random();
+  if (currentPattern.pause) {
+    // During pause periods, wait until next active period
+    const nextPattern = getNextActivePattern();
+    const now = new Date();
+    const resumeTime = new Date(now);
+    
+    if (nextPattern.tomorrow) {
+      resumeTime.setDate(resumeTime.getDate() + 1);
+    }
+    
+    resumeTime.setHours(nextPattern.hourStart, 0, 0, 0);
+    
+    const waitTime = resumeTime.getTime() - now.getTime();
+    return Math.max(waitTime, 5 * 60 * 1000); // Minimum 5 minutes
+  }
   
-  // Use multiple randoms for more natural distribution
-  const combined = (random1 + random2 + random3) / 3;
-  
-  return Math.floor(baseDelay + (maxDelay - baseDelay) * combined);
+  // During active periods, use pattern-specific delays
+  return Math.floor(Math.random() * (currentPattern.maxDelay - currentPattern.minDelay + 1)) + currentPattern.minDelay;
 };
 
 const getWorkingHoursDelay = () => {
-  const now = new Date();
-  const hour = now.getHours();
-  
-  // Working hours: 9 AM - 6 PM (more active)
-  if (hour >= 9 && hour <= 18) {
-    return getHumanLikeDelay();
-  }
-  
-  // Evening hours: 6 PM - 11 PM (slower)
-  if (hour >= 18 && hour <= 23) {
-    return getHumanLikeDelay() * 1.5;
-  }
-  
-  // Night hours: 11 PM - 9 AM (much slower)
-  return getHumanLikeDelay() * 3;
+  // This is now handled by getHumanPatternDelay, but keeping for compatibility
+  return getHumanPatternDelay();
 };
 
 const shouldTakeBreak = (processedInSession) => {
-  // Take breaks after processing certain amounts
-  if (processedInSession % 20 === 0) {
-    return 10 * 60 * 1000; // 10 minute break every 20 profiles
+  const currentPattern = getCurrentHumanPattern();
+  
+  // Pattern-aware break logic
+  if (currentPattern.pause) {
+    return getHumanPatternDelay(); // Wait until next active period
   }
   
-  if (processedInSession % 50 === 0) {
-    return 30 * 60 * 1000; // 30 minute break every 50 profiles
+  // More frequent breaks during intensive periods
+  if (currentPattern.name === 'morningBurst' && processedInSession % 8 === 0) {
+    return 3 * 60 * 1000; // 3 minute break every 8 profiles in morning
   }
   
-  // Random breaks (5% chance)
-  if (Math.random() < 0.05) {
-    return Math.random() * 15 * 60 * 1000; // 0-15 minute random break
+  if (currentPattern.name === 'afternoonWork' && processedInSession % 12 === 0) {
+    return 5 * 60 * 1000; // 5 minute break every 12 profiles in afternoon
+  }
+  
+  if (currentPattern.name === 'eveningLight' && processedInSession % 5 === 0) {
+    return 8 * 60 * 1000; // 8 minute break every 5 profiles in evening
+  }
+  
+  // Traditional break logic (reduced frequency)
+  if (processedInSession % 30 === 0) {
+    return 10 * 60 * 1000; // 10 minute break every 30 profiles
+  }
+  
+  // Random breaks (reduced chance during active periods)
+  if (Math.random() < 0.02) { // 2% chance (was 5%)
+    const breakDuration = currentPattern.name === 'eveningLight' ? 
+                         Math.random() * 20 * 60 * 1000 : // 0-20 min in evening
+                         Math.random() * 10 * 60 * 1000;  // 0-10 min other times
+    return breakDuration;
   }
   
   return 0;
@@ -302,7 +394,7 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 // Initialize data directory on startup
 ensureDataDir();
 
-// New endpoint to start/resume processing
+// Enhanced endpoint with human pattern awareness
 app.post("/start-processing", async (req, res) => {
   try {
     const {
@@ -326,13 +418,32 @@ app.post("/start-processing", async (req, res) => {
       });
     }
 
-    // Check daily limits
+    // Enhanced limit checking with human patterns
     const limitCheck = await checkDailyLimit(userId);
+    const currentPattern = getCurrentHumanPattern();
+    
     if (!limitCheck.canProcess && !resume) {
+      let message = `Cannot process profiles. `;
+      
+      if (limitCheck.inPause) {
+        message += `Currently in ${limitCheck.currentPattern} (${currentPattern.time}). `;
+        if (limitCheck.estimatedResumeTime) {
+          const resumeTime = new Date(limitCheck.estimatedResumeTime);
+          message += `Will resume at ${resumeTime.toLocaleTimeString()} during ${limitCheck.nextActivePattern.name}.`;
+        }
+      } else if (limitCheck.patternCount >= limitCheck.patternLimit) {
+        message += `Pattern limit reached: ${limitCheck.patternCount}/${limitCheck.patternLimit} for ${limitCheck.currentPattern}. `;
+      } else if (limitCheck.dailyCount >= limitCheck.dailyLimit) {
+        message += `Daily limit reached: ${limitCheck.dailyCount}/${limitCheck.dailyLimit}. `;
+      } else if (limitCheck.hourlyCount >= limitCheck.hourlyLimit) {
+        message += `Hourly limit reached: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}. `;
+      }
+
       return res.status(429).json({
         success: false,
-        message: `Daily limit reached. Processed: ${limitCheck.dailyCount}/${limitCheck.dailyLimit} profiles today. Hourly: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
-        limitInfo: limitCheck
+        message,
+        limitInfo: limitCheck,
+        currentPattern: currentPattern
       });
     }
 
@@ -370,6 +481,8 @@ app.post("/start-processing", async (req, res) => {
         processedCount: existingJob.processedCount,
         totalContacts: existingJob.totalContacts,
         canResume: true,
+        currentPattern: limitCheck.currentPattern,
+        limitInfo: limitCheck
       });
     }
 
@@ -411,9 +524,15 @@ app.post("/start-processing", async (req, res) => {
         createdAt: new Date().toISOString(),
         lastProcessedAt: null,
         errors: [],
+        humanPatterns: {
+          startPattern: currentPattern.name,
+          startTime: new Date().toISOString(),
+          patternHistory: []
+        },
         dailyStats: {
           startDate: getTodayKey(),
-          processedToday: 0
+          processedToday: 0,
+          patternBreakdown: {}
         }
       };
 
@@ -452,7 +571,8 @@ app.post("/start-processing", async (req, res) => {
       totalContacts: existingJob.totalContacts,
       processedCount: existingJob.processedCount,
       status: existingJob.status,
-      dailyLimitInfo: limitCheck
+      currentPattern: limitCheck.currentPattern,
+      limitInfo: limitCheck
     });
   } catch (error) {
     console.error("❌ Error in /start-processing:", error);
@@ -464,7 +584,7 @@ app.post("/start-processing", async (req, res) => {
   }
 });
 
-// Background processing function with human behavior
+// Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
@@ -488,6 +608,7 @@ const processJobInBackground = async (jobId) => {
 
     const BATCH_SIZE = 1;
     let processedInSession = 0;
+    let currentPatternName = getCurrentHumanPattern().name;
 
     // Get pending contacts
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");
@@ -496,27 +617,59 @@ const processJobInBackground = async (jobId) => {
     console.log(
       `📊 Processing ${pendingContacts.length} remaining contacts in ${contactBatches.length} batches for job ${jobId}`
     );
+    console.log(`🕒 Starting with ${currentPatternName} pattern`);
 
     for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
-      // Check daily limits before each batch
+      // Check if pattern has changed
+      const newPattern = getCurrentHumanPattern();
+      if (newPattern.name !== currentPatternName) {
+        console.log(`🔄 Pattern changed from ${currentPatternName} to ${newPattern.name}`);
+        
+        // Record pattern change
+        if (!job.humanPatterns.patternHistory) job.humanPatterns.patternHistory = [];
+        job.humanPatterns.patternHistory.push({
+          pattern: currentPatternName,
+          endTime: new Date().toISOString(),
+          profilesProcessed: processedInSession
+        });
+        
+        currentPatternName = newPattern.name;
+        processedInSession = 0; // Reset for new pattern
+      }
+
+      // Enhanced limit checking with human patterns
       const limitCheck = await checkDailyLimit(job.userId);
       if (!limitCheck.canProcess) {
-        console.log(`🚫 Daily/hourly limit reached for user ${job.userId}. Pausing job.`);
+        console.log(`🚫 Limits reached for user ${job.userId}. Pausing job.`);
+        console.log(`📊 Pattern: ${limitCheck.currentPattern} (${limitCheck.patternCount}/${limitCheck.patternLimit})`);
         console.log(`📊 Today: ${limitCheck.dailyCount}/${limitCheck.dailyLimit}, This hour: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`);
         
+        let pauseReason = 'limit_reached';
+        let estimatedResume = limitCheck.estimatedResumeTime;
+        
+        if (limitCheck.inPause) {
+          pauseReason = 'pause_period';
+          console.log(`⏸️ Currently in ${limitCheck.currentPattern} pause period`);
+        } else if (limitCheck.patternCount >= limitCheck.patternLimit) {
+          pauseReason = 'pattern_limit_reached';
+          console.log(`📈 Pattern limit reached for ${limitCheck.currentPattern}`);
+        } else if (limitCheck.dailyCount >= limitCheck.dailyLimit) {
+          pauseReason = 'daily_limit_reached';
+        } else if (limitCheck.hourlyCount >= limitCheck.hourlyLimit) {
+          pauseReason = 'hourly_limit_reached';
+        }
+        
         job.status = "paused";
-        job.pauseReason = "daily_limit_reached";
+        job.pauseReason = pauseReason;
         job.pausedAt = new Date().toISOString();
+        job.estimatedResumeTime = estimatedResume;
+        job.lastPatternInfo = limitCheck;
+        
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
         
-        // Schedule resume for next day if daily limit reached
-        if (limitCheck.dailyCount >= limitCheck.dailyLimit) {
-          const tomorrow = new Date();
-          tomorrow.setDate(tomorrow.getDate() + 1);
-          tomorrow.setHours(9, 0, 0, 0); // Resume at 9 AM next day
-          
-          const timeUntilResume = tomorrow.getTime() - Date.now();
-          console.log(`⏰ Job will resume tomorrow at 9 AM (in ${Math.round(timeUntilResume / 1000 / 60 / 60)} hours)`);
+        if (estimatedResume) {
+          const resumeTime = new Date(estimatedResume);
+          console.log(`⏰ Job will resume at ${resumeTime.toLocaleString()}`);
         }
         
         return;
@@ -531,12 +684,13 @@ const processJobInBackground = async (jobId) => {
       if (!currentUserSession || !currentUserSession.accessToken) {
         console.log(`⏸️ Pausing job ${jobId} - user session invalid`);
         job.status = "paused";
+        job.pauseReason = "session_invalid";
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
         return;
       }
 
       console.log(
-        `🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId}`
+        `🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId} (${currentPatternName} pattern)`
       );
 
       const batchPromises = batch.map(async (contact) => {
@@ -563,6 +717,9 @@ const processJobInBackground = async (jobId) => {
           if (profileData.error) {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
+
+          // Log which pattern was used for this profile
+          console.log(`🕒 Profile ${profileId} processed with ${profileData.humanPattern || currentPatternName} pattern`);
 
           const convertedProfile = await transformToCreateUserRequest(
             profileData,
@@ -591,13 +748,21 @@ const processJobInBackground = async (jobId) => {
           );
 
           contact.status = "completed";
+          contact.humanPattern = profileData.humanPattern || currentPatternName;
           job.successCount++;
           processedInSession++;
+          
+          // Update pattern-specific stats
+          if (!job.dailyStats.patternBreakdown) job.dailyStats.patternBreakdown = {};
+          if (!job.dailyStats.patternBreakdown[currentPatternName]) {
+            job.dailyStats.patternBreakdown[currentPatternName] = 0;
+          }
+          job.dailyStats.patternBreakdown[currentPatternName]++;
           
           // Update daily stats
           await updateDailyStats(job.userId);
           
-          console.log(`✅ Successfully updated contact ${contact.contactId} (${processedInSession} in session)`);
+          console.log(`✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`);
         } catch (error) {
           console.error(
             `❌ Error processing contact ${contact.contactId}:`,
@@ -606,16 +771,19 @@ const processJobInBackground = async (jobId) => {
 
           contact.status = "failed";
           contact.error = error.message;
+          contact.humanPattern = currentPatternName;
           job.failureCount++;
           job.errors.push({
             contactId: contact.contactId,
             error: error.message,
             timestamp: new Date().toISOString(),
+            humanPattern: currentPatternName
           });
 
           if (error.message.includes("TOKEN_REFRESH_FAILED")) {
             console.log(`⏸️ Pausing job ${jobId} - token refresh failed`);
             job.status = "paused";
+            job.pauseReason = "token_refresh_failed";
             throw error;
           }
         }
@@ -630,23 +798,33 @@ const processJobInBackground = async (jobId) => {
         currentJobs[jobId] = job;
         await saveJobs(currentJobs);
 
-        // Human-like behavior: Check for breaks
+        // Human-like behavior: Check for pattern-aware breaks
         const breakTime = shouldTakeBreak(processedInSession);
         if (breakTime > 0) {
-          console.log(`😴 Taking a ${Math.round(breakTime / 1000 / 60)} minute break after ${processedInSession} profiles...`);
+          const breakMinutes = Math.round(breakTime / 1000 / 60);
+          console.log(`😴 Taking a ${breakMinutes} minute break after ${processedInSession} profiles in ${currentPatternName}...`);
           await new Promise((resolve) => setTimeout(resolve, breakTime));
         }
 
-        // Wait between batches with human-like timing
+        // Wait between batches with human pattern timing
         if (batchIndex < contactBatches.length - 1) {
-          const waitTime = getWorkingHoursDelay();
-          console.log(`⏳ Waiting ${Math.round(waitTime / 1000 / 60)} minutes before next profile... (Human-like pattern)`);
+          const waitTime = getHumanPatternDelay();
+          console.log(`⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`);
           await new Promise((resolve) => setTimeout(resolve, waitTime));
         }
 
         console.log(
-          `📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed (Session: ${processedInSession})`
+          `📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed (${currentPatternName}: ${processedInSession})`
         );
+        
+        // Log pattern breakdown
+        if (job.dailyStats.patternBreakdown) {
+          const breakdown = Object.entries(job.dailyStats.patternBreakdown)
+            .map(([pattern, count]) => `${pattern}: ${count}`)
+            .join(', ');
+          console.log(`🕒 Pattern breakdown: ${breakdown}`);
+        }
+        
       } catch (error) {
         if (error.message.includes("TOKEN_REFRESH_FAILED")) {
           break;
@@ -654,13 +832,23 @@ const processJobInBackground = async (jobId) => {
       }
     }
 
-    // Mark job as completed if all contacts processed
+// Mark job as completed if all contacts processed
     const remainingPending = job.contacts.filter(
       (c) => c.status === "pending"
     ).length;
     if (remainingPending === 0) {
       job.status = "completed";
       job.completedAt = new Date().toISOString();
+      
+      // Final pattern history entry
+      if (!job.humanPatterns.patternHistory) job.humanPatterns.patternHistory = [];
+      job.humanPatterns.patternHistory.push({
+        pattern: currentPatternName,
+        endTime: new Date().toISOString(),
+        profilesProcessed: processedInSession
+      });
+      
+      console.log(`🎉 Job ${jobId} completed! Final pattern breakdown:`, job.dailyStats.patternBreakdown);
     }
 
     // Final save
@@ -673,6 +861,7 @@ const processJobInBackground = async (jobId) => {
     console.error(`❌ Background processing error for job ${jobId}:`, error);
     job.status = "failed";
     job.error = error.message;
+    job.failedAt = new Date().toISOString();
 
     const errorJobs = await loadJobs();
     errorJobs[jobId] = job;
@@ -680,7 +869,7 @@ const processJobInBackground = async (jobId) => {
   }
 };
 
-// Get job status
+// Enhanced job status endpoint with human pattern info
 app.get("/job-status/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -694,8 +883,9 @@ app.get("/job-status/:jobId", async (req, res) => {
       });
     }
 
-    // Include daily limit info
+    // Include current pattern and daily limit info
     const limitCheck = await checkDailyLimit(job.userId);
+    const currentPattern = getCurrentHumanPattern();
 
     res.status(200).json({
       success: true,
@@ -709,8 +899,14 @@ app.get("/job-status/:jobId", async (req, res) => {
         createdAt: job.createdAt,
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
+        failedAt: job.failedAt,
         errors: job.errors,
         pauseReason: job.pauseReason,
+        estimatedResumeTime: job.estimatedResumeTime,
+        humanPatterns: job.humanPatterns,
+        dailyStats: job.dailyStats,
+        currentPattern: currentPattern.name,
+        currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck
       },
     });
@@ -724,7 +920,7 @@ app.get("/job-status/:jobId", async (req, res) => {
   }
 });
 
-// Get user's current job
+// Enhanced user job endpoint with pattern info
 app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -732,13 +928,17 @@ app.get("/user-job/:userId", async (req, res) => {
     const userSession = userSessions[userId];
 
     if (!userSession || !userSession.currentJobId) {
+      const limitCheck = await checkDailyLimit(userId);
       return res.status(200).json({
         success: false,
         message: "No active job found for user",
         canResume: false,
         job: null,
+        currentPattern: getCurrentHumanPattern().name,
+        limitInfo: limitCheck
       });
     }
+
     const jobs = await loadJobs();
     const job = jobs[userSession.currentJobId];
 
@@ -750,6 +950,7 @@ app.get("/user-job/:userId", async (req, res) => {
     }
 
     const limitCheck = await checkDailyLimit(userId);
+    const currentPattern = getCurrentHumanPattern();
 
     res.status(200).json({
       success: true,
@@ -764,7 +965,13 @@ app.get("/user-job/:userId", async (req, res) => {
         createdAt: job.createdAt,
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
+        failedAt: job.failedAt,
         pauseReason: job.pauseReason,
+        estimatedResumeTime: job.estimatedResumeTime,
+        humanPatterns: job.humanPatterns,
+        dailyStats: job.dailyStats,
+        currentPattern: currentPattern.name,
+        currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck
       },
     });
@@ -778,18 +985,87 @@ app.get("/user-job/:userId", async (req, res) => {
   }
 });
 
-// Check daily limits endpoint
+// Enhanced daily limits endpoint with pattern info
 app.get("/daily-limits/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const limitCheck = await checkDailyLimit(userId);
+    const currentPattern = getCurrentHumanPattern();
     
     res.status(200).json({
       success: true,
-      limits: limitCheck
+      limits: limitCheck,
+      currentPattern: {
+        name: currentPattern.name,
+        info: currentPattern,
+        isActive: !currentPattern.pause
+      },
+      allPatterns: HUMAN_PATTERNS
     });
   } catch (error) {
     console.error("❌ Error checking daily limits:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// New endpoint to get human pattern information
+app.get("/human-patterns", (req, res) => {
+  try {
+    const currentPattern = getCurrentHumanPattern();
+    
+    res.status(200).json({
+      success: true,
+      currentPattern: {
+        name: currentPattern.name,
+        info: currentPattern,
+        isActive: !currentPattern.pause
+      },
+      allPatterns: HUMAN_PATTERNS,
+      nextActivePattern: getNextActivePattern(),
+      estimatedResumeTime: getEstimatedResumeTime()
+    });
+  } catch (error) {
+    console.error("❌ Error getting human patterns:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// New endpoint to get pattern statistics
+app.get("/pattern-stats/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const stats = await loadDailyStats();
+    const today = getTodayKey();
+    
+    const userStats = stats[userId] || {};
+    
+    // Get pattern-specific stats for today
+    const patternStats = {};
+    Object.keys(HUMAN_PATTERNS).forEach(patternName => {
+      const patternKey = `${today}-${patternName}`;
+      patternStats[patternName] = {
+        processed: userStats[patternKey] || 0,
+        limit: HUMAN_PATTERNS[patternName].maxProfiles || null,
+        isActive: !HUMAN_PATTERNS[patternName].pause
+      };
+    });
+    
+    res.status(200).json({
+      success: true,
+      patternStats,
+      dailyTotal: userStats[today] || 0,
+      dailyLimit: DAILY_PROFILE_LIMIT
+    });
+  } catch (error) {
+    console.error("❌ Error getting pattern stats:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -813,7 +1089,7 @@ app.post("/update-contacts-post", async (req, res) => {
   );
 });
 
-// New endpoint to handle manual token refresh from extension
+// Token refresh endpoint
 app.post("/refresh-token", async (req, res) => {
   try {
     const { refreshToken, clientId, tenantId, crmUrl, verifier } = req.body;
@@ -849,14 +1125,41 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
-// Test route
+// Test route with pattern info
 app.get("/simuratli", async (req, res) => {
   const profileId = "simuratli";
+  const currentPattern = getCurrentHumanPattern();
+  
+  console.log(`🧪 Test route called during ${currentPattern.name} pattern`);
+  
   const data = await fetchLinkedInProfile(profileId);
   console.log("🔍 Fetched Data:", data);
-  res.json(data);
+  
+  res.json({
+    profileData: data,
+    currentPattern: currentPattern.name,
+    patternInfo: currentPattern,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  const currentPattern = getCurrentHumanPattern();
+  
+  res.status(200).json({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    currentPattern: {
+      name: currentPattern.name,
+      isActive: !currentPattern.pause
+    },
+    server: "LinkedIn Profile Processor with Human Patterns"
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`✅ Server is running on http://localhost:${PORT}`);
+  console.log(`🕒 Starting with ${getCurrentHumanPattern().name} pattern`);
+  console.log(`📊 Human patterns enabled:`, Object.keys(HUMAN_PATTERNS));
 });
