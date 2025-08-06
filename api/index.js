@@ -14,6 +14,12 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, "data");
 const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
 const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
+const DAILY_STATS_FILE = path.join(DATA_DIR, "daily_stats.json");
+
+// DAILY LIMIT CONFIGURATION
+const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
+const BURST_LIMIT = 15; // Max profiles in one hour
+const HOUR_IN_MS = 60 * 60 * 1000;
 
 // Ensure data directory exists
 const ensureDataDir = async () => {
@@ -22,6 +28,126 @@ const ensureDataDir = async () => {
   } catch (error) {
     console.error("Error creating data directory:", error);
   }
+};
+
+// Daily stats management
+const loadDailyStats = async () => {
+  try {
+    const data = await fs.readFile(DAILY_STATS_FILE, "utf8");
+    return JSON.parse(data);
+  } catch (error) {
+    return {};
+  }
+};
+
+const saveDailyStats = async (stats) => {
+  try {
+    await fs.writeFile(DAILY_STATS_FILE, JSON.stringify(stats, null, 2));
+  } catch (error) {
+    console.error("Error saving daily stats:", error);
+  }
+};
+
+const getTodayKey = () => {
+  return new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+};
+
+const getHourKey = () => {
+  const now = new Date();
+  return `${now.toISOString().split('T')[0]}-${now.getHours()}`; // YYYY-MM-DD-HH
+};
+
+const checkDailyLimit = async (userId) => {
+  const stats = await loadDailyStats();
+  const today = getTodayKey();
+  const hourKey = getHourKey();
+  
+  const userStats = stats[userId] || {};
+  const todayCount = userStats[today] || 0;
+  const hourCount = userStats[hourKey] || 0;
+
+  return {
+    canProcess: todayCount < DAILY_PROFILE_LIMIT && hourCount < BURST_LIMIT,
+    dailyCount: todayCount,
+    hourlyCount: hourCount,
+    dailyLimit: DAILY_PROFILE_LIMIT,
+    hourlyLimit: BURST_LIMIT
+  };
+};
+
+const updateDailyStats = async (userId) => {
+  const stats = await loadDailyStats();
+  const today = getTodayKey();
+  const hourKey = getHourKey();
+  
+  if (!stats[userId]) stats[userId] = {};
+  
+  stats[userId][today] = (stats[userId][today] || 0) + 1;
+  stats[userId][hourKey] = (stats[userId][hourKey] || 0) + 1;
+  
+  // Clean old data (keep only last 7 days)
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const cutoffDate = sevenDaysAgo.toISOString().split('T')[0];
+  
+  for (const key of Object.keys(stats[userId])) {
+    if (key < cutoffDate) {
+      delete stats[userId][key];
+    }
+  }
+  
+  await saveDailyStats(stats);
+};
+
+// Human-like behavior patterns
+const getHumanLikeDelay = () => {
+  const baseDelay = 2 * 60 * 1000; // 2 minutes base
+  const maxDelay = 5 * 60 * 1000;  // 5 minutes max
+  
+  // Create more human-like distribution
+  const random1 = Math.random();
+  const random2 = Math.random();
+  const random3 = Math.random();
+  
+  // Use multiple randoms for more natural distribution
+  const combined = (random1 + random2 + random3) / 3;
+  
+  return Math.floor(baseDelay + (maxDelay - baseDelay) * combined);
+};
+
+const getWorkingHoursDelay = () => {
+  const now = new Date();
+  const hour = now.getHours();
+  
+  // Working hours: 9 AM - 6 PM (more active)
+  if (hour >= 9 && hour <= 18) {
+    return getHumanLikeDelay();
+  }
+  
+  // Evening hours: 6 PM - 11 PM (slower)
+  if (hour >= 18 && hour <= 23) {
+    return getHumanLikeDelay() * 1.5;
+  }
+  
+  // Night hours: 11 PM - 9 AM (much slower)
+  return getHumanLikeDelay() * 3;
+};
+
+const shouldTakeBreak = (processedInSession) => {
+  // Take breaks after processing certain amounts
+  if (processedInSession % 20 === 0) {
+    return 10 * 60 * 1000; // 10 minute break every 20 profiles
+  }
+  
+  if (processedInSession % 50 === 0) {
+    return 30 * 60 * 1000; // 30 minute break every 50 profiles
+  }
+  
+  // Random breaks (5% chance)
+  if (Math.random() < 0.05) {
+    return Math.random() * 15 * 60 * 1000; // 0-15 minute random break
+  }
+  
+  return 0;
 };
 
 // Load/Save processing jobs
@@ -188,8 +314,8 @@ app.post("/start-processing", async (req, res) => {
       verifier,
       crmUrl,
       jsessionid,
-      userId, // Unique identifier for the user (could be email, userID, etc.)
-      resume = false, // Whether to resume existing job
+      userId,
+      resume = false,
     } = req.body;
 
     if (!userId || !jsessionid || !accessToken || !crmUrl || !li_at) {
@@ -197,6 +323,16 @@ app.post("/start-processing", async (req, res) => {
         success: false,
         message:
           "Missing required parameters: userId, li_at, accessToken, crmUrl, and jsessionid are required",
+      });
+    }
+
+    // Check daily limits
+    const limitCheck = await checkDailyLimit(userId);
+    if (!limitCheck.canProcess && !resume) {
+      return res.status(429).json({
+        success: false,
+        message: `Daily limit reached. Processed: ${limitCheck.dailyCount}/${limitCheck.dailyLimit} profiles today. Hourly: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
+        limitInfo: limitCheck
       });
     }
 
@@ -275,6 +411,10 @@ app.post("/start-processing", async (req, res) => {
         createdAt: new Date().toISOString(),
         lastProcessedAt: null,
         errors: [],
+        dailyStats: {
+          startDate: getTodayKey(),
+          processedToday: 0
+        }
       };
 
       jobs[jobId] = existingJob;
@@ -312,6 +452,7 @@ app.post("/start-processing", async (req, res) => {
       totalContacts: existingJob.totalContacts,
       processedCount: existingJob.processedCount,
       status: existingJob.status,
+      dailyLimitInfo: limitCheck
     });
   } catch (error) {
     console.error("❌ Error in /start-processing:", error);
@@ -323,7 +464,7 @@ app.post("/start-processing", async (req, res) => {
   }
 });
 
-// Background processing function
+// Background processing function with human behavior
 const processJobInBackground = async (jobId) => {
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
@@ -346,7 +487,7 @@ const processJobInBackground = async (jobId) => {
     await saveJobs(jobs);
 
     const BATCH_SIZE = 1;
-    const WAIT_BETWEEN_BATCHES_MS = 35000;
+    let processedInSession = 0;
 
     // Get pending contacts
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");
@@ -357,9 +498,33 @@ const processJobInBackground = async (jobId) => {
     );
 
     for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
+      // Check daily limits before each batch
+      const limitCheck = await checkDailyLimit(job.userId);
+      if (!limitCheck.canProcess) {
+        console.log(`🚫 Daily/hourly limit reached for user ${job.userId}. Pausing job.`);
+        console.log(`📊 Today: ${limitCheck.dailyCount}/${limitCheck.dailyLimit}, This hour: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`);
+        
+        job.status = "paused";
+        job.pauseReason = "daily_limit_reached";
+        job.pausedAt = new Date().toISOString();
+        await saveJobs({ ...(await loadJobs()), [jobId]: job });
+        
+        // Schedule resume for next day if daily limit reached
+        if (limitCheck.dailyCount >= limitCheck.dailyLimit) {
+          const tomorrow = new Date();
+          tomorrow.setDate(tomorrow.getDate() + 1);
+          tomorrow.setHours(9, 0, 0, 0); // Resume at 9 AM next day
+          
+          const timeUntilResume = tomorrow.getTime() - Date.now();
+          console.log(`⏰ Job will resume tomorrow at 9 AM (in ${Math.round(timeUntilResume / 1000 / 60 / 60)} hours)`);
+        }
+        
+        return;
+      }
+
       const batch = contactBatches[batchIndex];
 
-      // Check if user session is still valid (user might have disconnected)
+      // Check if user session is still valid
       const currentUserSessions = await loadUserSessions();
       const currentUserSession = currentUserSessions[job.userId];
 
@@ -399,7 +564,7 @@ const processJobInBackground = async (jobId) => {
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
 
-          const convertedProfile = transformToCreateUserRequest(
+          const convertedProfile = await transformToCreateUserRequest(
             profileData,
             `${currentUserSession.crmUrl}/api/data/v9.2`,
             currentUserSession.accessToken
@@ -427,7 +592,12 @@ const processJobInBackground = async (jobId) => {
 
           contact.status = "completed";
           job.successCount++;
-          console.log(`✅ Successfully updated contact ${contact.contactId}`);
+          processedInSession++;
+          
+          // Update daily stats
+          await updateDailyStats(job.userId);
+          
+          console.log(`✅ Successfully updated contact ${contact.contactId} (${processedInSession} in session)`);
         } catch (error) {
           console.error(
             `❌ Error processing contact ${contact.contactId}:`,
@@ -446,7 +616,7 @@ const processJobInBackground = async (jobId) => {
           if (error.message.includes("TOKEN_REFRESH_FAILED")) {
             console.log(`⏸️ Pausing job ${jobId} - token refresh failed`);
             job.status = "paused";
-            throw error; // Stop processing this batch
+            throw error;
           }
         }
       });
@@ -460,20 +630,26 @@ const processJobInBackground = async (jobId) => {
         currentJobs[jobId] = job;
         await saveJobs(currentJobs);
 
-        // Wait between batches (except for the last batch)
+        // Human-like behavior: Check for breaks
+        const breakTime = shouldTakeBreak(processedInSession);
+        if (breakTime > 0) {
+          console.log(`😴 Taking a ${Math.round(breakTime / 1000 / 60)} minute break after ${processedInSession} profiles...`);
+          await new Promise((resolve) => setTimeout(resolve, breakTime));
+        }
+
+        // Wait between batches with human-like timing
         if (batchIndex < contactBatches.length - 1) {
-          const waitTime =
-            WAIT_BETWEEN_BATCHES_MS + getRandomDelay(-10000, 20000);
-          console.log(`⏳ Waiting ${waitTime / 1000}s before next batch...`);
+          const waitTime = getWorkingHoursDelay();
+          console.log(`⏳ Waiting ${Math.round(waitTime / 1000 / 60)} minutes before next profile... (Human-like pattern)`);
           await new Promise((resolve) => setTimeout(resolve, waitTime));
         }
 
         console.log(
-          `📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed`
+          `📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed (Session: ${processedInSession})`
         );
       } catch (error) {
         if (error.message.includes("TOKEN_REFRESH_FAILED")) {
-          break; // Stop processing
+          break;
         }
       }
     }
@@ -518,6 +694,9 @@ app.get("/job-status/:jobId", async (req, res) => {
       });
     }
 
+    // Include daily limit info
+    const limitCheck = await checkDailyLimit(job.userId);
+
     res.status(200).json({
       success: true,
       job: {
@@ -531,6 +710,8 @@ app.get("/job-status/:jobId", async (req, res) => {
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
         errors: job.errors,
+        pauseReason: job.pauseReason,
+        dailyLimitInfo: limitCheck
       },
     });
   } catch (error) {
@@ -568,6 +749,8 @@ app.get("/user-job/:userId", async (req, res) => {
       });
     }
 
+    const limitCheck = await checkDailyLimit(userId);
+
     res.status(200).json({
       success: true,
       canResume: job.status === "paused" || job.status === "processing",
@@ -581,10 +764,32 @@ app.get("/user-job/:userId", async (req, res) => {
         createdAt: job.createdAt,
         lastProcessedAt: job.lastProcessedAt,
         completedAt: job.completedAt,
+        pauseReason: job.pauseReason,
+        dailyLimitInfo: limitCheck
       },
     });
   } catch (error) {
     console.error("❌ Error getting user job:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// Check daily limits endpoint
+app.get("/daily-limits/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limitCheck = await checkDailyLimit(userId);
+    
+    res.status(200).json({
+      success: true,
+      limits: limitCheck
+    });
+  } catch (error) {
+    console.error("❌ Error checking daily limits:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",

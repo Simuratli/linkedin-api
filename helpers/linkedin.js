@@ -6,13 +6,25 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-   'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 LinkedIn/9.1.1',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 LinkedIn/9.1.1',
   'LinkedIn/9.1.1 (iPhone; iOS 15.6; Scale/3.00)',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ];
 
+// Enhanced human-like delay patterns
 function getRandomDelay(min = 3000, max = 8000) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function getHumanReadingDelay() {
+  // Simulate human reading time - 15-45 seconds
+  return Math.floor(Math.random() * 30000) + 15000;
+}
+
+function getPageNavigationDelay() {
+  // Time between clicking profile and loading contact info
+  return Math.floor(Math.random() * 5000) + 2000;
 }
 
 function getRandomUserAgent() {
@@ -54,23 +66,49 @@ function getHeaders(csrf, cookieObj, profileId) {
 class SimpleQueue {
   constructor() {
     this.lastRequest = 0;
-    this.minDelay = 8000;
+    this.minDelay = 120000; // 2 minutes minimum (was 8 seconds)
+    this.requestCount = 0;
+    this.hourStart = Date.now();
   }
 
   async add(requestFn) {
     const now = Date.now();
+    
+    // Reset hourly counter
+    if (now - this.hourStart > 3600000) { // 1 hour
+      this.requestCount = 0;
+      this.hourStart = now;
+    }
+
+    // Check hourly rate limit
+    if (this.requestCount >= 15) {
+      const waitUntilNextHour = 3600000 - (now - this.hourStart);
+      if (waitUntilNextHour > 0) {
+        console.log(`⏳ Hourly rate limit reached. Waiting ${Math.round(waitUntilNextHour / 1000 / 60)} minutes...`);
+        await new Promise(resolve => setTimeout(resolve, waitUntilNextHour));
+        this.requestCount = 0;
+        this.hourStart = Date.now();
+      }
+    }
+
     const timeSinceLastRequest = now - this.lastRequest;
 
     if (timeSinceLastRequest < this.minDelay) {
       const waitTime = this.minDelay - timeSinceLastRequest;
-      console.log(`⏳ Waiting ${waitTime / 1000}s before next LinkedIn request...`);
+      console.log(`⏳ Rate limiting: waiting ${Math.round(waitTime / 1000)} seconds before LinkedIn request...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
-    const jitter = getRandomDelay(1000, 3000);
+    // Add human-like jitter (30s - 3min additional delay)
+    const jitter = getRandomDelay(30000, 180000);
+    console.log(`😴 Human behavior: additional ${Math.round(jitter / 1000)} second pause...`);
     await new Promise(resolve => setTimeout(resolve, jitter));
 
     this.lastRequest = Date.now();
+    this.requestCount++;
+    
+    console.log(`📊 Request ${this.requestCount}/15 this hour`);
+    
     return await requestFn();
   }
 }
@@ -87,14 +125,34 @@ async function withRetry(fn, maxRetries = 3) {
       }
 
       if (error.message.includes('429') || error.message.includes('403')) {
-        const backoffDelay = 5000 * Math.pow(2, attempt - 1) + Math.random() * 5000;
-        console.log(`⚠️ Rate limited, waiting ${backoffDelay / 1000}s before retry ${attempt + 1}...`);
+        // Exponential backoff with human-like randomness
+        const baseDelay = 15000 * Math.pow(2, attempt - 1); // Start with 15 seconds
+        const jitter = Math.random() * baseDelay * 0.5; // Add up to 50% jitter
+        const backoffDelay = baseDelay + jitter;
+        
+        console.log(`⚠️ Rate limited (attempt ${attempt}), waiting ${Math.round(backoffDelay / 1000)} seconds...`);
         await new Promise(resolve => setTimeout(resolve, backoffDelay));
       } else {
-        throw error;
+        // For other errors, shorter delay
+        const errorDelay = getRandomDelay(5000, 15000);
+        console.log(`❌ Error on attempt ${attempt}, retrying in ${Math.round(errorDelay / 1000)} seconds...`);
+        await new Promise(resolve => setTimeout(resolve, errorDelay));
       }
     }
   }
+}
+
+// Simulate human browsing patterns
+async function simulateHumanBrowsing() {
+  const actions = [
+    { name: 'scroll', delay: getRandomDelay(500, 2000) },
+    { name: 'pause', delay: getRandomDelay(1000, 4000) },
+    { name: 'read', delay: getHumanReadingDelay() }
+  ];
+  
+  const randomAction = actions[Math.floor(Math.random() * actions.length)];
+  console.log(`🤖 Simulating human ${randomAction.name} for ${Math.round(randomAction.delay / 1000)}s...`);
+  await new Promise(resolve => setTimeout(resolve, randomAction.delay));
 }
 
 async function fetchLinkedInProfile(profileId, customCookies = null) {
@@ -117,6 +175,9 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
       try {
         console.log(`🔍 Fetching LinkedIn profile: ${profileId}`);
 
+        // Simulate human behavior - browsing to profile first
+        await simulateHumanBrowsing();
+
         const profileViewResponse = await fetch(profileViewUrl, {
           headers,
           credentials: 'include'
@@ -132,7 +193,10 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
           throw new Error(`Profile fetch error: ${profileViewResponse.status}`);
         }
 
-        await new Promise(resolve => setTimeout(resolve, getRandomDelay(2000, 4000)));
+        // Human-like pause before requesting contact info
+        const navigationDelay = getPageNavigationDelay();
+        console.log(`🧑‍💻 Human navigation pause: ${Math.round(navigationDelay / 1000)}s before contact info...`);
+        await new Promise(resolve => setTimeout(resolve, navigationDelay));
 
         const contactInfoResponse = await fetch(contactInfoUrl, {
           headers: {
@@ -150,6 +214,9 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
         }
 
         const profileViewData = await profileViewResponse.json();
+
+        // Final human pause - simulate reading the data
+        await simulateHumanBrowsing();
 
         return {
           profileView: profileViewData,
