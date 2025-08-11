@@ -491,6 +491,7 @@ app.post("/start-processing", async (req, res) => {
           });
         }
       }
+
       let message = `Cannot process profiles. `;
 
       if (limitCheck.inPause) {
