@@ -1,6 +1,4 @@
 const express = require("express");
-// 30 gün cooldown sabiti
-const MONTH_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 gün
 const cors = require("cors");
 const fs = require("fs").promises;
 const path = require("path");
@@ -484,36 +482,6 @@ app.post("/start-processing", async (req, res) => {
     // Load existing jobs and user sessions
     const jobs = await loadJobs();
     const userSessions = await loadUserSessions();
-    // --- Monthly cooldown: sadece 1 kez çalıştırma (30 gün) ---
-    const lastMonthlyRun = userSessions[userId]?.lastMonthlyRun;
-    if (lastMonthlyRun && !resume) {
-      const elapsed = Date.now() - new Date(lastMonthlyRun).getTime();
-      if (elapsed < MONTH_COOLDOWN_MS) {
-        const cutoffIso = new Date(Date.now() - MONTH_COOLDOWN_MS).toISOString();
-        const userMonthlyJobs = Object.values(jobs || {}).filter(
-          (j) => j.userId === userId && j.createdAt >= cutoffIso
-        );
-
-        const summaryMessages = userMonthlyJobs.map(j => {
-          const parts = [];
-          if (j.successCount) parts.push(`${j.successCount} kişi başarıyla güncellendi`);
-          if (j.failureCount) parts.push(`${j.failureCount} kişi güncellenemedi`);
-          return `İş ${j.jobId} (${j.status}): ${parts.join(", ")}`;
-        });
-
-        return res.status(200).json({
-          success: true,
-          cooldownActive: true,
-          message: "Cooldown aktif — Son 30 gün içinde zaten çalıştırma yapılmış.",
-          cooldownUntil: new Date(new Date(lastMonthlyRun).getTime() + MONTH_COOLDOWN_MS).toISOString(),
-          monthlySummary: summaryMessages,
-          canResume: !!userSessions[userId]?.currentJobId,
-          currentJobId: userSessions[userId]?.currentJobId || null
-        });
-      }
-    }
-    // --- end cooldown check ---
-
 
     let jobId;
     let existingJob = null;
@@ -640,36 +608,6 @@ app.post("/start-processing", async (req, res) => {
 const processJobInBackground = async (jobId) => {
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
-    // --- Monthly cooldown: sadece 1 kez çalıştırma (30 gün) ---
-    const lastMonthlyRun = userSessions[userId]?.lastMonthlyRun;
-    if (lastMonthlyRun && !resume) {
-      const elapsed = Date.now() - new Date(lastMonthlyRun).getTime();
-      if (elapsed < MONTH_COOLDOWN_MS) {
-        const cutoffIso = new Date(Date.now() - MONTH_COOLDOWN_MS).toISOString();
-        const userMonthlyJobs = Object.values(jobs || {}).filter(
-          (j) => j.userId === userId && j.createdAt >= cutoffIso
-        );
-
-        const summaryMessages = userMonthlyJobs.map(j => {
-          const parts = [];
-          if (j.successCount) parts.push(`${j.successCount} kişi başarıyla güncellendi`);
-          if (j.failureCount) parts.push(`${j.failureCount} kişi güncellenemedi`);
-          return `İş ${j.jobId} (${j.status}): ${parts.join(", ")}`;
-        });
-
-        return res.status(200).json({
-          success: true,
-          cooldownActive: true,
-          message: "Cooldown aktif — Son 30 gün içinde zaten çalıştırma yapılmış.",
-          cooldownUntil: new Date(new Date(lastMonthlyRun).getTime() + MONTH_COOLDOWN_MS).toISOString(),
-          monthlySummary: summaryMessages,
-          canResume: !!userSessions[userId]?.currentJobId,
-          currentJobId: userSessions[userId]?.currentJobId || null
-        });
-      }
-    }
-    // --- end cooldown check ---
-
   const job = jobs[jobId];
 
   if (!job || job.status === "completed") {
@@ -1041,36 +979,6 @@ app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const userSessions = await loadUserSessions();
-    // --- Monthly cooldown: sadece 1 kez çalıştırma (30 gün) ---
-    const lastMonthlyRun = userSessions[userId]?.lastMonthlyRun;
-    if (lastMonthlyRun && !resume) {
-      const elapsed = Date.now() - new Date(lastMonthlyRun).getTime();
-      if (elapsed < MONTH_COOLDOWN_MS) {
-        const cutoffIso = new Date(Date.now() - MONTH_COOLDOWN_MS).toISOString();
-        const userMonthlyJobs = Object.values(jobs || {}).filter(
-          (j) => j.userId === userId && j.createdAt >= cutoffIso
-        );
-
-        const summaryMessages = userMonthlyJobs.map(j => {
-          const parts = [];
-          if (j.successCount) parts.push(`${j.successCount} kişi başarıyla güncellendi`);
-          if (j.failureCount) parts.push(`${j.failureCount} kişi güncellenemedi`);
-          return `İş ${j.jobId} (${j.status}): ${parts.join(", ")}`;
-        });
-
-        return res.status(200).json({
-          success: true,
-          cooldownActive: true,
-          message: "Cooldown aktif — Son 30 gün içinde zaten çalıştırma yapılmış.",
-          cooldownUntil: new Date(new Date(lastMonthlyRun).getTime() + MONTH_COOLDOWN_MS).toISOString(),
-          monthlySummary: summaryMessages,
-          canResume: !!userSessions[userId]?.currentJobId,
-          currentJobId: userSessions[userId]?.currentJobId || null
-        });
-      }
-    }
-    // --- end cooldown check ---
-
     const userSession = userSessions[userId];
 
     if (!userSession || !userSession.currentJobId) {
