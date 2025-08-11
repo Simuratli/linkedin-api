@@ -537,12 +537,51 @@ app.post("/start-processing", async (req, res) => {
     let existingJob = null;
 
     // Check for existing job for this user
-    if (resume && userSessions[userId]) {
+    if (userSessions[userId]) {
       jobId = userSessions[userId].currentJobId;
       existingJob = jobs[jobId];
     }
 
-    if (existingJob && existingJob.status === "processing") {
+    // If there's an existing job that's processing or paused
+    if (existingJob && (existingJob.status === "processing" || existingJob.status === "paused")) {
+      // If we're not explicitly trying to resume and tokens are different, 
+      // it means user has re-authenticated
+      if (!resume && userSessions[userId].li_at !== li_at) {
+        console.log("🔄 User re-authenticated with new LinkedIn tokens, updating session...");
+        // Update session with new tokens but keep the existing job
+        userSessions[userId] = {
+          ...userSessions[userId],
+          li_at,
+          jsessionid,
+          accessToken,
+          refreshToken,
+          clientId,
+          tenantId,
+          verifier,
+          crmUrl,
+          lastActivity: new Date().toISOString()
+        };
+        await saveUserSessions(userSessions);
+        
+        // Resume the existing job
+        existingJob.status = "processing";
+        await saveJobs(jobs);
+        
+        // Start processing in background
+        setImmediate(() => processJobInBackground(jobId));
+        
+        return res.status(200).json({
+          success: true,
+          message: "Session updated and processing resumed",
+          jobId,
+          status: existingJob.status,
+          processedCount: existingJob.processedCount,
+          totalContacts: existingJob.totalContacts,
+          currentPattern: limitCheck.currentPattern,
+          limitInfo: limitCheck,
+        });
+      }
+      
       return res.status(200).json({
         success: false,
         message: "Job already in progress",
@@ -796,6 +835,14 @@ const processJobInBackground = async (jobId) => {
           );
 
           if (profileData.error) {
+            // Check if the error is related to authentication
+            if (profileData.error.includes("not found") || profileData.error.includes("unauthorized")) {
+              console.log("🔑 LinkedIn session may be invalid, pausing job...");
+              job.status = "paused";
+              job.pauseReason = "linkedin_session_invalid";
+              await saveJobs(jobs);
+              throw new Error(`LinkedIn session invalid: ${profileData.error}`);
+            }
             throw new Error(`LinkedIn API error: ${profileData.error}`);
           }
 
