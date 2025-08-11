@@ -366,6 +366,17 @@ const callDataverseWithRefresh = async (
           refreshData.verifier
         );
 
+        // Update user session with new token
+        const userSessions = await loadUserSessions();
+        if (userSessions[refreshData.userId]) {
+          userSessions[refreshData.userId].accessToken = newTokenData.access_token;
+          if (newTokenData.refresh_token) {
+            userSessions[refreshData.userId].refreshToken = newTokenData.refresh_token;
+          }
+          await saveUserSessions(userSessions);
+          console.log("✅ User session updated with new token");
+        }
+
         console.log("🔄 Retrying API call with refreshed token...");
         if (method === "GET") {
           return await getDataverse(url, newTokenData.access_token);
@@ -514,6 +525,7 @@ app.post("/start-processing", async (req, res) => {
             tenantId,
             crmUrl,
             verifier,
+            userId, // Add userId to refreshData
           }
         : null;
 
@@ -807,6 +819,7 @@ const processJobInBackground = async (jobId) => {
                 tenantId: currentUserSession.tenantId,
                 crmUrl: currentUserSession.crmUrl,
                 verifier: currentUserSession.verifier,
+                userId: job.userId, // userId'yi ekleyelim
               }
             : null;
 
