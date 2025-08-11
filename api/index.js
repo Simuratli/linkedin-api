@@ -1068,6 +1068,9 @@ app.get("/job-status/:jobId", async (req, res) => {
     const jobs = await loadJobs();
     const job = jobs[jobId];
 
+    console.log("📄 processing_jobs.json content:", await loadJobs());
+console.log("🔍 İstenen jobId:", jobId);
+
     if (!job) {
       return res.status(404).json({
         success: false,
