@@ -11,6 +11,7 @@ const {
 } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
+const { safeWrite } = require("../helpers/fileLock");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -273,7 +274,7 @@ const loadJobs = async () => {
 
 const saveJobs = async (jobs) => {
   try {
-    await fs.writeFile(JOBS_FILE, JSON.stringify(jobs, null, 2));
+     await safeWrite(JOBS_FILE, jobs);
   } catch (error) {
     console.error("Error saving jobs:", error);
   }
