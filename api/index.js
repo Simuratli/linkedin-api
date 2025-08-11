@@ -443,6 +443,43 @@ app.post("/start-processing", async (req, res) => {
     const currentPattern = getCurrentHumanPattern();
 
     if (!limitCheck.canProcess && !resume) {
+      // 1-month cooldown: block new jobs only if all contacts are updated (no pending contacts in any job for this user)
+      const jobs = await loadJobs();
+      const now = new Date();
+      let lastCompletedJob = null;
+      let hasPendingContacts = false;
+      for (const job of Object.values(jobs)) {
+        if (job.userId === userId) {
+          if (job.status === "completed" && job.completedAt) {
+            if (!lastCompletedJob || new Date(job.completedAt) > new Date(lastCompletedJob.completedAt)) {
+              lastCompletedJob = job;
+            }
+          }
+          // Check for any job with pending contacts
+          if (job.contacts && job.contacts.some(c => c.status === "pending")) {
+            hasPendingContacts = true;
+          }
+        }
+      }
+      if (!hasPendingContacts && lastCompletedJob) {
+        const completedAt = new Date(lastCompletedJob.completedAt);
+        const diffDays = (now - completedAt) / (1000 * 60 * 60 * 24);
+        if (diffDays < 30) {
+          return res.status(200).json({
+            success: false,
+            message: `All contacts were already processed. Please wait ${Math.ceil(30 - diffDays)} more day(s) before running again.`,
+            lastCompleted: lastCompletedJob.completedAt,
+            jobId: lastCompletedJob.jobId,
+            processedCount: lastCompletedJob.processedCount,
+            totalContacts: lastCompletedJob.totalContacts,
+            canResume: false,
+            cooldownActive: true,
+            cooldownDaysLeft: Math.ceil(30 - diffDays),
+            currentPattern: limitCheck.currentPattern,
+            limitInfo: limitCheck,
+          });
+        }
+      }
       let message = `Cannot process profiles. `;
 
       if (limitCheck.inPause) {
@@ -464,6 +501,7 @@ app.post("/start-processing", async (req, res) => {
         message,
         limitInfo: limitCheck,
         currentPattern: currentPattern,
+        cooldownActive: false,
       });
     }
 
