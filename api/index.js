@@ -11,9 +11,8 @@ const {
 } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
-
 const { safeWrite } = require("../helpers/fileLock");
-const COOLDOWN_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -22,7 +21,6 @@ const DATA_DIR = path.join(__dirname, "data");
 const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
 const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 const DAILY_STATS_FILE = path.join(DATA_DIR, "daily_stats.json");
-const CONTACT_COOLDOWN_FILE = path.join(DATA_DIR, "contact_cooldowns.json");
 
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
@@ -43,54 +41,6 @@ const ensureDataDir = async () => {
   } catch (error) {
     console.error("Error creating data directory:", error);
   }
-};
-
-// Load contact cooldowns
-const loadContactCooldowns = async () => {
-  try {
-    const data = await fs.readFile(CONTACT_COOLDOWN_FILE, "utf8");
-    return JSON.parse(data);
-  } catch (error) {
-    return {};
-  }
-};
-
-// Save contact cooldowns
-const saveContactCooldowns = async (cooldowns) => {
-  try {
-    await fs.writeFile(
-      CONTACT_COOLDOWN_FILE,
-      JSON.stringify(cooldowns, null, 2)
-    );
-  } catch (error) {
-    console.error("Error saving contact cooldowns:", error);
-  }
-};
-
-// Check if contact is in cooldown
-const isContactInCooldown = (lastUpdated) => {
-  if (!lastUpdated) return false;
-  const lastUpdateTime = new Date(lastUpdated).getTime();
-  const now = Date.now();
-  return now - lastUpdateTime < COOLDOWN_PERIOD_MS;
-};
-
-// Get cooldown remaining time
-const getCooldownRemainingTime = (lastUpdated) => {
-  if (!lastUpdated) return 0;
-  const lastUpdateTime = new Date(lastUpdated).getTime();
-  const now = Date.now();
-  const elapsed = now - lastUpdateTime;
-  return Math.max(0, COOLDOWN_PERIOD_MS - elapsed);
-};
-
-// Format remaining time for display
-const formatRemainingTime = (remainingMs) => {
-  const days = Math.floor(remainingMs / (24 * 60 * 60 * 1000));
-  const hours = Math.floor(
-    (remainingMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000)
-  );
-  return `${days} days, ${hours} hours`;
 };
 
 // Daily stats management
@@ -324,7 +274,7 @@ const loadJobs = async () => {
 
 const saveJobs = async (jobs) => {
   try {
-    await safeWrite(JOBS_FILE, jobs);
+     await safeWrite(JOBS_FILE, jobs);
   } catch (error) {
     console.error("Error saving jobs:", error);
   }
@@ -532,12 +482,7 @@ app.post("/start-processing", async (req, res) => {
     // Load existing jobs and user sessions
     const jobs = await loadJobs();
     const userSessions = await loadUserSessions();
-    const contactCooldowns = await loadContactCooldowns();
-contactCooldowns[contact.contactId] = {
-  lastUpdated: new Date().toISOString(),
-  linkedinUrl: contact.linkedinUrl
-};
-await saveContactCooldowns(contactCooldowns);
+
     let jobId;
     let existingJob = null;
 
@@ -581,103 +526,24 @@ await saveContactCooldowns(contactCooldowns);
         });
       }
 
-      // Filter contacts with LinkedIn URLs
-      const allContactsWithLinkedIn = response.value.filter(
-        (c) => !!c.uds_linkedin
-      );
-
-      // Check cooldown status for each contact
-      const contactsWithCooldownStatus = allContactsWithLinkedIn.map(
-        (contact) => {
-          const cooldownData = contactCooldowns[contact.contactid];
-          const inCooldown = cooldownData
-            ? isContactInCooldown(cooldownData.lastUpdated)
-            : false;
-          const remainingTime = cooldownData
-            ? getCooldownRemainingTime(cooldownData.lastUpdated)
-            : 0;
-
-          return {
-            contactId: contact.contactid,
-            linkedinUrl: contact.uds_linkedin,
-            status: inCooldown ? "cooldown" : "pending",
-            inCooldown,
-            lastUpdated: cooldownData?.lastUpdated,
-            cooldownRemaining: remainingTime,
-            cooldownRemainingFormatted:
-              remainingTime > 0 ? formatRemainingTime(remainingTime) : null,
-          };
-        }
-      );
-
-      // Separate contacts in cooldown from those ready to process
-      const contactsInCooldown = contactsWithCooldownStatus.filter(
-        (c) => c.inCooldown
-      );
-      const contactsReadyToProcess = contactsWithCooldownStatus.filter(
-        (c) => !c.inCooldown
-      );
-
-      // If all contacts are in cooldown, return cooldown status
-      if (
-        contactsInCooldown.length > 0 &&
-        contactsReadyToProcess.length === 0
-      ) {
-        // Find the contact with shortest remaining cooldown
-        const shortestCooldown = contactsInCooldown.reduce((min, contact) =>
-          contact.cooldownRemaining < min.cooldownRemaining ? contact : min
-        );
-
-        return res.status(200).json({
-          success: false,
-          message: "All contacts are in cooldown period",
-          inCooldown: true,
-          cooldownStatus: {
-            totalContacts: allContactsWithLinkedIn.length,
-            contactsInCooldown: contactsInCooldown.length,
-            contactsReadyToProcess: contactsReadyToProcess.length,
-            shortestCooldownRemaining:
-              shortestCooldown.cooldownRemainingFormatted,
-            nextAvailableTime: new Date(
-              Date.now() + shortestCooldown.cooldownRemaining
-            ).toISOString(),
-            allContactsCooldown: contactsInCooldown.map((c) => ({
-              contactId: c.contactId,
-              lastUpdated: c.lastUpdated,
-              remainingTime: c.cooldownRemainingFormatted,
-            })),
-          },
-          currentPattern: limitCheck.currentPattern,
-          limitInfo: limitCheck,
-        });
-      }
+      const contacts = response.value.filter((c) => !!c.uds_linkedin);
 
       existingJob = {
         jobId,
         userId,
-        totalContacts: contactsReadyToProcess.length,
-        totalContactsIncludingCooldown: allContactsWithLinkedIn.length,
-        contactsInCooldown: contactsInCooldown.length,
-        contacts: contactsReadyToProcess,
+        totalContacts: contacts.length,
+        contacts: contacts.map((c) => ({
+          contactId: c.contactid,
+          linkedinUrl: c.uds_linkedin,
+          status: "pending", // pending, processing, completed, failed
+        })),
         processedCount: 0,
         successCount: 0,
         failureCount: 0,
-        status: "pending",
+        status: "pending", // pending, processing, paused, completed, failed
         createdAt: new Date().toISOString(),
         lastProcessedAt: null,
         errors: [],
-        cooldownInfo: {
-          contactsInCooldown: contactsInCooldown.length,
-          nextAvailableTime:
-            contactsInCooldown.length > 0
-              ? new Date(
-                  Date.now() +
-                    Math.min(
-                      ...contactsInCooldown.map((c) => c.cooldownRemaining)
-                    )
-                ).toISOString()
-              : null,
-        },
         humanPatterns: {
           startPattern: currentPattern.name,
           startTime: new Date().toISOString(),
@@ -723,12 +589,8 @@ await saveContactCooldowns(contactCooldowns);
       message: resume ? "Processing resumed" : "Processing started",
       jobId,
       totalContacts: existingJob.totalContacts,
-      totalContactsIncludingCooldown:
-        existingJob.totalContactsIncludingCooldown,
-      contactsInCooldown: existingJob.contactsInCooldown,
       processedCount: existingJob.processedCount,
       status: existingJob.status,
-      cooldownInfo: existingJob.cooldownInfo,
       currentPattern: limitCheck.currentPattern,
       limitInfo: limitCheck,
     });
@@ -1039,26 +901,26 @@ const processJobInBackground = async (jobId) => {
 
     console.log(`✅ Job ${jobId} processing completed. Status: ${job.status}`);
   } catch (error) {
-    console.error(`❌ Background processing error for job ${jobId}:`, error);
+  console.error(`❌ Background processing error for job ${jobId}:`, error);
+  
+  // Store the error details more comprehensively
+  job.status = "failed";
+  job.error = error.message;
+  job.failedAt = new Date().toISOString();
+  
+  // Also add to the errors array for visibility
+  if (!job.errors) job.errors = [];
+  job.errors.push({
+    contactId: 'SYSTEM',
+    error: `Job failed: ${error.message}`,
+    timestamp: new Date().toISOString(),
+    humanPattern: getCurrentHumanPattern().name
+  });
 
-    // Store the error details more comprehensively
-    job.status = "failed";
-    job.error = error.message;
-    job.failedAt = new Date().toISOString();
-
-    // Also add to the errors array for visibility
-    if (!job.errors) job.errors = [];
-    job.errors.push({
-      contactId: "SYSTEM",
-      error: `Job failed: ${error.message}`,
-      timestamp: new Date().toISOString(),
-      humanPattern: getCurrentHumanPattern().name,
-    });
-
-    const errorJobs = await loadJobs();
-    errorJobs[jobId] = job;
-    await saveJobs(errorJobs);
-  }
+  const errorJobs = await loadJobs();
+  errorJobs[jobId] = job;
+  await saveJobs(errorJobs);
+}
 };
 
 // Enhanced job status endpoint with human pattern info
@@ -1067,9 +929,6 @@ app.get("/job-status/:jobId", async (req, res) => {
     const { jobId } = req.params;
     const jobs = await loadJobs();
     const job = jobs[jobId];
-
-    console.log("📄 processing_jobs.json content:", await loadJobs());
-console.log("🔍 İstenen jobId:", jobId);
 
     if (!job) {
       return res.status(404).json({
@@ -1351,88 +1210,6 @@ app.get("/health", (req, res) => {
     },
     server: "LinkedIn Profile Processor with Human Patterns",
   });
-});
-
-
-app.get("/cooldown-status/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const contactCooldowns = await loadContactCooldowns();
-    const userSessions = await loadUserSessions();
-    const userSession = userSessions[userId];
-
-    if (!userSession || !userSession.accessToken || !userSession.crmUrl) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid user session found"
-      });
-    }
-
-    const clientEndpoint = `${userSession.crmUrl}/api/data/v9.2`;
-    
-    // Get all contacts with LinkedIn URLs
-    const response = await callDataverseWithRefresh(
-      `${clientEndpoint}/contacts`,
-      userSession.accessToken,
-      "GET",
-      null,
-      userSession.refreshToken ? {
-        refreshToken: userSession.refreshToken,
-        clientId: userSession.clientId,
-        tenantId: userSession.tenantId,
-        crmUrl: userSession.crmUrl,
-        verifier: userSession.verifier,
-      } : null
-    );
-
-    if (!response || !response.value) {
-      return res.status(400).json({
-        success: false,
-        message: "Could not fetch contacts"
-      });
-    }
-
-    const allContactsWithLinkedIn = response.value.filter((c) => !!c.uds_linkedin);
-    
-    const cooldownStatus = allContactsWithLinkedIn.map(contact => {
-      const cooldownData = contactCooldowns[contact.contactid];
-      const inCooldown = cooldownData ? isContactInCooldown(cooldownData.lastUpdated) : false;
-      const remainingTime = cooldownData ? getCooldownRemainingTime(cooldownData.lastUpdated) : 0;
-      
-      return {
-        contactId: contact.contactid,
-        linkedinUrl: contact.uds_linkedin,
-        inCooldown,
-        lastUpdated: cooldownData?.lastUpdated,
-        cooldownRemaining: remainingTime,
-        cooldownRemainingFormatted: remainingTime > 0 ? formatRemainingTime(remainingTime) : null
-      };
-    });
-
-    const contactsInCooldown = cooldownStatus.filter(c => c.inCooldown);
-    const contactsReady = cooldownStatus.filter(c => !c.inCooldown);
-
-    res.status(200).json({
-      success: true,
-      cooldownStatus: {
-        totalContacts: allContactsWithLinkedIn.length,
-        contactsInCooldown: contactsInCooldown.length,
-        contactsReady: contactsReady.length,
-        allInCooldown: contactsReady.length === 0,
-        shortestCooldownRemaining: contactsInCooldown.length > 0 ? 
-          Math.min(...contactsInCooldown.map(c => c.cooldownRemaining)) : 0,
-        contactDetails: cooldownStatus
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Error checking cooldown status:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  }
 });
 
 app.listen(PORT, () => {
