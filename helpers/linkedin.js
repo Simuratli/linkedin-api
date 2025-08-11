@@ -99,6 +99,7 @@ const HUMAN_PATTERNS = {
 function getCurrentHumanPattern() {
   const now = new Date();
   const currentHour = now.getHours();
+   console.log(`🕒 Current time: ${now.toLocaleString('tr-TR')}, Hour: ${currentHour}`);
   const isWeekend = [0, 6].includes(now.getDay()); // 0=Sunday, 6=Saturday
 
   // Check each pattern with weekday/weekend awareness
