@@ -449,9 +449,13 @@ app.post("/start-processing", async (req, res) => {
       });
     }
 
+    console.log("🔍 Processing request for user:", userId, {
+      resume,
+      hasRefreshToken: !!refreshToken
+    });
+
     // Enhanced limit checking with human patterns
     const limitCheck = await checkDailyLimit(userId);
-    const currentPattern = getCurrentHumanPattern();
 
     if (!limitCheck.canProcess && !resume) {
       // 1-month cooldown: block new jobs only if all contacts are updated (no pending contacts in any job for this user)
@@ -531,27 +535,42 @@ app.post("/start-processing", async (req, res) => {
         : null;
 
     // Load existing jobs and user sessions
+    // Load existing jobs and user sessions
     const jobs = await loadJobs();
     const userSessions = await loadUserSessions();
-
-    let jobId;
+    
     let existingJob = null;
+    let jobId = null;
 
-    // Check for existing job for this user
-    if (userSessions[userId]) {
+    // Check for existing job
+    if (userSessions[userId]?.currentJobId) {
       jobId = userSessions[userId].currentJobId;
-      existingJob = jobs[jobId];
+      if (jobs[jobId]) {
+        existingJob = jobs[jobId];
+        console.log("📋 Found existing job:", {
+          jobId: existingJob.jobId,
+          status: existingJob.status,
+          processed: existingJob.processedCount,
+          total: existingJob.totalContacts
+        });
+      }
     }
 
-    // If there's an existing job that's processing or paused
-    if (existingJob && (existingJob.status === "processing" || existingJob.status === "paused")) {
-      // If we're not explicitly trying to resume and tokens are different, 
-      // it means user has re-authenticated
-      if (!resume && userSessions[userId].li_at !== li_at) {
-        console.log("🔄 User re-authenticated with new LinkedIn tokens, updating session...");
-        // Update session with new tokens but keep the existing job
+    // If there's an existing job, check its state
+    if (existingJob) {
+      const hasUnprocessedContacts = existingJob.processedCount < existingJob.totalContacts;
+      console.log("📊 Job status check:", {
+        hasUnprocessedContacts,
+        status: existingJob.status,
+        processed: existingJob.processedCount,
+        total: existingJob.totalContacts
+      });
+
+      if (hasUnprocessedContacts && (existingJob.status === "processing" || existingJob.status === "paused")) {
+        // Update user session with new tokens
         userSessions[userId] = {
           ...userSessions[userId],
+          currentJobId: existingJob.jobId,
           li_at,
           jsessionid,
           accessToken,
@@ -562,24 +581,31 @@ app.post("/start-processing", async (req, res) => {
           crmUrl,
           lastActivity: new Date().toISOString()
         };
-        await saveUserSessions(userSessions);
         
-        // Resume the existing job
-        existingJob.status = "processing";
-        await saveJobs(jobs);
+        // Save updated session
+        await saveUserSessions(userSessions);
+        console.log("✅ User session updated with new tokens");
+
+        // If job was paused, resume it
+        if (existingJob.status === "paused") {
+          existingJob.status = "processing";
+          existingJob.resumedAt = new Date().toISOString();
+          await saveJobs(jobs);
+          console.log("🔄 Resuming paused job:", existingJob.jobId);
+        }
         
         // Start processing in background
-        setImmediate(() => processJobInBackground(jobId));
+        setImmediate(() => processJobInBackground(existingJob.jobId));
         
+        const currentPattern = getCurrentHumanPattern();
         return res.status(200).json({
           success: true,
-          message: "Session updated and processing resumed",
-          jobId,
+          message: "Session updated and continuing existing job",
+          jobId: existingJob.jobId,
           status: existingJob.status,
           processedCount: existingJob.processedCount,
           totalContacts: existingJob.totalContacts,
-          currentPattern: limitCheck.currentPattern,
-          limitInfo: limitCheck,
+          currentPattern: currentPattern.name
         });
       }
       
@@ -596,27 +622,28 @@ app.post("/start-processing", async (req, res) => {
       });
     }
 
+    // Create new job if no existing job
     if (!existingJob) {
-      // Create new job
-      jobId = generateJobId();
+        // Generate new job ID
+        jobId = generateJobId();
 
-      // Get all contacts
-      const response = await callDataverseWithRefresh(
-        `${clientEndpoint}/contacts`,
-        accessToken,
-        "GET",
-        null,
-        refreshData
-      );
+        // Get all contacts
+        const response = await callDataverseWithRefresh(
+          `${clientEndpoint}/contacts`,
+          accessToken,
+          "GET",
+          null,
+          refreshData
+        );
 
-      if (!response || !response.value) {
-        return res.status(400).json({
-          success: false,
-          message: "No contacts found or invalid response from Dataverse",
-        });
-      }
+        if (!response || !response.value) {
+          return res.status(400).json({
+            success: false,
+            message: "No contacts found or invalid response from Dataverse",
+          });
+        }
 
-      const contacts = response.value.filter((c) => !!c.uds_linkedin);
+        const contacts = response.value.filter((c) => !!c.uds_linkedin);
 
       existingJob = {
         jobId,
@@ -695,41 +722,73 @@ app.post("/start-processing", async (req, res) => {
 });
 
 // Enhanced background processing with human patterns
+
+// Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
+  console.log(`🔄 Starting background processing for job: ${jobId}`);
+  
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
   const job = jobs[jobId];
 
-  if (!job || job.status === "completed") {
+  if (!job) {
+    console.error(`❌ No job found with ID ${jobId}`);
+    return;
+  }
+
+  if (job.status === "completed") {
+    console.log(`⏹️ Job ${jobId} is already completed`);
     return;
   }
 
   const userSession = userSessions[job.userId];
-
   if (!userSession) {
     console.error(`❌ No user session found for job ${jobId}`);
     return;
   }
 
+  console.log(`📊 Processing job ${jobId}:`, {
+    status: job.status,
+    processed: job.processedCount,
+    total: job.totalContacts,
+    userId: job.userId
+  });
+
   try {
+    // Sadece "pending" durumundan "processing"e geçerken baştan başlat
+    const wasProcessing = job.status === "processing";
     job.status = "processing";
     job.lastProcessedAt = new Date().toISOString();
+    
+    // İlerleme bilgisini sakla
+    if (!job.currentBatchIndex) {
+      job.currentBatchIndex = 0;
+    }
+    
     await saveJobs(jobs);
 
     const BATCH_SIZE = 1;
-    let processedInSession = 0;
-    let currentPatternName = getCurrentHumanPattern().name;
+    let processedInSession = job.processedInSession || 0;
+    let currentPatternName = job.currentPatternName || getCurrentHumanPattern().name;
 
     // Get pending contacts
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");
     const contactBatches = chunkArray(pendingContacts, BATCH_SIZE);
 
+    // Eğer önceki batch index varsa, oradan devam et
+    const startBatchIndex = job.currentBatchIndex || 0;
+
     console.log(
       `📊 Processing ${pendingContacts.length} remaining contacts in ${contactBatches.length} batches for job ${jobId}`
     );
-    console.log(`🕒 Starting with ${currentPatternName} pattern`);
+    console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
-    for (let batchIndex = 0; batchIndex < contactBatches.length; batchIndex++) {
+    for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
+      // Her batch'den sonra ilerlemeyi kaydet
+      job.currentBatchIndex = batchIndex;
+      job.currentPatternName = currentPatternName;
+      job.processedInSession = processedInSession;
+      await saveJobs({ ...(await loadJobs()), [jobId]: job });
       // Check if pattern has changed
       const newPattern = getCurrentHumanPattern();
       if (newPattern.name !== currentPatternName) {
