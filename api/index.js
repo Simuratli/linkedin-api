@@ -505,15 +505,92 @@ app.post("/start-processing", async (req, res) => {
     const jobs = await loadJobs();
     const userSessions = await loadUserSessions();
     
+    // Check for existing incomplete jobs and restore session if needed
     let existingJob = null;
     let jobId = null;
 
-    // Check for existing job
+    // First, check if there are any incomplete jobs for this user
+    for (const job of Object.values(jobs)) {
+      if (job.userId === userId && 
+          job.status !== "completed" && 
+          job.contacts && 
+          job.processedCount < job.totalContacts) {
+        existingJob = job;
+        jobId = job.jobId;
+        console.log("📋 Found incomplete job for user:", {
+          jobId: job.jobId,
+          status: job.status,
+          processed: job.processedCount,
+          total: job.totalContacts
+        });
+        break;
+      }
+    }
+
+    // If we found an incomplete job, restore/update the user session
+    if (existingJob) {
+      console.log(`🔧 Restoring user session for incomplete job ${jobId}`);
+      
+      // Update or create user session with fresh data from frontend
+      userSessions[userId] = {
+        currentJobId: jobId,
+        li_at,
+        jsessionid,
+        accessToken,
+        refreshToken,
+        clientId,
+        tenantId,
+        verifier: code_verifier,
+        crmUrl,
+        lastActivity: new Date().toISOString()
+      };
+      
+      // Save updated session immediately
+      await saveUserSessions(userSessions);
+      console.log("✅ User session restored with fresh frontend data");
+
+      // If job was paused due to missing session, resume it
+      if (existingJob.status === "paused" && 
+          (existingJob.pauseReason === "user_session_missing" || 
+           existingJob.pauseReason === "linkedin_session_invalid" ||
+           existingJob.pauseReason === "dataverse_session_invalid")) {
+        console.log("🔄 Resuming paused job with restored session");
+        existingJob.status = "processing";
+        existingJob.resumedAt = new Date().toISOString();
+        existingJob.lastProcessedAt = new Date().toISOString();
+        delete existingJob.pauseReason;
+        delete existingJob.pausedAt;
+        delete existingJob.lastError;
+        
+        // Save updated job
+        jobs[jobId] = existingJob;
+        await saveJobs(jobs);
+        
+        // Start background processing
+        setImmediate(() => processJobInBackground(jobId));
+        
+        const currentPattern = getCurrentHumanPattern();
+        return res.status(200).json({
+          success: true,
+          message: "Session restored and job resumed successfully",
+          jobId: existingJob.jobId,
+          status: "processing",
+          processedCount: existingJob.processedCount,
+          totalContacts: existingJob.totalContacts,
+          currentPattern: currentPattern.name,
+          canResume: true,
+          resumedAt: new Date().toISOString(),
+          sessionRestored: true
+        });
+      }
+    }
+
+    // Check for existing job in user session (legacy check)
     if (userSessions[userId]?.currentJobId) {
       jobId = userSessions[userId].currentJobId;
       if (jobs[jobId]) {
         existingJob = jobs[jobId];
-        console.log("📋 Found existing job:", {
+        console.log("📋 Found existing job via user session:", {
           jobId: existingJob.jobId,
           status: existingJob.status,
           processed: existingJob.processedCount,
@@ -680,9 +757,11 @@ app.post("/start-processing", async (req, res) => {
       await saveUserSessions(userSessions);
     }
 
-    // Update user session with new tokens
+    // Update user session with complete fresh data from frontend
+    console.log("🔄 Updating user session with fresh frontend data...");
     userSessions[userId] = {
-      ...userSessions[userId],
+      ...userSessions[userId], // Keep existing data like currentJobId if present
+      currentJobId: jobId || userSessions[userId]?.currentJobId,
       accessToken,
       refreshToken,
       clientId,
@@ -694,6 +773,7 @@ app.post("/start-processing", async (req, res) => {
       lastActivity: new Date().toISOString(),
     };
     await saveUserSessions(userSessions);
+    console.log("✅ User session updated with fresh authentication data");
 
     // Start processing in background
     setImmediate(() => processJobInBackground(jobId));
@@ -738,7 +818,20 @@ const processJobInBackground = async (jobId) => {
 
   const userSession = userSessions[job.userId];
   if (!userSession) {
-    console.error(`❌ No user session found for job ${jobId}`);
+    console.error(`❌ No user session found for job ${jobId} (userId: ${job.userId})`);
+    console.log(`🔧 Job exists but user session is missing. This usually happens after server restart.`);
+    console.log(`💡 Solution: User needs to reconnect through extension or use debug-restart-job endpoint`);
+    
+    // Mark job as paused with specific reason
+    job.status = "paused";
+    job.pauseReason = "user_session_missing";
+    job.pausedAt = new Date().toISOString();
+    job.lastError = {
+      type: "SESSION_ERROR",
+      message: "User session not found. Please reconnect through extension.",
+      timestamp: new Date().toISOString()
+    };
+    await saveJobs({ ...jobs, [jobId]: job });
     return;
   }
 
@@ -2038,11 +2131,45 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
     
     console.log(`🔄 Manually restarting job ${jobId}`);
     
+    // Check if user session exists for this job
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[job.userId];
+    
+    if (!userSession || userSession.currentJobId !== jobId) {
+      console.log(`⚠️ User session missing for job ${jobId}, creating placeholder session`);
+      
+      // Get real data from request body if available
+      const { li_at, jsessionid, accessToken, refreshToken, clientId, tenantId, verifier, crmUrl } = req.body;
+      
+      // Create user session with real data or placeholders
+      userSessions[job.userId] = {
+        currentJobId: jobId,
+        lastActivity: new Date().toISOString(),
+        // Use real data from frontend if provided, otherwise placeholders
+        accessToken: accessToken || "PLACEHOLDER_NEEDS_UPDATE",
+        li_at: li_at || "PLACEHOLDER_NEEDS_UPDATE", 
+        jsessionid: jsessionid || "PLACEHOLDER_NEEDS_UPDATE",
+        crmUrl: crmUrl || "PLACEHOLDER_NEEDS_UPDATE",
+        refreshToken: refreshToken || "PLACEHOLDER_REFRESH_TOKEN",
+        clientId: clientId || "PLACEHOLDER_CLIENT_ID",
+        tenantId: tenantId || "PLACEHOLDER_TENANT_ID",
+        verifier: verifier || "PLACEHOLDER_VERIFIER"
+      };
+      
+      await saveUserSessions(userSessions);
+      console.log(`✅ Created placeholder user session for ${job.userId}`);
+    }
+    
     // Reset job state
     job.lastProcessedAt = new Date().toISOString();
     job.restartedAt = new Date().toISOString();
     job.restartCount = (job.restartCount || 0) + 1;
     job.status = "processing";
+    
+    // Clear any pause reasons
+    delete job.pauseReason;
+    delete job.pausedAt;
+    delete job.lastError;
     
     // Save job
     await saveJobs(jobs);
@@ -2053,7 +2180,8 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
     res.json({ 
       success: true, 
       message: `Job ${jobId} restarted manually`,
-      restartCount: job.restartCount
+      restartCount: job.restartCount,
+      userSessionRestored: !userSession || userSession.currentJobId !== jobId
     });
   } catch (error) {
     console.error("❌ Error restarting job:", error);
