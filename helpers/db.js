@@ -413,22 +413,24 @@ const updateDailyStats = async (userId, dateKey, hourKey, patternKey) => {
   }
 };
 
-// Clean old daily stats (older than 7 days)
+// Clean old daily stats (older than 7 days) - DISABLED
 const cleanOldDailyStats = async () => {
   try {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // Disabled - keeping all daily stats permanently
+    console.log(`📊 Daily stats cleaning disabled - keeping all historical data`);
+    return 0;
     
-    const result = await DailyStats.deleteMany({
-      createdAt: { $lt: sevenDaysAgo }
-    });
-    
-    if (result.deletedCount > 0) {
-      console.log(`🧹 Cleaned ${result.deletedCount} old daily stats records`);
-    }
-    
-    return result.deletedCount;
+    // Old code commented out:
+    // const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // const result = await DailyStats.deleteMany({
+    //   createdAt: { $lt: sevenDaysAgo }
+    // });
+    // if (result.deletedCount > 0) {
+    //   console.log(`🧹 Cleaned ${result.deletedCount} old daily stats records`);
+    // }
+    // return result.deletedCount;
   } catch (error) {
-    console.error("❌ Error cleaning old daily stats:", error?.message);
+    console.error("❌ Error in cleanOldDailyStats:", error?.message);
     return 0;
   }
 };

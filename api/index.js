@@ -931,6 +931,15 @@ const processJobInBackground = async (jobId) => {
           console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
           contact.status = "processing";
 
+          // Get fresh user session for each contact
+          const currentUserSessions = await loadUserSessions();
+          const currentUserSession = currentUserSessions[job.userId];
+
+          if (!currentUserSession) {
+            console.error(`❌ Kullanıcı ${job.userId} için oturum bulunamadı`);
+            throw new Error("User session not found");
+          }
+
           const match = contact.linkedinUrl.match(/\/in\/([^\/]+)/);
           const profileId = match ? match[1] : null;
 
@@ -2062,13 +2071,8 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
     // Then initialize MongoDB
     await initializeDB();
     
-    // Clean old daily stats on startup
-    try {
-      const cleanedCount = await cleanOldDailyStats();
-      console.log(`🧹 Cleaned ${cleanedCount} old daily stats records on startup`);
-    } catch (cleanError) {
-      console.warn("⚠️ Warning: Could not clean old daily stats:", cleanError.message);
-    }
+    // Daily stats cleaning disabled - keeping all historical data
+    console.log(`📊 Daily stats cleaning disabled - all historical data will be preserved`);
     
     // Start server
     app.listen(PORT, () => {
