@@ -29,7 +29,7 @@ const PORT = process.env.PORT || 3000;
 
 // File paths for persistent storage 
 const DATA_DIR = process.env.NODE_ENV === 'production' 
-  ? '/data'  // Render.com persistent disk path
+  ? path.join(process.env.RENDER_PERSISTENT_DIR || process.cwd(), 'data')  // Render.com persistent disk path
   : path.join(__dirname, '../data');
 const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
 const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
@@ -43,37 +43,26 @@ const HOUR_IN_MS = 60 * 60 * 1000;
 // Ensure data directory exists
 const ensureDataDir = async () => {
   try {
-    // Create data directory with full permissions in production
-    if (process.env.NODE_ENV === 'production') {
-      await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o777 });
-      
-      // Ensure files exist with proper permissions
-      const files = [JOBS_FILE, USER_SESSIONS_FILE, DAILY_STATS_FILE];
-      for (const file of files) {
-        try {
-          await fs.access(file);
-        } catch {
-          await fs.writeFile(file, '{}', { mode: 0o666 });
-        }
-      }
-    } else {
-      // Local development environment
-      await fs.mkdir(DATA_DIR, { recursive: true });
-      
-      // Create files if they don't exist
-      const files = [JOBS_FILE, USER_SESSIONS_FILE, DAILY_STATS_FILE];
-      for (const file of files) {
-        try {
-          await fs.access(file);
-        } catch {
-          await fs.writeFile(file, '{}');
-        }
+    console.log("🔍 Creating data directory at:", DATA_DIR);
+    
+    // Create data directory with full permissions
+    await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o777 });
+    
+    // Ensure files exist with proper permissions
+    const files = [JOBS_FILE, USER_SESSIONS_FILE, DAILY_STATS_FILE];
+    for (const file of files) {
+      try {
+        await fs.access(file);
+        console.log(`✅ File exists: ${file}`);
+      } catch (err) {
+        console.log(`📝 Creating file: ${file}`);
+        await fs.writeFile(file, '{}', { mode: 0o666 });
       }
     }
     
     console.log("📁 Data directory initialized:", DATA_DIR);
   } catch (error) {
-    console.error("❌ Error initializing data directory:", error);
+    console.error("❌ Error initializing data directory:", error.stack || error);
     throw error;
   }
 };
@@ -84,13 +73,24 @@ const loadDailyStats = async () => {
     const data = await fs.readFile(DAILY_STATS_FILE, "utf8");
     return JSON.parse(data);
   } catch (error) {
+    // If file doesn't exist, create directory and empty file
+    if (error.code === 'ENOENT') {
+      console.log(`⚠️ Daily stats file not found, creating empty one at ${DAILY_STATS_FILE}`);
+      await fs.mkdir(path.dirname(DAILY_STATS_FILE), { recursive: true });
+      await fs.writeFile(DAILY_STATS_FILE, '{}', { mode: 0o666 });
+    } else {
+      console.error("Error loading daily stats:", error);
+    }
     return {};
   }
 };
 
 const saveDailyStats = async (stats) => {
   try {
+    // Make sure the directory exists before writing
+    await fs.mkdir(path.dirname(DAILY_STATS_FILE), { recursive: true });
     await fs.writeFile(DAILY_STATS_FILE, JSON.stringify(stats, null, 2));
+    console.log(`✅ Daily stats saved to ${DAILY_STATS_FILE}`);
   } catch (error) {
     console.error("Error saving daily stats:", error);
   }
@@ -1436,18 +1436,28 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Initialize MongoDB and start server
-initializeDB().then(() => {
-  app.listen(PORT, () => {
-    const currentPattern = getCurrentHumanPattern();
-    console.log(`✅ Server is running on http://localhost:${PORT}`);
-    console.log(`🕒 Starting with ${currentPattern.name} pattern`);
-    console.log(`🔄 Active patterns:`, Object.entries(HUMAN_PATTERNS)
-      .filter(([_, p]) => !p.pause)
-      .map(([name]) => name)
-      .join(', '));
-  });
-}).catch(error => {
-  console.error('❌ Failed to initialize database:', error);
-  process.exit(1);
-});
+// Initialize data directory, MongoDB and start server
+(async () => {
+  try {
+    // First ensure data directory exists
+    await ensureDataDir();
+    console.log("✅ Data directory initialization complete");
+    
+    // Then initialize MongoDB
+    await initializeDB();
+    
+    // Start server
+    app.listen(PORT, () => {
+      const currentPattern = getCurrentHumanPattern();
+      console.log(`✅ Server is running on http://localhost:${PORT}`);
+      console.log(`🕒 Starting with ${currentPattern.name} pattern`);
+      console.log(`🔄 Active patterns:`, Object.entries(HUMAN_PATTERNS)
+        .filter(([_, p]) => !p.pause)
+        .map(([name]) => name)
+        .join(', '));
+    });
+  } catch (error) {
+    console.error('❌ Failed to initialize application:', error);
+    process.exit(1);
+  }
+})();
