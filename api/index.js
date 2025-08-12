@@ -628,10 +628,40 @@ app.post("/start-processing", async (req, res) => {
           success: true,
           message: "Session updated and continuing existing job",
           jobId: existingJob.jobId,
-          status: existingJob.status,
+          status: "processing", // Always set to processing when resuming
           processedCount: existingJob.processedCount,
           totalContacts: existingJob.totalContacts,
-          currentPattern: currentPattern.name
+          currentPattern: currentPattern.name,
+          canResume: true,
+          resumedAt: new Date().toISOString()
+        });
+      }
+      
+      // If resuming, start the background process anyway
+      if (resume) {
+        console.log("🔄 Resuming job processing for:", existingJob.jobId);
+        
+        // Update job status to processing if it was paused
+        if (existingJob.status === "paused") {
+          existingJob.status = "processing";
+          existingJob.resumedAt = new Date().toISOString();
+          await saveJobs(jobs);
+        }
+        
+        // Start processing in background
+        setImmediate(() => processJobInBackground(existingJob.jobId));
+        
+        const currentPattern = getCurrentHumanPattern();
+        return res.status(200).json({
+          success: true,
+          message: "Job resumed successfully",
+          jobId: existingJob.jobId,
+          status: "processing",
+          processedCount: existingJob.processedCount,
+          totalContacts: existingJob.totalContacts,
+          currentPattern: currentPattern.name,
+          canResume: true,
+          resumedAt: new Date().toISOString()
         });
       }
       
@@ -888,15 +918,66 @@ const processJobInBackground = async (jobId) => {
 
       const batch = contactBatches[batchIndex];
 
-      // Check if user session is still valid
-      const currentUserSessions = await loadUserSessions();
-      const currentUserSession = currentUserSessions[job.userId];
+      // Check if user session is still valid - more detailed error checking
+      try {
+        console.log(`🔍 Kullanıcı oturumu kontrol ediliyor: ${job.userId}`);
+        const currentUserSessions = await loadUserSessions();
+        const currentUserSession = currentUserSessions[job.userId];
 
-      if (!currentUserSession || !currentUserSession.accessToken) {
-        console.log(`⏸️ Pausing job ${jobId} - user session invalid`);
+        if (!currentUserSession) {
+          console.error(`❌ Kullanıcı ${job.userId} için oturum bulunamadı`);
+          job.status = "paused";
+          job.pauseReason = "session_not_found";
+          job.lastError = {
+            type: "SESSION_ERROR",
+            message: "User session not found",
+            timestamp: new Date().toISOString()
+          };
+          await saveJobs({ ...(await loadJobs()), [jobId]: job });
+          return;
+        }
+        
+        if (!currentUserSession.accessToken) {
+          console.error(`❌ Kullanıcı ${job.userId} için Dataverse erişim token'ı yok`);
+          job.status = "paused";
+          job.pauseReason = "dataverse_session_invalid";
+          job.lastError = {
+            type: "AUTH_ERROR",
+            message: "Dataverse authentication required",
+            timestamp: new Date().toISOString()
+          };
+          await saveJobs({ ...(await loadJobs()), [jobId]: job });
+          return;
+        }
+        
+        if (!currentUserSession.li_at || !currentUserSession.jsessionid) {
+          console.error(`❌ Kullanıcı ${job.userId} için LinkedIn oturum bilgisi eksik`);
+          job.status = "paused";
+          job.pauseReason = "linkedin_session_invalid";
+          job.lastError = {
+            type: "AUTH_ERROR",
+            message: "LinkedIn authentication required",
+            timestamp: new Date().toISOString()
+          };
+          await saveJobs({ ...(await loadJobs()), [jobId]: job });
+          return;
+        }
+        
+        console.log(`✅ Kullanıcı oturumu geçerli: ${job.userId}`);
+      } catch (sessionError) {
+        console.error(`❌ Oturum kontrolü hatası: ${sessionError.message}`);
         job.status = "paused";
-        job.pauseReason = "session_invalid";
-        await saveJobs({ ...(await loadJobs()), [jobId]: job });
+        job.pauseReason = "session_check_failed";
+        job.lastError = {
+          type: "SYSTEM_ERROR",
+          message: `Session check failed: ${sessionError.message}`,
+          timestamp: new Date().toISOString()
+        };
+        try {
+          await saveJobs({ ...(await loadJobs()), [jobId]: job });
+        } catch (saveError) {
+          console.error(`❌ İş kaydedilirken hata oluştu: ${saveError.message}`);
+        }
         return;
       }
 
@@ -904,21 +985,29 @@ const processJobInBackground = async (jobId) => {
         `🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId} (${currentPatternName} pattern)`
       );
 
+      // Her işlem için detaylı log kayıtları tutacak şekilde yapıyı değiştiriyorum
       const batchPromises = batch.map(async (contact) => {
         try {
+          console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
           contact.status = "processing";
 
           const match = contact.linkedinUrl.match(/\/in\/([^\/]+)/);
           const profileId = match ? match[1] : null;
 
           if (!profileId) {
+            console.error(`❌ Geçersiz LinkedIn URL formatı: ${contact.linkedinUrl}`);
             throw new Error(`Invalid LinkedIn URL format`);
           }
 
+          console.log(`🔍 LinkedIn profil ID'si alındı: ${profileId}`);
           const customCookies = {
             li_at: currentUserSession.li_at,
             jsession: currentUserSession.jsessionid,
           };
+          
+          if (!currentUserSession.li_at || !currentUserSession.jsessionid) {
+            console.error(`❌ LinkedIn oturum bilgileri eksik`);
+          }
 
           // Handle Dataverse unauthorized errors
           const handleDataverseError = async (error) => {
@@ -1060,13 +1149,25 @@ const processJobInBackground = async (jobId) => {
       });
 
       try {
-        await Promise.allSettled(batchPromises);
+        // Promise.allSettled yerine her bir promisi tek tek izleme için değiştiriyorum
+        console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
+        const results = await Promise.allSettled(batchPromises);
+        
+        // Sonuçları kontrol et
+        results.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            console.error(`❌ Batch promise ${index} başarısız oldu:`, result.reason);
+          }
+        });
+        
         job.processedCount = job.successCount + job.failureCount;
+        console.log(`📊 Güncel işlem durumu: ${job.processedCount}/${job.totalContacts} (${job.successCount} başarılı, ${job.failureCount} başarısız)`);
 
         // Save progress after each batch
         const currentJobs = await loadJobs();
         currentJobs[jobId] = job;
         await saveJobs(currentJobs);
+        console.log(`💾 İşlem durumu kaydedildi`);
 
         // Human-like behavior: Check for pattern-aware breaks
         const breakTime = shouldTakeBreak(processedInSession);
@@ -1076,6 +1177,7 @@ const processJobInBackground = async (jobId) => {
             `😴 Taking a ${breakMinutes} minute break after ${processedInSession} profiles in ${currentPatternName}...`
           );
           await new Promise((resolve) => setTimeout(resolve, breakTime));
+          console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
         }
 
         // Wait between batches with human pattern timing
@@ -1085,6 +1187,7 @@ const processJobInBackground = async (jobId) => {
             `⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`
           );
           await new Promise((resolve) => setTimeout(resolve, waitTime));
+          console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
         }
 
         console.log(
@@ -1168,17 +1271,41 @@ const processJobInBackground = async (jobId) => {
 app.get("/job-status/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
-    console.log(`Getting status for job ID: ${jobId}`);
+    console.log(`🔍 JOB STATUS REQUEST - Getting status for job ID: ${jobId}`);
+    console.log(`🔍 Request headers:`, req.headers['user-agent']);
+    console.log(`🔍 Request from IP: ${req.ip}`);
     
     const jobs = await loadJobs();
     const job = jobs[jobId];
 
     if (!job) {
-      console.log(`Job with ID ${jobId} not found`);
+      console.log(`❌ Job with ID ${jobId} not found`);
       return res.status(404).json({
         success: false,
         message: "Job not found",
       });
+    }
+
+    // Check if job is stalled and needs restart
+    const now = new Date();
+    const lastProcessed = job.lastProcessedAt ? new Date(job.lastProcessedAt) : null;
+    const timeSinceLastProcess = lastProcessed ? (now - lastProcessed) / 1000 : 0;
+    
+    // If job is in processing state but hasn't been updated for 5 minutes, restart it
+    const isStalled = job.status === "processing" && 
+                     job.processedCount < job.totalContacts && 
+                     timeSinceLastProcess > 300; // 5 minutes
+                     
+    if (isStalled) {
+      console.log(`⚠️ Job ${jobId} appears stalled (${Math.round(timeSinceLastProcess)}s since last update), restarting...`);
+      
+      // Restart background processing
+      setImmediate(() => processJobInBackground(jobId));
+      
+      // Update job status to indicate restart
+      job.restartedAt = now.toISOString();
+      job.restartCount = (job.restartCount || 0) + 1;
+      await saveJobs({ ...jobs, [jobId]: job });
     }
 
     // Synchronize the job stats with daily stats to ensure consistency
@@ -1209,10 +1336,13 @@ app.get("/job-status/:jobId", async (req, res) => {
     const completedAt = formatDate(job.completedAt) || null;
     const failedAt = formatDate(job.failedAt) || null;
 
-    console.log(`Returning job status for ${jobId}:`, {
+    console.log(`✅ Returning job status for ${jobId}:`, {
       status: job.status,
       processed: job.processedCount,
-      timestamps: { createdAt, lastProcessedAt, completedAt }
+      total: job.totalContacts,
+      timestamps: { createdAt, lastProcessedAt, completedAt },
+      stalled: isStalled,
+      timeSinceLastProcess: Math.round(timeSinceLastProcess)
     });
 
     res.status(200).json({
@@ -1236,6 +1366,9 @@ app.get("/job-status/:jobId", async (req, res) => {
         currentPattern: currentPattern.name,
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
+        isStalled: isStalled,
+        restartCount: job.restartCount || 0,
+        timeSinceLastProcess: Math.round(timeSinceLastProcess)
       },
       simpleClientStats: null, // Frontend expects this property
       simpleClientInitialized: true // Frontend expects this property
@@ -1445,6 +1578,160 @@ app.post("/synchronize-job-stats/:userId", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Error synchronizing job stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message
+    });
+  }
+});
+
+// Yeni endpoint: Polling işlemi için frontend tarafından kullanılacak
+// Bu endpoint hem job durumunu kontrol eder hem de gerekirse işlemi devam ettirir
+app.get("/job-poll/:userId", async (req, res) => {
+  try {
+    console.log(`🔄 Job poll request for user: ${req.params.userId}`);
+    
+    const userId = req.params.userId;
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    if (!userSession || !userSession.currentJobId) {
+      console.log(`❌ No active job found for user ${userId} during polling`);
+      return res.status(200).json({
+        success: false,
+        message: "No active job found for user",
+        canResume: false,
+        job: null,
+        currentPattern: getCurrentHumanPattern().name,
+      });
+    }
+    
+    const jobs = await loadJobs();
+    const job = jobs[userSession.currentJobId];
+    
+    console.log(`🔍 Job poll check for ${userId}:`, 
+      job ? 
+      { 
+        jobId: job.jobId, 
+        status: job.status, 
+        processedCount: job.processedCount, 
+        totalContacts: job.totalContacts 
+      } : 
+      { jobFound: false, jobId: userSession.currentJobId }
+    );
+    
+    if (!job) {
+      console.error(`❌ Job ${userSession.currentJobId} not found for user ${userId} during polling`);
+      return res.status(200).json({
+        success: false,
+        message: `Job with ID ${userSession.currentJobId} not found`,
+        canResume: false,
+        job: null,
+        currentPattern: getCurrentHumanPattern().name,
+      });
+    }
+    
+    // Synchronize the job stats with daily stats
+    await synchronizeJobWithDailyStats(userId, job);
+    
+    // Check if the job is in "processing" state but actually not running
+    // If it's stuck in processing state, restart it
+    if (job.status === "processing" && job.processedCount < job.totalContacts) {
+      const lastProcessedTime = job.lastProcessedTime ? new Date(job.lastProcessedTime) : null;
+      const now = new Date();
+      
+      // If no processing happened in the last 3 minutes, it might be stuck
+      if (!lastProcessedTime || (now - lastProcessedTime > 3 * 60 * 1000)) {
+        console.log(`⚠️ Job ${job.jobId} seems stuck in processing state. Restarting...`);
+        
+        // Use setImmediate to restart processing in background
+        setImmediate(() => processJobInBackground(job.jobId));
+      }
+    }
+    
+    // If the job is paused, check if it's time to resume
+    if (job.status === "paused") {
+      // Check if paused due to limits that might have reset
+      if (job.pauseReason === "limit_reached" || 
+          job.pauseReason === "pattern_limit_reached" ||
+          job.pauseReason === "hourly_limit_reached" ||
+          job.pauseReason === "daily_limit_reached" ||
+          job.pauseReason === "pause_period") {
+        
+        const limitCheck = await checkDailyLimit(userId);
+        
+        // If we can process now, resume the job
+        if (limitCheck.canProcess) {
+          console.log(`✅ Limits have reset, resuming paused job ${job.jobId}`);
+          job.status = "processing";
+          job.resumedAt = new Date().toISOString();
+          await saveJobs({...(await loadJobs()), [job.jobId]: job});
+          
+          // Use setImmediate to restart processing in background
+          setImmediate(() => processJobInBackground(job.jobId));
+        }
+      }
+    }
+    
+    const limitCheck = await checkDailyLimit(userId);
+    const currentPattern = getCurrentHumanPattern();
+
+    // Format dates properly
+    const formatDate = (date) => {
+      if (!date) return null;
+      try {
+        const d = new Date(date);
+        // Check if date is valid
+        if (isNaN(d.getTime())) return null;
+        return d.toISOString();
+      } catch (e) {
+        console.error("Invalid date:", date, e);
+        return null;
+      }
+    };
+    
+    // Get most accurate timestamp for each field
+    const createdAt = formatDate(job.createdAt) || formatDate(job.startTime) || null;
+    const lastProcessedAt = formatDate(job.lastProcessedAt) || formatDate(job.lastProcessedTime) || null;
+    const completedAt = formatDate(job.completedAt) || null;
+    const failedAt = formatDate(job.failedAt) || null;
+    
+    console.log(`📊 Job poll response: ${job.processedCount}/${job.totalContacts}, status: ${job.status}`);
+    
+    res.status(200).json({
+      success: true,
+      canResume: job.status === "paused" || job.status === "processing",
+      authStatus: {
+        linkedinValid: !job.pauseReason?.includes("linkedin_session"),
+        dataverseValid: !job.pauseReason?.includes("dataverse_session"),
+        lastError: job.lastError || null,
+        needsReauth: job.pauseReason?.includes("_session_invalid") || false
+      },
+      job: {
+        jobId: job.jobId,
+        status: job.status,
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        successCount: job.successCount,
+        failureCount: job.failureCount,
+        createdAt: createdAt,
+        lastProcessedAt: lastProcessedAt,
+        completedAt: completedAt,
+        failedAt: failedAt,
+        pauseReason: job.pauseReason,
+        lastError: job.lastError,
+        dailyStats: job.dailyStats,
+        humanPatterns: job.humanPatterns,
+        currentPattern: currentPattern.name,
+        currentPatternInfo: currentPattern,
+        dailyLimitInfo: limitCheck,
+      },
+      simpleClientStats: null, // Frontend expects this property
+      simpleClientInitialized: true // Frontend expects this property
+    });
+  } catch (error) {
+    console.error(`❌ Error in job polling: ${error}`);
     res.status(500).json({
       success: false,
       message: "Internal server error",

@@ -13,7 +13,7 @@ import { JobStatusPopover } from "./components/Updated/Updated";
 
 // API Configuration
 const API_BASE_URL = "https://linkedin-api-basl.onrender.com";
-const MONITORING_INTERVAL = 15000; // 15 seconds
+const MONITORING_INTERVAL = 10000; // 10 seconds - more frequent monitoring
 
 function App() {
   const {
@@ -213,18 +213,34 @@ function App() {
 
   // Enhanced job monitoring with simple client stats
   const startJobMonitoring = (jobId: string) => {
+    console.log(`🔄 Starting job monitoring for: ${jobId}`);
+    
     const interval = setInterval(async () => {
       try {
+        console.log(`📊 Polling job status for: ${jobId}`);
         const response = await fetch(`${API_BASE_URL}/job-status/${jobId}`);
+        
         if (response.ok) {
           const result = await response.json();
+          console.log(`📋 Job status response:`, {
+            success: result.success,
+            status: result.job?.status,
+            processed: result.job?.processedCount,
+            total: result.job?.totalContacts,
+            isStalled: result.job?.isStalled
+          });
+          
           if (result.success) {
             setJobStatus(result.job);
             setSimpleClientStats(result.simpleClientStats);
             setSimpleClientInitialized(result.simpleClientInitialized);
 
             // Enhanced status message with simple client info
-            let statusMessage = `Processing: ${result.job.processedCount}/${result.job.totalContacts} (Success: ${result.job.successCount}, Failed: ${result.job.failureCount})`;
+            let statusMessage = `Processing: ${result.job.processedCount}/${result.job.totalContacts} (Success: ${result.job.successCount || 0}, Failed: ${result.job.failureCount || 0})`;
+            
+            if (result.job.isStalled) {
+              statusMessage += ` | Restarting stalled job...`;
+            }
             
             if (result.simpleClientStats) {
               const stats = result.simpleClientStats;
@@ -240,15 +256,18 @@ function App() {
                 progress: {
                   total: result.job.totalContacts,
                   processed: result.job.processedCount,
-                  success: result.job.successCount,
-                  failed: result.job.failureCount,
+                  success: result.job.successCount || 0,
+                  failed: result.job.failureCount || 0,
                 },
                 pauseReason: result.job.pauseReason,
                 simpleClientStats: result.simpleClientStats,
+                isStalled: result.job.isStalled,
+                restartCount: result.job.restartCount || 0
               },
             });
 
             if (result.job.status === "completed") {
+              console.log(`✅ Job ${jobId} completed successfully`);
               clearInterval(interval);
               chrome.runtime.sendMessage({
                 type: "PROCESS_STATUS",
@@ -257,12 +276,13 @@ function App() {
                   message: "All LinkedIn profile updates completed!",
                   finalStats: {
                     total: result.job.totalContacts,
-                    success: result.job.successCount,
-                    failed: result.job.failureCount,
+                    success: result.job.successCount || 0,
+                    failed: result.job.failureCount || 0,
                   },
                 },
               });
             } else if (result.job.status === "paused") {
+              console.log(`⏸️ Job ${jobId} paused: ${result.job.pauseReason}`);
               clearInterval(interval);
               let pauseMessage = "Job paused";
               if (result.job.pauseReason) {
@@ -291,10 +311,14 @@ function App() {
                 },
               });
             }
+          } else {
+            console.error(`❌ Job status check failed:`, result.message);
           }
+        } else {
+          console.error(`❌ Failed to get job status: ${response.status} ${response.statusText}`);
         }
       } catch (error) {
-        console.error("Error monitoring job status:", error);
+        console.error("❌ Error monitoring job status:", error);
       }
     }, MONITORING_INTERVAL);
     
@@ -424,9 +448,34 @@ function App() {
 
               const resumeResult = await callStartProcessingAPI(resumeRequestData);
               if (resumeResult.success) {
-                setJobStatus(existingJobResult.job);
+                // Set the job status to the resumed job
+                setJobStatus({
+                  ...existingJobResult.job,
+                  status: "processing",
+                  resumedAt: new Date().toISOString()
+                });
+                
+                // Start monitoring immediately
+                console.log(`🔄 Starting monitoring for resumed job: ${existingJobResult.job.jobId}`);
                 startJobMonitoring(existingJobResult.job.jobId);
                 setJobRunTimestamp();
+                
+                // Send initial status message
+                chrome.runtime.sendMessage({
+                  type: "PROCESS_STATUS",
+                  data: {
+                    status: "processing",
+                    message: `Resumed job: ${existingJobResult.job.processedCount}/${existingJobResult.job.totalContacts} contacts processed`,
+                    progress: {
+                      total: existingJobResult.job.totalContacts,
+                      processed: existingJobResult.job.processedCount,
+                      success: existingJobResult.job.successCount || 0,
+                      failed: existingJobResult.job.failureCount || 0,
+                    },
+                  },
+                });
+              } else {
+                console.error("❌ Failed to resume job:", resumeResult);
               }
               return;
             }
