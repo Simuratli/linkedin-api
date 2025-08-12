@@ -1383,15 +1383,14 @@ app.get("/job-status/:jobId", async (req, res) => {
   }
 });
 
-// Enhanced user job endpoint with pattern info and synchronized stats
+// Enhanced user job endpoint with job age tracking and better memory
 app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
     
-    // Log the user session to debug
-    console.log(`Checking job for user ${userId}:`, 
+    console.log(`🔍 Checking job for user ${userId}:`, 
       userSession ? 
       { hasSession: true, currentJobId: userSession.currentJobId } : 
       { hasSession: false }
@@ -1399,7 +1398,7 @@ app.get("/user-job/:userId", async (req, res) => {
 
     if (!userSession || !userSession.currentJobId) {
       const limitCheck = await checkDailyLimit(userId);
-      console.log(`No active job found for user ${userId}`);
+      console.log(`❌ No active job found for user ${userId}`);
       return res.status(200).json({
         success: false,
         message: "No active job found for user",
@@ -1413,21 +1412,8 @@ app.get("/user-job/:userId", async (req, res) => {
     const jobs = await loadJobs();
     const job = jobs[userSession.currentJobId];
     
-    console.log(`Job check for ${userId}:`, 
-      job ? 
-      { 
-        jobId: job.jobId, 
-        status: job.status, 
-        processedCount: job.processedCount, 
-        totalContacts: job.totalContacts 
-      } : 
-      { jobFound: false, jobId: userSession.currentJobId }
-    );
-
     if (!job) {
-      // If the job ID exists in user session but not in the jobs collection,
-      // the job might have been deleted or there's a mismatch
-      console.error(`Job ${userSession.currentJobId} not found for user ${userId}`);
+      console.error(`❌ Job ${userSession.currentJobId} not found for user ${userId}`);
       return res.status(200).json({
         success: false,
         message: `Job with ID ${userSession.currentJobId} not found`,
@@ -1437,7 +1423,21 @@ app.get("/user-job/:userId", async (req, res) => {
       });
     }
 
-    // Synchronize the job stats with daily stats to ensure consistency
+    // Calculate job age
+    const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+    const jobAgeInDays = Math.floor((Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60 * 24));
+    const jobAgeInHours = Math.floor((Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60));
+    
+    console.log(`📊 Job age check for ${userId}:`, {
+      jobId: job.jobId,
+      status: job.status,
+      ageInDays: jobAgeInDays,
+      ageInHours: jobAgeInHours,
+      processedCount: job.processedCount,
+      totalContacts: job.totalContacts
+    });
+
+    // Synchronize the job stats with daily stats
     console.log(`🔄 Synchronizing job stats for user ${userId}`);
     await synchronizeJobWithDailyStats(userId, job);
 
@@ -1449,7 +1449,6 @@ app.get("/user-job/:userId", async (req, res) => {
       if (!date) return null;
       try {
         const d = new Date(date);
-        // Check if date is valid
         if (isNaN(d.getTime())) return null;
         return d.toISOString();
       } catch (e) {
@@ -1458,15 +1457,20 @@ app.get("/user-job/:userId", async (req, res) => {
       }
     };
     
-    // Get most accurate timestamp for each field
     const createdAt = formatDate(job.createdAt) || formatDate(job.startTime) || null;
     const lastProcessedAt = formatDate(job.lastProcessedAt) || formatDate(job.lastProcessedTime) || null;
     const completedAt = formatDate(job.completedAt) || null;
     const failedAt = formatDate(job.failedAt) || null;
     
-    console.log("Sending job timestamps:", { createdAt, lastProcessedAt, completedAt });
-    console.log("Job processed count:", job.processedCount);
-    console.log("Job success count:", job.successCount);
+    console.log("✅ Sending job data with age tracking:", { 
+      jobId: job.jobId,
+      ageInDays: jobAgeInDays,
+      processedCount: job.processedCount,
+      totalContacts: job.totalContacts,
+      createdAt, 
+      lastProcessedAt, 
+      completedAt 
+    });
 
     res.status(200).json({
       success: true,
@@ -1495,12 +1499,97 @@ app.get("/user-job/:userId", async (req, res) => {
         currentPattern: currentPattern.name,
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
+        // Enhanced job age tracking
+        jobAge: {
+          days: jobAgeInDays,
+          hours: jobAgeInHours,
+          createdTimestamp: jobCreatedAt.getTime(),
+          isOld: jobAgeInDays > 1, // Flag jobs older than 1 day
+          isVeryOld: jobAgeInDays > 7 // Flag jobs older than 1 week
+        }
       },
-      simpleClientStats: null, // Frontend expects this property
-      simpleClientInitialized: true // Frontend expects this property
+      simpleClientStats: null,
+      simpleClientInitialized: true
     });
   } catch (error) {
     console.error("❌ Error getting user job:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// Debug endpoint to check job memory and session persistence
+app.get("/debug-job-memory/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const userSessions = await loadUserSessions();
+    const jobs = await loadJobs();
+    const userSession = userSessions[userId];
+    
+    const debugInfo = {
+      userId,
+      timestamp: new Date().toISOString(),
+      userSession: {
+        exists: !!userSession,
+        currentJobId: userSession?.currentJobId || null,
+        lastActivity: userSession?.lastActivity || null,
+        sessionKeys: userSession ? Object.keys(userSession) : [],
+      },
+      allUserSessions: {
+        totalUsers: Object.keys(userSessions).length,
+        userIds: Object.keys(userSessions),
+      },
+      jobs: {
+        totalJobs: Object.keys(jobs).length,
+        allJobIds: Object.keys(jobs),
+        userJobs: Object.values(jobs).filter(job => job.userId === userId).map(job => ({
+          jobId: job.jobId,
+          status: job.status,
+          createdAt: job.createdAt,
+          processedCount: job.processedCount,
+          totalContacts: job.totalContacts
+        }))
+      },
+      jobForCurrentSession: null
+    };
+    
+    if (userSession?.currentJobId) {
+      const currentJob = jobs[userSession.currentJobId];
+      if (currentJob) {
+        const jobAge = currentJob.createdAt ? 
+          Math.floor((Date.now() - new Date(currentJob.createdAt).getTime()) / (1000 * 60 * 60 * 24)) : 
+          'unknown';
+          
+        debugInfo.jobForCurrentSession = {
+          jobId: currentJob.jobId,
+          status: currentJob.status,
+          ageInDays: jobAge,
+          processedCount: currentJob.processedCount,
+          totalContacts: currentJob.totalContacts,
+          createdAt: currentJob.createdAt,
+          lastProcessedAt: currentJob.lastProcessedAt,
+          canResume: currentJob.status === "paused" || currentJob.status === "processing"
+        };
+      } else {
+        debugInfo.jobForCurrentSession = {
+          error: `Job ${userSession.currentJobId} not found in jobs collection`
+        };
+      }
+    }
+    
+    console.log("🔍 Debug job memory for user:", userId, debugInfo);
+    
+    res.status(200).json({
+      success: true,
+      debug: debugInfo
+    });
+    
+  } catch (error) {
+    console.error("Error in debug-job-memory endpoint:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
