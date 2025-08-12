@@ -61,25 +61,50 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
 
         try {
           const companyResponse = await getDataverse(url, token);
+          
+          // Check for unauthorized response
+          if (companyResponse?.error?.includes('401') || companyResponse?.error?.includes('Unauthorized')) {
+            throw new Error('DATAVERSE_AUTH_REQUIRED');
+          }
+
           if (companyResponse?.value?.length > 0) {
             userRequest["parentcustomerid_account@odata.bind"] =
               `/accounts(${companyResponse.value[0].accountid})`;
           } else {
-            console.log(latestPosition,'latestpso')
+            console.log('Creating new company record...');
             const request = extractCompanyInfo(latestPosition, idOfCompany);
-            const response = await createDataverse(
-              `${endpoint}/accounts`,
-              token,
-              request,
-              "POST"
-            );
-            if(response){
+            
+            try {
+              const response = await createDataverse(
+                `${endpoint}/accounts`,
+                token,
+                request,
+                "POST"
+              );
+
+              // Check for unauthorized response
+              if (response?.error?.includes('401') || response?.error?.includes('Unauthorized')) {
+                throw new Error('DATAVERSE_AUTH_REQUIRED');
+              }
+
+              if (response?.accountid) {
                 userRequest["parentcustomerid_account@odata.bind"] =
-              `/accounts(${response.accountid})`;
+                  `/accounts(${response.accountid})`;
+                console.log(`✅ Successfully created new company: ${request.name}`);
+              } else {
+                console.error('Failed to create company:', response);
+              }
+            } catch (createError) {
+              if (createError.message === 'DATAVERSE_AUTH_REQUIRED') {
+                throw createError;
+              }
+              console.error("Error creating company:", createError.message);
             }
-            console.log(response,'response of new company')
           }
         } catch (e) {
+          if (e.message === 'DATAVERSE_AUTH_REQUIRED') {
+            throw e;
+          }
           console.error("Error checking company existence:", e.message);
         }
       }
@@ -124,6 +149,10 @@ async function transformToCreateUserRequest(profileData, endpoint, token) {
 
     return userRequest;
   } catch (error) {
+    if (error.message === 'DATAVERSE_AUTH_REQUIRED') {
+      console.log('🔒 Dataverse authentication required');
+      throw error;
+    }
     console.error("Error transforming LinkedIn profile data:", error);
     throw error;
   }

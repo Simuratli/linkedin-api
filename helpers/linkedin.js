@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const fetch = require("node-fetch");
+const { getBakuTime, getBakuDateTime, getBakuHour, getBakuDay } = require('./timeZone');
 
 const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -97,10 +98,10 @@ const HUMAN_PATTERNS = {
 
 // Get current human pattern based on time
 function getCurrentHumanPattern() {
-  const now = new Date();
-  const currentHour = now.getHours();
-   console.log(`🕒 Current time: ${now.toLocaleString('tr-TR')}, Hour: ${currentHour}`);
-  const isWeekend = [0, 6].includes(now.getDay()); // 0=Sunday, 6=Saturday
+  const bakuHour = getBakuHour();
+  const isWeekend = [0, 6].includes(getBakuDay()); // 0=Sunday, 6=Saturday
+
+  console.log(`🕒 Current time: ${getBakuTime()}, Hour: ${bakuHour}`);
 
   // Check each pattern with weekday/weekend awareness
   for (const [patternName, pattern] of Object.entries(HUMAN_PATTERNS)) {
@@ -110,12 +111,12 @@ function getCurrentHumanPattern() {
 
     if (pattern.hourStart <= pattern.hourEnd) {
       // Normal range (e.g., 9-11, 14-17)
-      if (currentHour >= pattern.hourStart && currentHour < pattern.hourEnd) {
+      if (bakuHour >= pattern.hourStart && bakuHour < pattern.hourEnd) {
         return { name: patternName, ...pattern };
       }
     } else {
       // Overnight range (e.g., 21-8 means 9PM to 8AM)
-      if (currentHour >= pattern.hourStart || currentHour < pattern.hourEnd) {
+      if (bakuHour >= pattern.hourStart || bakuHour < pattern.hourEnd) {
         return { name: patternName, ...pattern };
       }
     }
@@ -236,7 +237,7 @@ class SimpleQueue {
   }
 
   getTodayStart() {
-    const today = new Date();
+    const today = getBakuDateTime();
     today.setHours(0, 0, 0, 0);
     return today.getTime();
   }
@@ -444,7 +445,7 @@ async function fetchLinkedInProfile(profileId, customCookies = null) {
       JSESSIONID: customCookies?.jsession || generateSessionId(),
       li_at: customCookies?.li_at || "YOUR_LI_AT_TOKEN_HERE",
       liap: "true",
-      timezone: "America/Los_Angeles",
+      timezone: "Asia/Baku", // Update timezone to Baku
       lang: "v=2&lang=en-us",
     };
 

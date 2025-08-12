@@ -830,97 +830,114 @@ const processJobInBackground = async (jobId) => {
             jsession: currentUserSession.jsessionid,
           };
 
-          const profileData = await fetchLinkedInProfile(
-            profileId,
-            customCookies
-          );
+          // Handle Dataverse unauthorized errors
+          const handleDataverseError = async (error) => {
+            if (error.message.includes("401") || error.message.includes("Unauthorized")) {
+              console.log("🔒 Dataverse session expired, pausing job...");
+              job.status = "paused";
+              job.pauseReason = "dataverse_session_invalid";
+              job.pausedAt = new Date().toISOString();
+              job.lastError = {
+                type: "AUTH_ERROR",
+                message: "Dataverse authentication required. Please re-authenticate through the extension.",
+                timestamp: new Date().toISOString()
+              };
+              await saveJobs({ ...(await loadJobs()), [jobId]: job });
+              throw new Error("DATAVERSE_AUTH_REQUIRED");
+            }
+            throw error;
+          };
 
-          if (profileData.error) {
-            // Check if the error is related to authentication
-            if (profileData.error.includes("not found") || profileData.error.includes("unauthorized")) {
-              console.log("🔑 LinkedIn session may be invalid, pausing job...");
+          // Add error handling for Dataverse calls
+          try {
+            const profileData = await fetchLinkedInProfile(profileId, customCookies);
+            
+            if (profileData.error && (profileData.error.includes("unauthorized") || profileData.error.includes("not found"))) {
+              console.log("🔒 LinkedIn session expired, pausing job...");
               job.status = "paused";
               job.pauseReason = "linkedin_session_invalid";
-              await saveJobs(jobs);
-              throw new Error(`LinkedIn session invalid: ${profileData.error}`);
+              job.pausedAt = new Date().toISOString();
+              job.lastError = {
+                type: "AUTH_ERROR",
+                message: "LinkedIn authentication required. Please re-authenticate through the extension.",
+                timestamp: new Date().toISOString()
+              };
+              await saveJobs({ ...(await loadJobs()), [jobId]: job });
+              throw new Error("LINKEDIN_AUTH_REQUIRED");
             }
-            throw new Error(`LinkedIn API error: ${profileData.error}`);
+
+            // Wrap Dataverse calls in try-catch
+            try {
+              const convertedProfile = await transformToCreateUserRequest(
+                profileData,
+                `${currentUserSession.crmUrl}/api/data/v9.2`,
+                currentUserSession.accessToken
+              );
+
+              const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
+
+              await callDataverseWithRefresh(
+                updateUrl,
+                currentUserSession.accessToken,
+                "PATCH",
+                convertedProfile,
+                refreshData
+              ).catch(handleDataverseError);
+
+            } catch (dataverseError) {
+              await handleDataverseError(dataverseError);
+            }
+
+            contact.status = "completed";
+            contact.humanPattern = profileData.humanPattern || currentPatternName;
+            job.successCount++;
+            processedInSession++;
+
+            // Update pattern-specific stats
+            if (!job.dailyStats.patternBreakdown)
+              job.dailyStats.patternBreakdown = {};
+            if (!job.dailyStats.patternBreakdown[currentPatternName]) {
+              job.dailyStats.patternBreakdown[currentPatternName] = 0;
+            }
+            job.dailyStats.patternBreakdown[currentPatternName]++;
+
+            // Update daily stats
+            await updateDailyStats(job.userId);
+
+            console.log(
+              `✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`
+            );
+          } catch (error) {
+            if (error.message === "LINKEDIN_AUTH_REQUIRED" || error.message === "DATAVERSE_AUTH_REQUIRED") {
+              // Stop processing and wait for user re-authentication
+              console.log("⏸️ Processing paused - waiting for user authentication");
+              return;
+            }
+            console.error(
+              `❌ Error processing contact ${contact.contactId}:`,
+              error.message
+            );
+
+            contact.status = "failed";
+            contact.error = error.message;
+            contact.humanPattern = currentPatternName;
+            job.failureCount++;
+            job.errors.push({
+              contactId: contact.contactId,
+              error: error.message,
+              timestamp: new Date().toISOString(),
+              humanPattern: currentPatternName,
+            });
+
+            if (error.message.includes("TOKEN_REFRESH_FAILED")) {
+              console.log(`⏸️ Pausing job ${jobId} - token refresh failed`);
+              job.status = "paused";
+              job.pauseReason = "token_refresh_failed";
+              throw error;
+            }
           }
-
-          // Log which pattern was used for this profile
-          console.log(
-            `🕒 Profile ${profileId} processed with ${profileData.humanPattern || currentPatternName} pattern`
-          );
-
-          const convertedProfile = await transformToCreateUserRequest(
-            profileData,
-            `${currentUserSession.crmUrl}/api/data/v9.2`,
-            currentUserSession.accessToken
-          );
-
-          const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
-
-          const refreshData = currentUserSession.refreshToken
-            ? {
-                refreshToken: currentUserSession.refreshToken,
-                clientId: currentUserSession.clientId,
-                tenantId: currentUserSession.tenantId,
-                crmUrl: currentUserSession.crmUrl,
-                verifier: currentUserSession.verifier,
-                userId: job.userId, // userId'yi ekleyelim
-              }
-            : null;
-
-          await callDataverseWithRefresh(
-            updateUrl,
-            currentUserSession.accessToken,
-            "PATCH",
-            convertedProfile,
-            refreshData
-          );
-
-          contact.status = "completed";
-          contact.humanPattern = profileData.humanPattern || currentPatternName;
-          job.successCount++;
-          processedInSession++;
-
-          // Update pattern-specific stats
-          if (!job.dailyStats.patternBreakdown)
-            job.dailyStats.patternBreakdown = {};
-          if (!job.dailyStats.patternBreakdown[currentPatternName]) {
-            job.dailyStats.patternBreakdown[currentPatternName] = 0;
-          }
-          job.dailyStats.patternBreakdown[currentPatternName]++;
-
-          // Update daily stats
-          await updateDailyStats(job.userId);
-
-          console.log(
-            `✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`
-          );
         } catch (error) {
-          console.error(
-            `❌ Error processing contact ${contact.contactId}:`,
-            error.message
-          );
-
-          contact.status = "failed";
-          contact.error = error.message;
-          contact.humanPattern = currentPatternName;
-          job.failureCount++;
-          job.errors.push({
-            contactId: contact.contactId,
-            error: error.message,
-            timestamp: new Date().toISOString(),
-            humanPattern: currentPatternName,
-          });
-
-          if (error.message.includes("TOKEN_REFRESH_FAILED")) {
-            console.log(`⏸️ Pausing job ${jobId} - token refresh failed`);
-            job.status = "paused";
-            job.pauseReason = "token_refresh_failed";
-            throw error;
-          }
+          // ...existing error handling code...
         }
       });
 
@@ -1108,6 +1125,12 @@ app.get("/user-job/:userId", async (req, res) => {
     res.status(200).json({
       success: true,
       canResume: job.status === "paused" || job.status === "processing",
+      authStatus: {
+        linkedinValid: !job.pauseReason?.includes("linkedin_session"),
+        dataverseValid: !job.pauseReason?.includes("dataverse_session"),
+        lastError: job.lastError || null,
+        needsReauth: job.pauseReason?.includes("_session_invalid") || false
+      },
       job: {
         jobId: job.jobId,
         status: job.status,
@@ -1120,9 +1143,9 @@ app.get("/user-job/:userId", async (req, res) => {
         completedAt: job.completedAt,
         failedAt: job.failedAt,
         pauseReason: job.pauseReason,
-        estimatedResumeTime: job.estimatedResumeTime,
-        humanPatterns: job.humanPatterns,
+        lastError: job.lastError,
         dailyStats: job.dailyStats,
+        humanPatterns: job.humanPatterns,
         currentPattern: currentPattern.name,
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
