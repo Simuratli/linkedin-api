@@ -987,11 +987,22 @@ const processJobInBackground = async (jobId) => {
             processedInSession++;
 
             // Update pattern-specific stats
-            if (!job.dailyStats.patternBreakdown)
+            if (!job.dailyStats) {
+              job.dailyStats = {
+                startDate: getTodayKey(),
+                processedToday: 0,
+                patternBreakdown: {}
+              };
+            }
+            
+            if (!job.dailyStats.patternBreakdown) {
               job.dailyStats.patternBreakdown = {};
+            }
+            
             if (!job.dailyStats.patternBreakdown[currentPatternName]) {
               job.dailyStats.patternBreakdown[currentPatternName] = 0;
             }
+            
             job.dailyStats.patternBreakdown[currentPatternName]++;
 
             // Update daily stats

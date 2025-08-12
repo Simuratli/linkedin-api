@@ -42,8 +42,13 @@ const jobSchema = new mongoose.Schema({
       endTime: Date,
       profilesProcessed: Number
     }]
+  },
+  dailyStats: {
+    startDate: String,
+    processedToday: { type: Number, default: 0 },
+    patternBreakdown: { type: mongoose.Schema.Types.Mixed, default: {} }
   }
-});
+}, { suppressReservedKeysWarning: true });
 
 // MongoDB User Session Schema
 const userSessionSchema = new mongoose.Schema({
@@ -145,10 +150,8 @@ const saveUserSessions = async (sessions) => {
 // Initialize MongoDB connection
 const initializeDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true
-    });
+    // Remove deprecated options
+    await mongoose.connect(process.env.MONGODB_URI);
     console.log('✅ Connected to MongoDB');
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
