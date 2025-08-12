@@ -9,6 +9,7 @@ const jobSchema = new mongoose.Schema({
     required: true,
     enum: ['pending', 'processing', 'paused', 'completed', 'failed']
   },
+  createdAt: { type: Date, default: Date.now },
   contacts: [{
     contactId: { type: String, required: true },
     linkedinUrl: { type: String, required: true },
@@ -26,7 +27,9 @@ const jobSchema = new mongoose.Schema({
   currentBatchIndex: { type: Number, default: 0 },
   startTime: { type: Date, default: Date.now },
   lastProcessedTime: Date,
+  lastProcessedAt: Date, // For frontend consistency
   completedAt: Date,
+  failedAt: Date,
   errors: [{
     contactId: String,
     error: String,

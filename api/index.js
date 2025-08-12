@@ -782,10 +782,16 @@ const processJobInBackground = async (jobId) => {
     // Update job status to processing
     job.status = "processing";
     job.lastProcessedAt = new Date().toISOString();
+    job.lastProcessedTime = new Date();
     
     // Initialize batch index if not exists
     if (!job.currentBatchIndex) {
       job.currentBatchIndex = 0;
+    }
+    
+    // Make sure timestamps are properly set
+    if (!job.createdAt) {
+      job.createdAt = job.startTime || new Date().toISOString();
     }
     
     await saveJobs({ ...jobs, [jobId]: job });
@@ -1101,6 +1107,13 @@ const processJobInBackground = async (jobId) => {
     if (remainingPending === 0) {
       job.status = "completed";
       job.completedAt = new Date().toISOString();
+      
+      // Check if we should set user cooldown after job completion
+      try {
+        await checkAndSetUserCooldown(job.userId);
+      } catch (error) {
+        console.error(`❌ Error setting user cooldown: ${error.message}`);
+      }
 
       // Final pattern history entry
       if (!job.humanPatterns.patternHistory)
@@ -1245,10 +1258,10 @@ app.get("/user-job/:userId", async (req, res) => {
         processedCount: job.processedCount,
         successCount: job.successCount,
         failureCount: job.failureCount,
-        createdAt: job.createdAt,
-        lastProcessedAt: job.lastProcessedAt,
-        completedAt: job.completedAt,
-        failedAt: job.failedAt,
+        createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : job.startTime ? new Date(job.startTime).toISOString() : null,
+        lastProcessedAt: job.lastProcessedAt ? new Date(job.lastProcessedAt).toISOString() : job.lastProcessedTime ? new Date(job.lastProcessedTime).toISOString() : null,
+        completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+        failedAt: job.failedAt ? new Date(job.failedAt).toISOString() : null,
         pauseReason: job.pauseReason,
         lastError: job.lastError,
         dailyStats: job.dailyStats,
@@ -1422,10 +1435,12 @@ app.get("/simuratli", async (req, res) => {
 });
 
 // Health check endpoint
-app.get("/health", (req, res) => {
+app.get("/health", async (req, res) => {
   const currentPattern = getCurrentHumanPattern();
-
-  res.status(200).json({
+  const userId = req.query.userId;
+  
+  // Basic health response
+  const response = {
     status: "healthy",
     timestamp: new Date().toISOString(),
     currentPattern: {
@@ -1433,7 +1448,63 @@ app.get("/health", (req, res) => {
       isActive: !currentPattern.pause,
     },
     server: "LinkedIn Profile Processor with Human Patterns",
-  });
+  };
+  
+  // Add cooldown status if userId is provided
+  if (userId) {
+    try {
+      const cooldownStatus = await getUserCooldownStatus(userId);
+      if (cooldownStatus) {
+        response.cooldownStatus = {
+          active: cooldownStatus.allJobsCompleted && !cooldownStatus.jobsRestarted,
+          completedAt: cooldownStatus.completedAt ? new Date(cooldownStatus.completedAt).toISOString() : null,
+          cooldownEndDate: cooldownStatus.cooldownEndDate ? new Date(cooldownStatus.cooldownEndDate).toISOString() : null,
+          daysRemaining: cooldownStatus.daysRemaining || 0
+        };
+      }
+    } catch (error) {
+      console.error(`❌ Error getting cooldown status: ${error.message}`);
+    }
+  }
+
+  res.status(200).json(response);
+});
+
+// Endpoint to check user cooldown status
+app.get("/user-cooldown/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const cooldownStatus = await getUserCooldownStatus(userId);
+    
+    if (!cooldownStatus) {
+      return res.status(200).json({
+        success: true,
+        hasCooldown: false,
+        message: "No cooldown found for this user"
+      });
+    }
+    
+    const formattedStatus = {
+      userId: cooldownStatus.userId,
+      hasCooldown: cooldownStatus.allJobsCompleted && !cooldownStatus.jobsRestarted,
+      completedAt: cooldownStatus.completedAt ? new Date(cooldownStatus.completedAt).toISOString() : null,
+      cooldownEndDate: cooldownStatus.cooldownEndDate ? new Date(cooldownStatus.cooldownEndDate).toISOString() : null,
+      daysRemaining: cooldownStatus.daysRemaining || 0,
+      cooldownPeriod: cooldownStatus.cooldownPeriod || 30
+    };
+    
+    res.status(200).json({
+      success: true,
+      cooldownStatus: formattedStatus
+    });
+  } catch (error) {
+    console.error(`❌ Error checking cooldown status: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error checking cooldown status",
+      error: error.message
+    });
+  }
 });
 
 // Initialize data directory, MongoDB and start server
