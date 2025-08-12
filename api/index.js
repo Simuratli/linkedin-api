@@ -499,6 +499,7 @@ app.post("/start-processing", async (req, res) => {
       let message = `Cannot process profiles. `;
 
       if (limitCheck.inPause) {
+        const currentPattern = getCurrentHumanPattern();
         message += `Currently in ${limitCheck.currentPattern} (${currentPattern.time}). `;
         if (limitCheck.estimatedResumeTime) {
           const resumeTime = new Date(limitCheck.estimatedResumeTime);
@@ -516,7 +517,7 @@ app.post("/start-processing", async (req, res) => {
         success: false,
         message,
         limitInfo: limitCheck,
-        currentPattern: currentPattern,
+        currentPattern: limitCheck.currentPattern,
         cooldownActive: false,
       });
     }
@@ -645,6 +646,7 @@ app.post("/start-processing", async (req, res) => {
 
         const contacts = response.value.filter((c) => !!c.uds_linkedin);
 
+      const currentPattern = getCurrentHumanPattern();
       existingJob = {
         jobId,
         userId,
