@@ -260,14 +260,14 @@ const shouldTakeBreak = (processedInSession) => {
 
   // More frequent breaks during intensive periods
   if (currentPattern.name === "morningBurst" && processedInSession % 8 === 0) {
-    return 3 * 60 * 1000; // 3 minute break every 8 profiles in morning
+    return 2 * 60 * 1000; // 3 minute break every 8 profiles in morning
   }
 
   if (
     currentPattern.name === "afternoonWork" &&
     processedInSession % 12 === 0
   ) {
-    return 5 * 60 * 1000; // 5 minute break every 12 profiles in afternoon
+    return 3 * 60 * 1000; // 5 minute break every 12 profiles in afternoon
   }
 
   if (currentPattern.name === "eveningLight" && processedInSession % 5 === 0) {
@@ -280,7 +280,7 @@ const shouldTakeBreak = (processedInSession) => {
   }
 
   // Random breaks (reduced chance during active periods)
-  if (Math.random() < 0.02) {
+  if (Math.random() <  0.015) {
     // 2% chance (was 5%)
     const breakDuration =
       currentPattern.name === "eveningLight"
