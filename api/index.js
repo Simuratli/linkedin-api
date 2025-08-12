@@ -22,6 +22,7 @@ const {
 } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
+const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
 
 // Initialize Express
 const app = express();
@@ -992,6 +993,10 @@ const processJobInBackground = async (jobId) => {
             job.successCount++;
             processedInSession++;
 
+            // Update job count and synchronize with daily stats
+            job.processedCount = job.successCount + job.failureCount;
+            await synchronizeJobWithDailyStats(job.userId, job);
+
             // Update pattern-specific stats
             if (!job.dailyStats) {
               job.dailyStats = {
@@ -1159,7 +1164,7 @@ const processJobInBackground = async (jobId) => {
   }
 };
 
-// Enhanced job status endpoint with human pattern info
+// Enhanced job status endpoint with human pattern info and synchronized stats
 app.get("/job-status/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -1175,6 +1180,10 @@ app.get("/job-status/:jobId", async (req, res) => {
         message: "Job not found",
       });
     }
+
+    // Synchronize the job stats with daily stats to ensure consistency
+    console.log(`🔄 Synchronizing job stats for user ${job.userId}`);
+    await synchronizeJobWithDailyStats(job.userId, job);
 
     // Include current pattern and daily limit info
     const limitCheck = await checkDailyLimit(job.userId);
@@ -1241,7 +1250,7 @@ app.get("/job-status/:jobId", async (req, res) => {
   }
 });
 
-// Enhanced user job endpoint with pattern info
+// Enhanced user job endpoint with pattern info and synchronized stats
 app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1295,6 +1304,10 @@ app.get("/user-job/:userId", async (req, res) => {
       });
     }
 
+    // Synchronize the job stats with daily stats to ensure consistency
+    console.log(`🔄 Synchronizing job stats for user ${userId}`);
+    await synchronizeJobWithDailyStats(userId, job);
+
     const limitCheck = await checkDailyLimit(userId);
     const currentPattern = getCurrentHumanPattern();
 
@@ -1319,6 +1332,8 @@ app.get("/user-job/:userId", async (req, res) => {
     const failedAt = formatDate(job.failedAt) || null;
     
     console.log("Sending job timestamps:", { createdAt, lastProcessedAt, completedAt });
+    console.log("Job processed count:", job.processedCount);
+    console.log("Job success count:", job.successCount);
 
     res.status(200).json({
       success: true,
@@ -1384,6 +1399,56 @@ app.get("/daily-limits/:userId", async (req, res) => {
       success: false,
       message: "Internal server error",
       error: error.message,
+    });
+  }
+});
+
+// Endpoint to synchronize job stats with daily stats
+app.post("/synchronize-job-stats/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Find the user's current job
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    if (!userSession || !userSession.currentJobId) {
+      return res.status(404).json({
+        success: false,
+        message: "No active job found for this user"
+      });
+    }
+    
+    const jobs = await loadJobs();
+    const job = jobs[userSession.currentJobId];
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found"
+      });
+    }
+    
+    // Synchronize the stats
+    await synchronizeJobWithDailyStats(userId, job);
+    
+    res.status(200).json({
+      success: true,
+      message: "Job stats synchronized successfully",
+      job: {
+        jobId: job.jobId,
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        successCount: job.successCount,
+        dailyStats: job.dailyStats
+      }
+    });
+  } catch (error) {
+    console.error("❌ Error synchronizing job stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message
     });
   }
 });
