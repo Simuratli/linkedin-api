@@ -1163,10 +1163,13 @@ const processJobInBackground = async (jobId) => {
 app.get("/job-status/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
+    console.log(`Getting status for job ID: ${jobId}`);
+    
     const jobs = await loadJobs();
     const job = jobs[jobId];
 
     if (!job) {
+      console.log(`Job with ID ${jobId} not found`);
       return res.status(404).json({
         success: false,
         message: "Job not found",
@@ -1176,6 +1179,32 @@ app.get("/job-status/:jobId", async (req, res) => {
     // Include current pattern and daily limit info
     const limitCheck = await checkDailyLimit(job.userId);
     const currentPattern = getCurrentHumanPattern();
+    
+    // Format dates properly
+    const formatDate = (date) => {
+      if (!date) return null;
+      try {
+        const d = new Date(date);
+        // Check if date is valid
+        if (isNaN(d.getTime())) return null;
+        return d.toISOString();
+      } catch (e) {
+        console.error("Invalid date:", date, e);
+        return null;
+      }
+    };
+    
+    // Get most accurate timestamp for each field
+    const createdAt = formatDate(job.createdAt) || formatDate(job.startTime) || null;
+    const lastProcessedAt = formatDate(job.lastProcessedAt) || formatDate(job.lastProcessedTime) || null;
+    const completedAt = formatDate(job.completedAt) || null;
+    const failedAt = formatDate(job.failedAt) || null;
+
+    console.log(`Returning job status for ${jobId}:`, {
+      status: job.status,
+      processed: job.processedCount,
+      timestamps: { createdAt, lastProcessedAt, completedAt }
+    });
 
     res.status(200).json({
       success: true,
@@ -1186,10 +1215,10 @@ app.get("/job-status/:jobId", async (req, res) => {
         processedCount: job.processedCount,
         successCount: job.successCount,
         failureCount: job.failureCount,
-        createdAt: job.createdAt,
-        lastProcessedAt: job.lastProcessedAt,
-        completedAt: job.completedAt,
-        failedAt: job.failedAt,
+        createdAt: createdAt,
+        lastProcessedAt: lastProcessedAt,
+        completedAt: completedAt,
+        failedAt: failedAt,
         errors: job.errors,
         pauseReason: job.pauseReason,
         estimatedResumeTime: job.estimatedResumeTime,
@@ -1199,6 +1228,8 @@ app.get("/job-status/:jobId", async (req, res) => {
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
       },
+      simpleClientStats: null, // Frontend expects this property
+      simpleClientInitialized: true // Frontend expects this property
     });
   } catch (error) {
     console.error("❌ Error getting job status:", error);
@@ -1216,9 +1247,17 @@ app.get("/user-job/:userId", async (req, res) => {
     const { userId } = req.params;
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
+    
+    // Log the user session to debug
+    console.log(`Checking job for user ${userId}:`, 
+      userSession ? 
+      { hasSession: true, currentJobId: userSession.currentJobId } : 
+      { hasSession: false }
+    );
 
     if (!userSession || !userSession.currentJobId) {
       const limitCheck = await checkDailyLimit(userId);
+      console.log(`No active job found for user ${userId}`);
       return res.status(200).json({
         success: false,
         message: "No active job found for user",
@@ -1231,16 +1270,55 @@ app.get("/user-job/:userId", async (req, res) => {
 
     const jobs = await loadJobs();
     const job = jobs[userSession.currentJobId];
+    
+    console.log(`Job check for ${userId}:`, 
+      job ? 
+      { 
+        jobId: job.jobId, 
+        status: job.status, 
+        processedCount: job.processedCount, 
+        totalContacts: job.totalContacts 
+      } : 
+      { jobFound: false, jobId: userSession.currentJobId }
+    );
 
     if (!job) {
-      return res.status(404).json({
+      // If the job ID exists in user session but not in the jobs collection,
+      // the job might have been deleted or there's a mismatch
+      console.error(`Job ${userSession.currentJobId} not found for user ${userId}`);
+      return res.status(200).json({
         success: false,
-        message: "Job not found",
+        message: `Job with ID ${userSession.currentJobId} not found`,
+        canResume: false,
+        job: null,
+        currentPattern: getCurrentHumanPattern().name,
       });
     }
 
     const limitCheck = await checkDailyLimit(userId);
     const currentPattern = getCurrentHumanPattern();
+
+    // Format dates properly
+    const formatDate = (date) => {
+      if (!date) return null;
+      try {
+        const d = new Date(date);
+        // Check if date is valid
+        if (isNaN(d.getTime())) return null;
+        return d.toISOString();
+      } catch (e) {
+        console.error("Invalid date:", date, e);
+        return null;
+      }
+    };
+    
+    // Get most accurate timestamp for each field
+    const createdAt = formatDate(job.createdAt) || formatDate(job.startTime) || null;
+    const lastProcessedAt = formatDate(job.lastProcessedAt) || formatDate(job.lastProcessedTime) || null;
+    const completedAt = formatDate(job.completedAt) || null;
+    const failedAt = formatDate(job.failedAt) || null;
+    
+    console.log("Sending job timestamps:", { createdAt, lastProcessedAt, completedAt });
 
     res.status(200).json({
       success: true,
@@ -1258,10 +1336,10 @@ app.get("/user-job/:userId", async (req, res) => {
         processedCount: job.processedCount,
         successCount: job.successCount,
         failureCount: job.failureCount,
-        createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : job.startTime ? new Date(job.startTime).toISOString() : null,
-        lastProcessedAt: job.lastProcessedAt ? new Date(job.lastProcessedAt).toISOString() : job.lastProcessedTime ? new Date(job.lastProcessedTime).toISOString() : null,
-        completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
-        failedAt: job.failedAt ? new Date(job.failedAt).toISOString() : null,
+        createdAt: createdAt,
+        lastProcessedAt: lastProcessedAt,
+        completedAt: completedAt,
+        failedAt: failedAt,
         pauseReason: job.pauseReason,
         lastError: job.lastError,
         dailyStats: job.dailyStats,
@@ -1270,6 +1348,8 @@ app.get("/user-job/:userId", async (req, res) => {
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
       },
+      simpleClientStats: null, // Frontend expects this property
+      simpleClientInitialized: true // Frontend expects this property
     });
   } catch (error) {
     console.error("❌ Error getting user job:", error);
@@ -1502,6 +1582,54 @@ app.get("/user-cooldown/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error checking cooldown status",
+      error: error.message
+    });
+  }
+});
+
+// Endpoint to get all jobs history for a user
+app.get("/user-jobs-history/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const jobs = await loadJobs();
+    
+    // Filter jobs for this specific user
+    const userJobs = Object.values(jobs)
+      .filter(job => job.userId === userId)
+      .map(job => ({
+        jobId: job.jobId,
+        status: job.status,
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        successCount: job.successCount,
+        failureCount: job.failureCount,
+        createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
+        completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+        lastProcessedAt: job.lastProcessedAt ? new Date(job.lastProcessedAt).toISOString() : null
+      }))
+      // Sort by creation date (newest first)
+      .sort((a, b) => {
+        const dateA = a.createdAt ? new Date(a.createdAt) : new Date(0);
+        const dateB = b.createdAt ? new Date(b.createdAt) : new Date(0);
+        return dateB.getTime() - dateA.getTime();
+      });
+    
+    console.log(`Found ${userJobs.length} jobs for user ${userId}`);
+    
+    // Get user session to determine current job
+    const userSessions = await loadUserSessions();
+    const currentJobId = userSessions[userId]?.currentJobId;
+    
+    res.status(200).json({
+      success: true,
+      currentJobId,
+      jobs: userJobs
+    });
+  } catch (error) {
+    console.error(`❌ Error getting user job history: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error retrieving user job history",
       error: error.message
     });
   }
