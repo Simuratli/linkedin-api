@@ -457,21 +457,55 @@ app.post("/start-processing", async (req, res) => {
     // Enhanced limit checking with human patterns
     const limitCheck = await checkDailyLimit(userId);
 
+    // Load jobs once at the start
+    const allJobs = await loadJobs();
+    const now = new Date();
+
+    // First check if there's any existing incomplete job
+    let currentIncompleteJob = null;
+    for (const job of Object.values(allJobs)) {
+      if (job.userId === userId && 
+          job.status !== "completed" && 
+          job.contacts && 
+          job.processedCount < job.totalContacts) {
+        currentIncompleteJob = job;
+        break;
+      }
+    }
+
+    // If there's an incomplete job, force resume that one
+    if (currentIncompleteJob && !resume) {
+      return res.status(200).json({
+        success: false,
+        message: `You have an incomplete job (${currentIncompleteJob.processedCount}/${currentIncompleteJob.totalContacts} contacts processed). Please resume this job first.`,
+        jobId: currentIncompleteJob.jobId,
+        status: currentIncompleteJob.status,
+        processedCount: currentIncompleteJob.processedCount,
+        totalContacts: currentIncompleteJob.totalContacts,
+        canResume: true,
+        currentPattern: limitCheck.currentPattern,
+        limitInfo: limitCheck
+      });
+    }
+
+    // Check for cooldown period only if starting a new job
     if (!limitCheck.canProcess && !resume) {
-      // 1-month cooldown: block new jobs only if all contacts are updated (no pending contacts in any job for this user)
-      const jobs = await loadJobs();
-      const now = new Date();
+      // 1-month cooldown: block new jobs only if all contacts are updated
       let lastCompletedJob = null;
       let hasPendingContacts = false;
-      for (const job of Object.values(jobs)) {
+
+      for (const job of Object.values(allJobs)) {
         if (job.userId === userId) {
           if (job.status === "completed" && job.completedAt) {
             if (!lastCompletedJob || new Date(job.completedAt) > new Date(lastCompletedJob.completedAt)) {
               lastCompletedJob = job;
             }
           }
-          // Check for any job with pending contacts
-          if (job.contacts && job.contacts.some(c => c.status === "pending")) {
+          // Check for any job with pending or unfinished contacts
+          if (job.contacts && (
+              job.contacts.some(c => c.status === "pending") || 
+              job.processedCount < job.totalContacts
+          )) {
             hasPendingContacts = true;
           }
         }
