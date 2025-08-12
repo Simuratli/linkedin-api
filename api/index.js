@@ -40,15 +40,7 @@ const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
 const BURST_LIMIT = 15; // Max profiles in one hour (fallback)
 const HOUR_IN_MS = 60 * 60 * 1000;
 
-// Human pattern-based limits
-const PATTERN_LIMITS = {
-  morningBurst: { max: 60, processed: 0 },
-  afternoonWork: { max: 80, processed: 0 },
-  eveningLight: { max: 40, processed: 0 },
-};
-
 // Ensure data directory exists
-// Initialize data directory with proper permissions for Render.com
 const ensureDataDir = async () => {
   try {
     // Create data directory with full permissions in production
@@ -258,11 +250,6 @@ const getHumanPatternDelay = () => {
   );
 };
 
-const getWorkingHoursDelay = () => {
-  // This is now handled by getHumanPatternDelay, but keeping for compatibility
-  return getHumanPatternDelay();
-};
-
 const shouldTakeBreak = (processedInSession) => {
   const currentPattern = getCurrentHumanPattern();
 
@@ -303,78 +290,6 @@ const shouldTakeBreak = (processedInSession) => {
   }
 
   return 0;
-};
-
-// Load/Save processing jobs with reliable storage
-const loadJobs = async () => {
-  try {
-    await ensureDataDir();
-    
-    try {
-      const data = await fs.readFile(JOBS_FILE, "utf8");
-      const jobs = JSON.parse(data);
-      console.log(`📖 Loaded ${Object.keys(jobs).length} jobs from storage`);
-      return jobs;
-    } catch (readError) {
-      // If file doesn't exist or is corrupted, start fresh
-      console.log("� Creating new jobs file");
-      await fs.writeFile(JOBS_FILE, '{}');
-      return {};
-    }
-  } catch (error) {
-    console.error("❌ Error in loadJobs:", error?.message);
-    return {}; // Always return an object even if there's an error
-    return {};
-  }
-};
-
-const saveJobs = async (jobs) => {
-  try {
-    // Create bulk operations array
-    const operations = Object.entries(jobs).map(([jobId, jobData]) => ({
-      updateOne: {
-        filter: { jobId },
-        update: { $set: jobData },
-        upsert: true
-      }
-    }));
-
-    if (operations.length > 0) {
-      // Execute bulk write operation
-      const result = await Job.bulkWrite(operations);
-      console.log(`💾 Saved ${result.upsertedCount + result.modifiedCount} jobs to MongoDB`);
-      
-      // Save a local backup in development
-      if (process.env.NODE_ENV !== 'production') {
-        await ensureDataDir();
-        const tempFile = `${JOBS_FILE}.tmp`;
-        await fs.writeFile(tempFile, JSON.stringify(jobs, null, 2));
-        await fs.rename(tempFile, JOBS_FILE);
-        console.log(`💾 Jobs backed up locally (${Object.keys(jobs).length} jobs)`);
-      }
-    }
-  } catch (error) {
-    console.error("❌ Error saving jobs to MongoDB:", error);
-    throw error; // Re-throw to handle in calling function
-  }
-};
-
-// Load/Save user sessions
-const loadUserSessions = async () => {
-  try {
-    const data = await fs.readFile(USER_SESSIONS_FILE, "utf8");
-    return JSON.parse(data);
-  } catch (error) {
-    return {};
-  }
-};
-
-const saveUserSessions = async (sessions) => {
-  try {
-    await fs.writeFile(USER_SESSIONS_FILE, JSON.stringify(sessions, null, 2));
-  } catch (error) {
-    console.error("Error saving user sessions:", error);
-  }
 };
 
 // Generate unique job ID
@@ -500,8 +415,6 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
-// MongoDB connection
 
 // Enhanced endpoint with human pattern awareness
 app.post("/start-processing", async (req, res) => {
@@ -647,7 +560,6 @@ app.post("/start-processing", async (req, res) => {
           }
         : null;
 
-    // Load existing jobs and user sessions
     // Load existing jobs and user sessions
     const jobs = await loadJobs();
     const userSessions = await loadUserSessions();
@@ -836,8 +748,6 @@ app.post("/start-processing", async (req, res) => {
 });
 
 // Enhanced background processing with human patterns
-
-// Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
   console.log(`🔄 Starting background processing for job: ${jobId}`);
   
@@ -869,17 +779,16 @@ const processJobInBackground = async (jobId) => {
   });
 
   try {
-    // Sadece "pending" durumundan "processing"e geçerken baştan başlat
-    const wasProcessing = job.status === "processing";
+    // Update job status to processing
     job.status = "processing";
     job.lastProcessedAt = new Date().toISOString();
     
-    // İlerleme bilgisini sakla
+    // Initialize batch index if not exists
     if (!job.currentBatchIndex) {
       job.currentBatchIndex = 0;
     }
     
-    await saveJobs(jobs);
+    await saveJobs({ ...jobs, [jobId]: job });
 
     const BATCH_SIZE = 1;
     let processedInSession = job.processedInSession || 0;
@@ -889,7 +798,7 @@ const processJobInBackground = async (jobId) => {
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");
     const contactBatches = chunkArray(pendingContacts, BATCH_SIZE);
 
-    // Eğer önceki batch index varsa, oradan devam et
+    // Continue from current batch index
     const startBatchIndex = job.currentBatchIndex || 0;
 
     console.log(
@@ -898,11 +807,12 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
-      // Her batch'den sonra ilerlemeyi kaydet
+      // Save progress after each batch
       job.currentBatchIndex = batchIndex;
       job.currentPatternName = currentPatternName;
       job.processedInSession = processedInSession;
       await saveJobs({ ...(await loadJobs()), [jobId]: job });
+      
       // Check if pattern has changed
       const newPattern = getCurrentHumanPattern();
       if (newPattern.name !== currentPatternName) {
@@ -1064,7 +974,7 @@ const processJobInBackground = async (jobId) => {
                 currentUserSession.accessToken,
                 "PATCH",
                 convertedProfile,
-                refreshData  // Now refreshData is defined
+                refreshData
               ).catch(handleDataverseError);
 
             } catch (dataverseError) {
@@ -1120,7 +1030,10 @@ const processJobInBackground = async (jobId) => {
             }
           }
         } catch (error) {
-          // ...existing error handling code...
+          console.error(`❌ Batch processing error:`, error.message);
+          if (error.message.includes("AUTH_REQUIRED")) {
+            throw error;
+          }
         }
       });
 
@@ -1164,7 +1077,7 @@ const processJobInBackground = async (jobId) => {
           console.log(`🕒 Pattern breakdown: ${breakdown}`);
         }
       } catch (error) {
-        if (error.message.includes("TOKEN_REFRESH_FAILED")) {
+        if (error.message.includes("TOKEN_REFRESH_FAILED") || error.message.includes("AUTH_REQUIRED")) {
           break;
         }
       }
@@ -1200,26 +1113,26 @@ const processJobInBackground = async (jobId) => {
 
     console.log(`✅ Job ${jobId} processing completed. Status: ${job.status}`);
   } catch (error) {
-  console.error(`❌ Background processing error for job ${jobId}:`, error);
-  
-  // Store the error details more comprehensively
-  job.status = "failed";
-  job.error = error.message;
-  job.failedAt = new Date().toISOString();
-  
-  // Also add to the errors array for visibility
-  if (!job.errors) job.errors = [];
-  job.errors.push({
-    contactId: 'SYSTEM',
-    error: `Job failed: ${error.message}`,
-    timestamp: new Date().toISOString(),
-    humanPattern: getCurrentHumanPattern().name
-  });
+    console.error(`❌ Background processing error for job ${jobId}:`, error);
+    
+    // Store the error details more comprehensively
+    job.status = "failed";
+    job.error = error.message;
+    job.failedAt = new Date().toISOString();
+    
+    // Also add to the errors array for visibility
+    if (!job.errors) job.errors = [];
+    job.errors.push({
+      contactId: 'SYSTEM',
+      error: `Job failed: ${error.message}`,
+      timestamp: new Date().toISOString(),
+      humanPattern: getCurrentHumanPattern().name
+    });
 
-  const errorJobs = await loadJobs();
-  errorJobs[jobId] = job;
-  await saveJobs(errorJobs);
-}
+    const errorJobs = await loadJobs();
+    errorJobs[jobId] = job;
+    await saveJobs(errorJobs);
+  }
 };
 
 // Enhanced job status endpoint with human pattern info
@@ -1433,21 +1346,6 @@ app.get("/pattern-stats/:userId", async (req, res) => {
   }
 });
 
-// Legacy endpoint (for backward compatibility)
-app.post("/update-contacts-post", async (req, res) => {
-  // Redirect to new endpoint with userId
-  const userId = req.body.userId || `legacy_${Date.now()}`;
-
-  req.body.userId = userId;
-  req.body.resume = false;
-
-  // Forward to new endpoint
-  return app._router.handle(
-    { ...req, url: "/start-processing", method: "POST" },
-    res
-  );
-});
-
 // Token refresh endpoint
 app.post("/refresh-token", async (req, res) => {
   try {
@@ -1491,15 +1389,25 @@ app.get("/simuratli", async (req, res) => {
 
   console.log(`🧪 Test route called during ${currentPattern.name} pattern`);
 
-  const data = await fetchLinkedInProfile(profileId);
-  console.log("🔍 Fetched Data:", data);
+  try {
+    const data = await fetchLinkedInProfile(profileId);
+    console.log("🔍 Fetched Data:", data);
 
-  res.json({
-    profileData: data,
-    currentPattern: currentPattern.name,
-    patternInfo: currentPattern,
-    timestamp: new Date().toISOString(),
-  });
+    res.json({
+      profileData: data,
+      currentPattern: currentPattern.name,
+      patternInfo: currentPattern,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("❌ Test route error:", error);
+    res.status(500).json({
+      error: error.message,
+      currentPattern: currentPattern.name,
+      patternInfo: currentPattern,
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
 // Health check endpoint
@@ -1523,7 +1431,7 @@ initializeDB().then(() => {
     const currentPattern = getCurrentHumanPattern();
     console.log(`✅ Server is running on http://localhost:${PORT}`);
     console.log(`🕒 Starting with ${currentPattern.name} pattern`);
-    console.log(`� Active patterns:`, Object.entries(HUMAN_PATTERNS)
+    console.log(`🔄 Active patterns:`, Object.entries(HUMAN_PATTERNS)
       .filter(([_, p]) => !p.pause)
       .map(([name]) => name)
       .join(', '));
