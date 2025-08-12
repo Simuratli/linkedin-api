@@ -4,12 +4,14 @@ const path = require("path");
 const fs = require("fs/promises");
 const fetch = require("node-fetch");
 const mongoose = require("mongoose");
-const { 
+const {
   loadJobs, 
   saveJobs, 
   loadUserSessions, 
   saveUserSessions,
-  initializeDB 
+  initializeDB,
+  Job,
+  UserSession
 } = require("../helpers/db");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const {
@@ -21,64 +23,9 @@ const {
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 
-// Initialize mongoose schemas
-const jobSchema = new mongoose.Schema({
-  jobId: String,
-  userId: String,
-  status: String,
-  contacts: [{
-    contactId: String,
-    linkedinUrl: String,
-    status: String,
-    error: String
-  }],
-  processedCount: Number,
-  successCount: Number,
-  failureCount: Number,
-  totalContacts: Number,
-  currentBatchIndex: Number,
-  startTime: Date,
-  lastProcessedTime: Date,
-  completedAt: Date,
-  errors: [{
-    contactId: String,
-    error: String,
-    timestamp: Date,
-    humanPattern: String
-  }],
-  humanPatterns: {
-    startPattern: String,
-    startTime: Date,
-    patternHistory: Array
-  }
-});
-
-const userSessionSchema = new mongoose.Schema({
-  userId: String,
-  currentJobId: String,
-  li_at: String,
-  jsessionid: String,
-  accessToken: String,
-  refreshToken: String,
-  clientId: String,
-  tenantId: String,
-  verifier: String,
-  crmUrl: String,
-  lastActivity: Date
-});
-
-const Job = mongoose.model('Job', jobSchema);
-const UserSession = mongoose.model('UserSession', userSessionSchema);
-
 // Initialize Express
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Connect to MongoDB
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/linkedin-api';
-mongoose.connect(MONGODB_URI)
-  .then(() => console.log('📦 Connected to MongoDB'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
 
 // File paths for persistent storage 
 const DATA_DIR = process.env.NODE_ENV === 'production' 
@@ -1573,11 +1520,15 @@ app.get("/health", (req, res) => {
 // Initialize MongoDB and start server
 initializeDB().then(() => {
   app.listen(PORT, () => {
+    const currentPattern = getCurrentHumanPattern();
     console.log(`✅ Server is running on http://localhost:${PORT}`);
-    console.log(`🕒 Starting with ${getCurrentHumanPattern().name} pattern`);
-    console.log(`📊 Human patterns enabled:`, Object.keys(HUMAN_PATTERNS));
+    console.log(`🕒 Starting with ${currentPattern.name} pattern`);
+    console.log(`� Active patterns:`, Object.entries(HUMAN_PATTERNS)
+      .filter(([_, p]) => !p.pause)
+      .map(([name]) => name)
+      .join(', '));
   });
 }).catch(error => {
-  console.error('Failed to start server:', error);
+  console.error('❌ Failed to initialize database:', error);
   process.exit(1);
 });
