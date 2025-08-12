@@ -1,8 +1,16 @@
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs").promises;
 const path = require("path");
-const axios = require("axios");
+const fs = require("fs/promises");
+const fetch = require("node-fetch");
+const mongoose = require("mongoose");
+const { 
+  loadJobs, 
+  saveJobs, 
+  loadUserSessions, 
+  saveUserSessions,
+  initializeDB 
+} = require("../helpers/db");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const {
   fetchLinkedInProfile,
@@ -12,15 +20,70 @@ const {
 } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
-const { safeWrite } = require("../helpers/fileLock");
 
+// Initialize mongoose schemas
+const jobSchema = new mongoose.Schema({
+  jobId: String,
+  userId: String,
+  status: String,
+  contacts: [{
+    contactId: String,
+    linkedinUrl: String,
+    status: String,
+    error: String
+  }],
+  processedCount: Number,
+  successCount: Number,
+  failureCount: Number,
+  totalContacts: Number,
+  currentBatchIndex: Number,
+  startTime: Date,
+  lastProcessedTime: Date,
+  completedAt: Date,
+  errors: [{
+    contactId: String,
+    error: String,
+    timestamp: Date,
+    humanPattern: String
+  }],
+  humanPatterns: {
+    startPattern: String,
+    startTime: Date,
+    patternHistory: Array
+  }
+});
+
+const userSessionSchema = new mongoose.Schema({
+  userId: String,
+  currentJobId: String,
+  li_at: String,
+  jsessionid: String,
+  accessToken: String,
+  refreshToken: String,
+  clientId: String,
+  tenantId: String,
+  verifier: String,
+  crmUrl: String,
+  lastActivity: Date
+});
+
+const Job = mongoose.model('Job', jobSchema);
+const UserSession = mongoose.model('UserSession', userSessionSchema);
+
+// Initialize Express
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// File paths for persistent storage
+// Connect to MongoDB
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/linkedin-api';
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('📦 Connected to MongoDB'))
+  .catch(err => console.error('❌ MongoDB connection error:', err));
+
+// File paths for persistent storage 
 const DATA_DIR = process.env.NODE_ENV === 'production' 
   ? '/data'  // Render.com persistent disk path
-  : path.join(__dirname, "data");
+  : path.join(__dirname, '../data');
 const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
 const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 const DAILY_STATS_FILE = path.join(DATA_DIR, "daily_stats.json");
@@ -41,12 +104,12 @@ const PATTERN_LIMITS = {
 // Initialize data directory with proper permissions for Render.com
 const ensureDataDir = async () => {
   try {
-    // Create directory with full permissions in production
+    // Create data directory with full permissions in production
     if (process.env.NODE_ENV === 'production') {
       await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o777 });
       
       // Ensure files exist with proper permissions
-      const files = [JOBS_FILE, USER_SESSIONS_FILE];
+      const files = [JOBS_FILE, USER_SESSIONS_FILE, DAILY_STATS_FILE];
       for (const file of files) {
         try {
           await fs.access(file);
@@ -55,7 +118,18 @@ const ensureDataDir = async () => {
         }
       }
     } else {
+      // Local development environment
       await fs.mkdir(DATA_DIR, { recursive: true });
+      
+      // Create files if they don't exist
+      const files = [JOBS_FILE, USER_SESSIONS_FILE, DAILY_STATS_FILE];
+      for (const file of files) {
+        try {
+          await fs.access(file);
+        } catch {
+          await fs.writeFile(file, '{}');
+        }
+      }
     }
     
     console.log("📁 Data directory initialized:", DATA_DIR);
@@ -284,65 +358,57 @@ const shouldTakeBreak = (processedInSession) => {
   return 0;
 };
 
-// Github Gist configuration
-const GIST_TOKEN = process.env.GITHUB_GIST_TOKEN;
-const GIST_ID = process.env.GIST_ID;
-
-// Load/Save processing jobs using Github Gist in production
+// Load/Save processing jobs with reliable storage
 const loadJobs = async () => {
   try {
-    if (process.env.NODE_ENV === 'production') {
-      const response = await axios.get(`https://api.github.com/gists/${GIST_ID}`, {
-        headers: {
-          'Authorization': `token ${GIST_TOKEN}`,
-          'Accept': 'application/vnd.github.v3+json'
-        }
-      });
-      
-      const content = response.data.files['jobs.json'].content;
-      console.log('📖 Loaded jobs from Github Gist');
-      return JSON.parse(content);
-    } else {
-      // Local development mode
-      await ensureDataDir();
+    await ensureDataDir();
+    
+    try {
       const data = await fs.readFile(JOBS_FILE, "utf8");
       const jobs = JSON.parse(data);
-      console.log(`📖 Loaded ${Object.keys(jobs).length} jobs from local storage`);
+      console.log(`📖 Loaded ${Object.keys(jobs).length} jobs from storage`);
       return jobs;
+    } catch (readError) {
+      // If file doesn't exist or is corrupted, start fresh
+      console.log("� Creating new jobs file");
+      await fs.writeFile(JOBS_FILE, '{}');
+      return {};
     }
   } catch (error) {
-    console.error("❌ Error loading jobs:", error?.message);
+    console.error("❌ Error in loadJobs:", error?.message);
+    return {}; // Always return an object even if there's an error
     return {};
   }
 };
 
 const saveJobs = async (jobs) => {
   try {
-    if (process.env.NODE_ENV === 'production') {
-      // Save to Github Gist in production
-      await axios.patch(`https://api.github.com/gists/${GIST_ID}`, {
-        files: {
-          'jobs.json': {
-            content: JSON.stringify(jobs, null, 2)
-          }
-        }
-      }, {
-        headers: {
-          'Authorization': `token ${GIST_TOKEN}`,
-          'Accept': 'application/vnd.github.v3+json'
-        }
-      });
-      console.log('💾 Saved jobs to Github Gist');
-    } else {
-      // Save locally in development
-      await ensureDataDir();
-      const tempFile = `${JOBS_FILE}.tmp`;
-      await fs.writeFile(tempFile, JSON.stringify(jobs, null, 2));
-      await fs.rename(tempFile, JOBS_FILE);
-      console.log(`💾 Jobs saved locally (${Object.keys(jobs).length} jobs)`);
+    // Create bulk operations array
+    const operations = Object.entries(jobs).map(([jobId, jobData]) => ({
+      updateOne: {
+        filter: { jobId },
+        update: { $set: jobData },
+        upsert: true
+      }
+    }));
+
+    if (operations.length > 0) {
+      // Execute bulk write operation
+      const result = await Job.bulkWrite(operations);
+      console.log(`💾 Saved ${result.upsertedCount + result.modifiedCount} jobs to MongoDB`);
+      
+      // Save a local backup in development
+      if (process.env.NODE_ENV !== 'production') {
+        await ensureDataDir();
+        const tempFile = `${JOBS_FILE}.tmp`;
+        await fs.writeFile(tempFile, JSON.stringify(jobs, null, 2));
+        await fs.rename(tempFile, JOBS_FILE);
+        console.log(`💾 Jobs backed up locally (${Object.keys(jobs).length} jobs)`);
+      }
     }
   } catch (error) {
-    console.error("❌ Error saving jobs:", error?.message);
+    console.error("❌ Error saving jobs to MongoDB:", error);
+    throw error; // Re-throw to handle in calling function
   }
 };
 
@@ -488,8 +554,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// Initialize data directory on startup
-ensureDataDir();
+// MongoDB connection
 
 // Enhanced endpoint with human pattern awareness
 app.post("/start-processing", async (req, res) => {
@@ -1505,8 +1570,14 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Server is running on http://localhost:${PORT}`);
-  console.log(`🕒 Starting with ${getCurrentHumanPattern().name} pattern`);
-  console.log(`📊 Human patterns enabled:`, Object.keys(HUMAN_PATTERNS));
+// Initialize MongoDB and start server
+initializeDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`✅ Server is running on http://localhost:${PORT}`);
+    console.log(`🕒 Starting with ${getCurrentHumanPattern().name} pattern`);
+    console.log(`📊 Human patterns enabled:`, Object.keys(HUMAN_PATTERNS));
+  });
+}).catch(error => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
 });
