@@ -11,7 +11,12 @@ const {
   saveUserSessions,
   initializeDB,
   Job,
-  UserSession
+  UserSession,
+  DailyStats,
+  loadDailyStats,
+  saveDailyStats,
+  updateDailyStats,
+  cleanOldDailyStats
 } = require("../helpers/db");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const {
@@ -28,72 +33,17 @@ const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// File paths for persistent storage 
-const DATA_DIR = process.env.NODE_ENV === 'production' 
-  ? path.join(process.env.RENDER_PERSISTENT_DIR || process.cwd(), 'data')  // Render.com persistent disk path
-  : path.join(__dirname, '../data');
-const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
-const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
-const DAILY_STATS_FILE = path.join(DATA_DIR, "daily_stats.json");
-
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
 const BURST_LIMIT = 15; // Max profiles in one hour (fallback)
 const HOUR_IN_MS = 60 * 60 * 1000;
 
-// Ensure data directory exists
+// Ensure data directory exists (keep for backwards compatibility)
 const ensureDataDir = async () => {
   try {
-    console.log("🔍 Creating data directory at:", DATA_DIR);
-    
-    // Create data directory with full permissions
-    await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o777 });
-    
-    // Ensure files exist with proper permissions
-    const files = [JOBS_FILE, USER_SESSIONS_FILE, DAILY_STATS_FILE];
-    for (const file of files) {
-      try {
-        await fs.access(file);
-        console.log(`✅ File exists: ${file}`);
-      } catch (err) {
-        console.log(`📝 Creating file: ${file}`);
-        await fs.writeFile(file, '{}', { mode: 0o666 });
-      }
-    }
-    
-    console.log("📁 Data directory initialized:", DATA_DIR);
+    console.log("� Data directory no longer needed - using MongoDB for all storage");
   } catch (error) {
-    console.error("❌ Error initializing data directory:", error.stack || error);
-    throw error;
-  }
-};
-
-// Daily stats management
-const loadDailyStats = async () => {
-  try {
-    const data = await fs.readFile(DAILY_STATS_FILE, "utf8");
-    return JSON.parse(data);
-  } catch (error) {
-    // If file doesn't exist, create directory and empty file
-    if (error.code === 'ENOENT') {
-      console.log(`⚠️ Daily stats file not found, creating empty one at ${DAILY_STATS_FILE}`);
-      await fs.mkdir(path.dirname(DAILY_STATS_FILE), { recursive: true });
-      await fs.writeFile(DAILY_STATS_FILE, '{}', { mode: 0o666 });
-    } else {
-      console.error("Error loading daily stats:", error);
-    }
-    return {};
-  }
-};
-
-const saveDailyStats = async (stats) => {
-  try {
-    // Make sure the directory exists before writing
-    await fs.mkdir(path.dirname(DAILY_STATS_FILE), { recursive: true });
-    await fs.writeFile(DAILY_STATS_FILE, JSON.stringify(stats, null, 2));
-    console.log(`✅ Daily stats saved to ${DAILY_STATS_FILE}`);
-  } catch (error) {
-    console.error("Error saving daily stats:", error);
+    console.error("❌ Error in ensureDataDir:", error.stack || error);
   }
 };
 
@@ -198,29 +148,19 @@ const getEstimatedResumeTime = () => {
   return resumeTime.toISOString();
 };
 
-const updateDailyStats = async (userId) => {
-  const stats = await loadDailyStats();
-  const today = getTodayKey();
-  const hourKey = getHourKey();
-  const patternKey = getPatternKey();
-
-  if (!stats[userId]) stats[userId] = {};
-
-  stats[userId][today] = (stats[userId][today] || 0) + 1;
-  stats[userId][hourKey] = (stats[userId][hourKey] || 0) + 1;
-  stats[userId][patternKey] = (stats[userId][patternKey] || 0) + 1;
-
-  // Clean old data (keep only last 7 days)
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const cutoffDate = sevenDaysAgo.toISOString().split("T")[0];
-
-  for (const key of Object.keys(stats[userId])) {
-    if (key < cutoffDate) {
-      delete stats[userId][key];
-    }
+const updateUserDailyStats = async (userId) => {
+  try {
+    const today = getTodayKey();
+    const hourKey = getHourKey();
+    const patternKey = getPatternKey();
+    
+    // Use MongoDB-based update
+    await updateDailyStats(userId, today, hourKey, patternKey);
+    
+    console.log(`📊 Updated daily stats for user ${userId}: ${today}, ${hourKey}, ${patternKey}`);
+  } catch (error) {
+    console.error("❌ Error updating daily stats:", error?.message);
   }
-
-  await saveDailyStats(stats);
 };
 
 // Enhanced human-like behavior patterns with time awareness
@@ -1106,7 +1046,7 @@ const processJobInBackground = async (jobId) => {
             job.dailyStats.patternBreakdown[currentPatternName]++;
 
             // Update daily stats
-            await updateDailyStats(job.userId);
+            await updateUserDailyStats(job.userId);
 
             console.log(
               `✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`
@@ -2076,15 +2016,59 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
   }
 });
 
+// Debug endpoint to manually restart a stuck job
+app.post("/debug-restart-job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    
+    if (!job) {
+      return res.status(404).json({ success: false, message: "Job not found" });
+    }
+    
+    console.log(`🔄 Manually restarting job ${jobId}`);
+    
+    // Reset job state
+    job.lastProcessedAt = new Date().toISOString();
+    job.restartedAt = new Date().toISOString();
+    job.restartCount = (job.restartCount || 0) + 1;
+    job.status = "processing";
+    
+    // Save job
+    await saveJobs(jobs);
+    
+    // Restart background processing
+    setImmediate(() => processJobInBackground(jobId));
+    
+    res.json({ 
+      success: true, 
+      message: `Job ${jobId} restarted manually`,
+      restartCount: job.restartCount
+    });
+  } catch (error) {
+    console.error("❌ Error restarting job:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Initialize data directory, MongoDB and start server
 (async () => {
   try {
-    // First ensure data directory exists
+    // First ensure data directory exists (legacy)
     await ensureDataDir();
     console.log("✅ Data directory initialization complete");
     
     // Then initialize MongoDB
     await initializeDB();
+    
+    // Clean old daily stats on startup
+    try {
+      const cleanedCount = await cleanOldDailyStats();
+      console.log(`🧹 Cleaned ${cleanedCount} old daily stats records on startup`);
+    } catch (cleanError) {
+      console.warn("⚠️ Warning: Could not clean old daily stats:", cleanError.message);
+    }
     
     // Start server
     app.listen(PORT, () => {
@@ -2095,6 +2079,7 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
         .filter(([_, p]) => !p.pause)
         .map(([name]) => name)
         .join(', '));
+      console.log(`💾 All data now stored in MongoDB (no more file storage)`);
     });
   } catch (error) {
     console.error('❌ Failed to initialize application:', error);

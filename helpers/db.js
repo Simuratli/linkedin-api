@@ -78,10 +78,29 @@ const userCooldownSchema = new mongoose.Schema({
   jobsRestarted: { type: Boolean, default: false }
 });
 
+// MongoDB Daily Stats Schema
+const dailyStatsSchema = new mongoose.Schema({
+  userId: { type: String, required: true, index: true },
+  dateKey: { type: String, required: true }, // YYYY-MM-DD format
+  hourKey: String, // YYYY-MM-DD-HH format
+  patternKey: String, // YYYY-MM-DD-patternName format
+  count: { type: Number, default: 1 },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, {
+  // Compound index for efficient queries
+  indexes: [
+    { userId: 1, dateKey: 1 },
+    { userId: 1, hourKey: 1 },
+    { userId: 1, patternKey: 1 }
+  ]
+});
+
 // Create models
 const Job = mongoose.model('Job', jobSchema);
 const UserSession = mongoose.model('UserSession', userSessionSchema);
 const UserCooldown = mongoose.model('UserCooldown', userCooldownSchema);
+const DailyStats = mongoose.model('DailyStats', dailyStatsSchema);
 
 // Load jobs from MongoDB
 const loadJobs = async () => {
@@ -287,10 +306,138 @@ const getUserCooldownStatus = async (userId) => {
   }
 };
 
+// Load daily stats from MongoDB (converts to old format for compatibility)
+const loadDailyStats = async () => {
+  try {
+    const stats = await DailyStats.find({});
+    const statsMap = {};
+    
+    // Convert MongoDB format to old file format for compatibility
+    stats.forEach(stat => {
+      if (!statsMap[stat.userId]) {
+        statsMap[stat.userId] = {};
+      }
+      
+      // Add date-based stats
+      if (stat.dateKey) {
+        statsMap[stat.userId][stat.dateKey] = (statsMap[stat.userId][stat.dateKey] || 0) + stat.count;
+      }
+      
+      // Add hour-based stats  
+      if (stat.hourKey) {
+        statsMap[stat.userId][stat.hourKey] = (statsMap[stat.userId][stat.hourKey] || 0) + stat.count;
+      }
+      
+      // Add pattern-based stats
+      if (stat.patternKey) {
+        statsMap[stat.userId][stat.patternKey] = (statsMap[stat.userId][stat.patternKey] || 0) + stat.count;
+      }
+    });
+    
+    console.log(`📊 Loaded daily stats for ${Object.keys(statsMap).length} users from MongoDB`);
+    return statsMap;
+  } catch (error) {
+    console.error("❌ Error loading daily stats from MongoDB:", error?.message);
+    return {};
+  }
+};
+
+// Save daily stats to MongoDB (legacy file format no longer used)
+const saveDailyStats = async (stats) => {
+  try {
+    // This function is kept for compatibility but doesn't do anything
+    // Stats are now saved directly via updateDailyStats
+    console.log(`✅ Daily stats structure maintained in MongoDB (legacy call)`);
+  } catch (error) {
+    console.error("❌ Error in legacy saveDailyStats:", error?.message);
+  }
+};
+
+// Update daily stats directly in MongoDB
+const updateDailyStats = async (userId, dateKey, hourKey, patternKey) => {
+  try {
+    const now = new Date();
+    const operations = [];
+    
+    // Update daily count
+    if (dateKey) {
+      operations.push({
+        updateOne: {
+          filter: { userId, dateKey },
+          update: { 
+            $inc: { count: 1 },
+            $set: { updatedAt: now },
+            $setOnInsert: { userId, dateKey, createdAt: now }
+          },
+          upsert: true
+        }
+      });
+    }
+    
+    // Update hourly count
+    if (hourKey) {
+      operations.push({
+        updateOne: {
+          filter: { userId, hourKey },
+          update: { 
+            $inc: { count: 1 },
+            $set: { updatedAt: now },
+            $setOnInsert: { userId, hourKey, createdAt: now }
+          },
+          upsert: true
+        }
+      });
+    }
+    
+    // Update pattern count
+    if (patternKey) {
+      operations.push({
+        updateOne: {
+          filter: { userId, patternKey },
+          update: { 
+            $inc: { count: 1 },
+            $set: { updatedAt: now },
+            $setOnInsert: { userId, patternKey, createdAt: now }
+          },
+          upsert: true
+        }
+      });
+    }
+    
+    if (operations.length > 0) {
+      await DailyStats.bulkWrite(operations);
+      console.log(`📊 Updated daily stats for user ${userId}`);
+    }
+  } catch (error) {
+    console.error("❌ Error updating daily stats:", error?.message);
+  }
+};
+
+// Clean old daily stats (older than 7 days)
+const cleanOldDailyStats = async () => {
+  try {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    
+    const result = await DailyStats.deleteMany({
+      createdAt: { $lt: sevenDaysAgo }
+    });
+    
+    if (result.deletedCount > 0) {
+      console.log(`🧹 Cleaned ${result.deletedCount} old daily stats records`);
+    }
+    
+    return result.deletedCount;
+  } catch (error) {
+    console.error("❌ Error cleaning old daily stats:", error?.message);
+    return 0;
+  }
+};
+
 module.exports = {
   Job,
   UserSession,
   UserCooldown,
+  DailyStats,
   loadJobs,
   saveJobs,
   loadUserSessions,
@@ -298,5 +445,9 @@ module.exports = {
   initializeDB,
   checkAndSetUserCooldown,
   processUserCooldowns,
-  getUserCooldownStatus
+  getUserCooldownStatus,
+  loadDailyStats,
+  saveDailyStats,
+  updateDailyStats,
+  cleanOldDailyStats
 };
