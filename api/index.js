@@ -876,12 +876,22 @@ const processJobInBackground = async (jobId) => {
 
               const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
 
+              // Create refreshData object from currentUserSession
+              const refreshData = currentUserSession.refreshToken ? {
+                refreshToken: currentUserSession.refreshToken,
+                clientId: currentUserSession.clientId,
+                tenantId: currentUserSession.tenantId,
+                crmUrl: currentUserSession.crmUrl,
+                verifier: currentUserSession.verifier,
+                userId: job.userId
+              } : null;
+
               await callDataverseWithRefresh(
                 updateUrl,
                 currentUserSession.accessToken,
                 "PATCH",
                 convertedProfile,
-                refreshData
+                refreshData  // Now refreshData is defined
               ).catch(handleDataverseError);
 
             } catch (dataverseError) {
