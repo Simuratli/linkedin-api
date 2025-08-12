@@ -101,7 +101,6 @@ function getCurrentHumanPattern() {
   const bakuHour = getBakuHour();
   const isWeekend = [0, 6].includes(getBakuDay()); // 0=Sunday, 6=Saturday
 
-  console.log(`🕒 Current time: ${getBakuTime()}, Hour: ${bakuHour}`);
 
   // Check each pattern with weekday/weekend awareness
   for (const [patternName, pattern] of Object.entries(HUMAN_PATTERNS)) {
