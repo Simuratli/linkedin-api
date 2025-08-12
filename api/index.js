@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs").promises;
 const path = require("path");
+const axios = require("axios");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const {
   fetchLinkedInProfile,
@@ -17,7 +18,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // File paths for persistent storage
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = process.env.NODE_ENV === 'production' 
+  ? '/data'  // Render.com persistent disk path
+  : path.join(__dirname, "data");
 const JOBS_FILE = path.join(DATA_DIR, "processing_jobs.json");
 const USER_SESSIONS_FILE = path.join(DATA_DIR, "user_sessions.json");
 const DAILY_STATS_FILE = path.join(DATA_DIR, "daily_stats.json");
@@ -35,11 +38,30 @@ const PATTERN_LIMITS = {
 };
 
 // Ensure data directory exists
+// Initialize data directory with proper permissions for Render.com
 const ensureDataDir = async () => {
   try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
+    // Create directory with full permissions in production
+    if (process.env.NODE_ENV === 'production') {
+      await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o777 });
+      
+      // Ensure files exist with proper permissions
+      const files = [JOBS_FILE, USER_SESSIONS_FILE];
+      for (const file of files) {
+        try {
+          await fs.access(file);
+        } catch {
+          await fs.writeFile(file, '{}', { mode: 0o666 });
+        }
+      }
+    } else {
+      await fs.mkdir(DATA_DIR, { recursive: true });
+    }
+    
+    console.log("📁 Data directory initialized:", DATA_DIR);
   } catch (error) {
-    console.error("Error creating data directory:", error);
+    console.error("❌ Error initializing data directory:", error);
+    throw error;
   }
 };
 
@@ -262,21 +284,65 @@ const shouldTakeBreak = (processedInSession) => {
   return 0;
 };
 
-// Load/Save processing jobs
+// Github Gist configuration
+const GIST_TOKEN = process.env.GITHUB_GIST_TOKEN;
+const GIST_ID = process.env.GIST_ID;
+
+// Load/Save processing jobs using Github Gist in production
 const loadJobs = async () => {
   try {
-    const data = await fs.readFile(JOBS_FILE, "utf8");
-    return JSON.parse(data);
+    if (process.env.NODE_ENV === 'production') {
+      const response = await axios.get(`https://api.github.com/gists/${GIST_ID}`, {
+        headers: {
+          'Authorization': `token ${GIST_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json'
+        }
+      });
+      
+      const content = response.data.files['jobs.json'].content;
+      console.log('📖 Loaded jobs from Github Gist');
+      return JSON.parse(content);
+    } else {
+      // Local development mode
+      await ensureDataDir();
+      const data = await fs.readFile(JOBS_FILE, "utf8");
+      const jobs = JSON.parse(data);
+      console.log(`📖 Loaded ${Object.keys(jobs).length} jobs from local storage`);
+      return jobs;
+    }
   } catch (error) {
+    console.error("❌ Error loading jobs:", error?.message);
     return {};
   }
 };
 
 const saveJobs = async (jobs) => {
   try {
-     await safeWrite(JOBS_FILE, jobs);
+    if (process.env.NODE_ENV === 'production') {
+      // Save to Github Gist in production
+      await axios.patch(`https://api.github.com/gists/${GIST_ID}`, {
+        files: {
+          'jobs.json': {
+            content: JSON.stringify(jobs, null, 2)
+          }
+        }
+      }, {
+        headers: {
+          'Authorization': `token ${GIST_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json'
+        }
+      });
+      console.log('💾 Saved jobs to Github Gist');
+    } else {
+      // Save locally in development
+      await ensureDataDir();
+      const tempFile = `${JOBS_FILE}.tmp`;
+      await fs.writeFile(tempFile, JSON.stringify(jobs, null, 2));
+      await fs.rename(tempFile, JOBS_FILE);
+      console.log(`💾 Jobs saved locally (${Object.keys(jobs).length} jobs)`);
+    }
   } catch (error) {
-    console.error("Error saving jobs:", error);
+    console.error("❌ Error saving jobs:", error?.message);
   }
 };
 
