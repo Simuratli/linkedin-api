@@ -3108,35 +3108,58 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
         userSession.tenantId
       );
       
+      console.log(`📋 CRM'dan gelen ${freshContactsFromCRM.length} contact işleniyor...`);
+      
       const updatedContacts = freshContactsFromCRM.map((contact, index) => {
-        const contactId = contact.contactid || contact.id || `contact_${index}`;
+        const contactId = contact.contactid;
+        const fullName = contact.fullname || `${contact.firstname || ''} ${contact.lastname || ''}`.trim();
         
-        // Try multiple LinkedIn URL fields
-        let linkedinUrl = contact.uds_linkedin || 
-                         contact.linkedinurl || 
-                         contact.linkedin_url || 
-                         contact.websiteurl || 
-                         null;
+        // LinkedIn URL'ini al (CRM'da uds_linkedin alanında)
+        let linkedinUrl = contact.uds_linkedin;
         
-        // Clean LinkedIn URL if found
+        // LinkedIn URL temizleme ve doğrulama
         if (linkedinUrl) {
-          linkedinUrl = linkedinUrl.replace(/^https?:\/\/(www\.)?/, 'https://www.');
-          if (!linkedinUrl.includes('linkedin.com')) {
-            linkedinUrl = null;
+          // URL'yi normalize et
+          linkedinUrl = linkedinUrl.trim();
+          if (!linkedinUrl.startsWith('http')) {
+            linkedinUrl = 'https://' + linkedinUrl;
           }
+          
+          // LinkedIn kontrolü
+          if (!linkedinUrl.includes('linkedin.com')) {
+            console.log(`⚠️ Contact ${index + 1} (${fullName}): LinkedIn URL geçersiz - "${linkedinUrl}"`);
+            linkedinUrl = null;
+          } else {
+            console.log(`✅ Contact ${index + 1} (${fullName}): LinkedIn URL geçerli - "${linkedinUrl}"`);
+          }
+        } else {
+          console.log(`⚠️ Contact ${index + 1} (${fullName}): LinkedIn URL bulunamadı`);
         }
-        
-        console.log(`📋 İşlenecek Contact ${index + 1}: ID=${contactId}, LinkedIn=${linkedinUrl ? 'VAR' : 'YOK'}`);
         
         return {
           contactId,
+          fullName,
           linkedinUrl,
           status: 'pending',
           error: null
         };
       });
       
-      console.log(`✅ Toplam hazırlanan contact: ${updatedContacts.length}`);
+      // Tüm contactları dahil et (LinkedIn URL olmayanları da)
+      const validContacts = updatedContacts.filter(contact => contact.linkedinUrl);
+      
+      console.log(`📊 Contact Özeti:`);
+      console.log(`   Toplam CRM Contact: ${freshContactsFromCRM.length}`);
+      console.log(`   LinkedIn URL'li Contact: ${validContacts.length}`);
+      console.log(`   İşlenecek Contact: ${validContacts.length}`);
+      
+      if (validContacts.length === 0) {
+        console.log(`❌ Hiç geçerli LinkedIn URL'li contact bulunamadı!`);
+        return res.status(400).json({
+          success: false,
+          message: "CRM'da geçerli LinkedIn URL'li contact bulunamadı"
+        });
+      }
       
       // Create new job with fresh contacts
       const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -3146,8 +3169,8 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
           jobId: newJobId,
           userId: userId,
           status: 'pending',
-          contacts: updatedContacts,
-          totalContacts: updatedContacts.length,
+          contacts: validContacts,
+          totalContacts: validContacts.length,
           processedCount: 0,
           successCount: 0,
           failureCount: 0,
@@ -3188,11 +3211,19 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
           newJob: {
             jobId: newJobId,
             status: 'pending',
-            totalContacts: updatedContacts.length,
+            totalContacts: validContacts.length,
             processedCount: 0
           },
           autoStarted: true,
-          canStartNewJob: true
+          canStartNewJob: true,
+          contactSummary: {
+            totalFromCRM: freshContactsFromCRM.length,
+            validLinkedInContacts: validContacts.length,
+            contactDetails: validContacts.map(c => ({
+              name: c.fullName,
+              hasLinkedIn: !!c.linkedinUrl
+            }))
+          }
         });
         
     } catch (error) {
