@@ -50,7 +50,12 @@ const jobSchema = new mongoose.Schema({
     startDate: String,
     processedToday: { type: Number, default: 0 },
     patternBreakdown: { type: mongoose.Schema.Types.Mixed, default: {} }
-  }
+  },
+  // Cooldown override fields
+  cooldownOverridden: { type: Boolean, default: false },
+  overriddenAt: { type: Date },
+  overrideReason: { type: String },
+  daysSinceCompletionAtOverride: { type: Number }
 }, { suppressReservedKeysWarning: true });
 
 // MongoDB User Session Schema
