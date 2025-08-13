@@ -231,8 +231,28 @@ async function fetchContactsFromDataverse(token, crmUrl, tenantId) {
   try {
     console.log(`📋 Fetching contacts from Dataverse CRM: ${crmUrl}`);
     
-    // Construct the endpoint for contacts
-    const endpoint = `${crmUrl}/api/data/v9.2/contacts`;
+    // Define the fields we want to retrieve, including all possible LinkedIn URL fields
+    const selectFields = [
+      'contactid',
+      'fullname',
+      'firstname', 
+      'lastname',
+      'emailaddress1',
+      'telephone1',
+      'websiteurl',
+      'uds_linkedin',
+      'linkedinurl',
+      'linkedin_url', 
+      'linkedinprofileurl',
+      'uds_linkedinurl',
+      'uds_linkedinprofileurl',
+      'statecode'
+    ].join(',');
+    
+    // Construct the endpoint for contacts with field selection and active contacts filter
+    const endpoint = `${crmUrl}/api/data/v9.2/contacts?$select=${selectFields}&$filter=statecode eq 0`;
+    
+    console.log(`🔗 Fetching from endpoint: ${endpoint}`);
     
     // Use getDataverse function to fetch contacts
     const response = await getDataverse(endpoint, token);
@@ -248,6 +268,24 @@ async function fetchContactsFromDataverse(token, crmUrl, tenantId) {
     }
     
     console.log(`✅ Successfully fetched ${response.value.length} contacts from Dataverse`);
+    
+    // Log the fields available in the first contact for debugging
+    if (response.value.length > 0) {
+      const firstContact = response.value[0];
+      console.log(`📝 Available fields in first contact:`, Object.keys(firstContact));
+      
+      // Log all LinkedIn-related field values for debugging
+      const linkedinFields = Object.keys(firstContact).filter(key => 
+        key.toLowerCase().includes('linkedin') || 
+        key.toLowerCase().includes('website') ||
+        key.includes('uds_')
+      );
+      
+      console.log(`🔗 LinkedIn-related fields in first contact:`, linkedinFields.reduce((obj, field) => {
+        obj[field] = firstContact[field];
+        return obj;
+      }, {}));
+    }
     
     // Return the contacts array
     return response.value;

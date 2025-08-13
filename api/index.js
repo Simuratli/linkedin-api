@@ -2766,46 +2766,69 @@ app.post("/restart-processing/:userId", async (req, res) => {
           // Convert CRM contacts to job format with detailed logging
           const updatedContacts = freshContactsFromCRM.map((contact, index) => {
             const contactId = contact.contactid || contact.id;
+            const fullName = contact.fullname || `${contact.firstname || ''} ${contact.lastname || ''}`.trim();
             
-            // Try multiple possible field names for LinkedIn URL
+            // Try multiple possible field names for LinkedIn URL with priority order
             const linkedinUrl = contact.uds_linkedin || 
                                contact.linkedinurl || 
                                contact.linkedin_url || 
-                               contact.websiteurl || 
                                contact.linkedinprofileurl ||
                                contact.uds_linkedinprofileurl ||
-                               contact.uds_linkedinurl;
+                               contact.uds_linkedinurl ||
+                               contact.websiteurl; // websiteurl as last resort
             
-            console.log(`Contact ${index + 1}/${freshContactsFromCRM.length}:`, {
+            // Get all LinkedIn-related fields for debugging
+            const linkedinFields = Object.keys(contact).filter(key => 
+              key.toLowerCase().includes('linkedin') || 
+              key.toLowerCase().includes('website') ||
+              key.includes('uds_')
+            ).reduce((obj, field) => {
+              obj[field] = contact[field];
+              return obj;
+            }, {});
+            
+            console.log(`Contact ${index + 1}/${freshContactsFromCRM.length} - ${fullName}:`, {
               contactId,
+              fullName,
               linkedinUrl: linkedinUrl || 'NOT_FOUND',
               hasLinkedIn: !!linkedinUrl,
-              allFields: Object.keys(contact).filter(key => key.toLowerCase().includes('linkedin'))
+              linkedinFields,
+              email: contact.emailaddress1
             });
             
             return {
               contactId,
+              fullName,
               linkedinUrl,
+              email: contact.emailaddress1,
               status: 'pending',
               error: null
             };
           });
           
-          // Filter only contacts with valid LinkedIn URLs
+          // More flexible filtering - include contacts with any LinkedIn-like URL or include all contacts for manual processing
           const contactsWithLinkedIn = updatedContacts.filter(contact => {
-            const hasValidLinkedIn = contact.linkedinUrl && 
-                                   contact.linkedinUrl.trim() !== '' && 
-                                   contact.linkedinUrl !== 'null' &&
-                                   contact.linkedinUrl !== 'undefined' &&
-                                   (contact.linkedinUrl.includes('linkedin.com') || contact.linkedinUrl.includes('linkedin'));
+            // Include contacts with any non-empty LinkedIn URL
+            const hasLinkedInUrl = contact.linkedinUrl && 
+                                  contact.linkedinUrl.trim() !== '' && 
+                                  contact.linkedinUrl !== 'null' &&
+                                  contact.linkedinUrl !== 'undefined';
             
-            if (!hasValidLinkedIn) {
-              console.log(`⚠️ Filtering out contact ${contact.contactId}: invalid LinkedIn URL: "${contact.linkedinUrl}"`);
+            // Also include contacts that have email but no LinkedIn (they might be processed manually)
+            const hasEmail = contact.email && contact.email.trim() !== '';
+            
+            // Accept if has LinkedIn URL or if has email (more flexible approach)
+            const shouldInclude = hasLinkedInUrl || hasEmail;
+            
+            if (!shouldInclude) {
+              console.log(`⚠️ Filtering out contact ${contact.contactId} (${contact.fullName}): no LinkedIn URL and no email`);
+            } else if (hasLinkedInUrl) {
+              console.log(`✅ Valid contact ${contact.contactId} (${contact.fullName}): LinkedIn URL: "${contact.linkedinUrl}"`);
             } else {
-              console.log(`✅ Valid contact ${contact.contactId}: LinkedIn URL: "${contact.linkedinUrl}"`);
+              console.log(`📧 Including contact ${contact.contactId} (${contact.fullName}): Email only: "${contact.email}"`);
             }
             
-            return hasValidLinkedIn;
+            return shouldInclude;
           });
           
           const oldContactCount = currentJob.contacts ? currentJob.contacts.length : 0;
