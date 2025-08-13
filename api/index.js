@@ -3003,6 +3003,61 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
     
     console.log(`🔓 Simple cooldown override requested for user ${userId}`);
     
+    // İLK ÖNCE CRM'DAN CONTACTLARI ÇEK VE LOGLA
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    if (!userSession || !userSession.crmUrl || !userSession.accessToken) {
+      return res.status(400).json({
+        success: false,
+        message: "User session, CRM URL veya access token bulunamadı"
+      });
+    }
+    
+    console.log(`📥 CRM'dan contactları çekiyorum...`);
+    console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
+    
+    try {
+      const { fetchContactsFromDataverse } = require('../helpers/dynamics');
+      
+      const freshContactsFromCRM = await fetchContactsFromDataverse(
+        userSession.accessToken,
+        userSession.crmUrl,
+        userSession.tenantId
+      );
+      
+      console.log(`📋 CRM'dan gelen RAW contactlar: ${freshContactsFromCRM ? freshContactsFromCRM.length : 0}`);
+      
+      if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
+        console.log(`🔍 === TÜM CRM CONTACTLARI ===`);
+        freshContactsFromCRM.forEach((contact, index) => {
+          console.log(`Contact ${index + 1}:`, {
+            contactid: contact.contactid,
+            id: contact.id,
+            firstname: contact.firstname,
+            lastname: contact.lastname,
+            uds_linkedin: contact.uds_linkedin,
+            linkedinurl: contact.linkedinurl,
+            linkedin_url: contact.linkedin_url,
+            websiteurl: contact.websiteurl
+          });
+        });
+        console.log(`🔍 === CRM CONTACTLARI SONU ===`);
+      } else {
+        console.log(`❌ CRM'dan contact gelmedi!`);
+        return res.status(400).json({
+          success: false,
+          message: "CRM'dan contact alınamadı"
+        });
+      }
+    } catch (crmError) {
+      console.error(`❌ CRM contact fetch hatası: ${crmError.message}`);
+      return res.status(500).json({
+        success: false,
+        message: `CRM'dan contact çekerken hata: ${crmError.message}`
+      });
+    }
+    
     // Load jobs
     const jobs = await loadJobs();
     const userJobs = Object.values(jobs).filter(job => job.userId === userId);
@@ -3042,105 +3097,55 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
     
     // Auto-start new job after simple override
     try {
-      console.log(`🚀 Auto-starting new job after simple override for user ${userId}`);
+      console.log(`🚀 Yeni job başlatılıyor...`);
       
-      const userSessions = await loadUserSessions();
-      const userSession = userSessions[userId];
+      // CRM'dan gelen contactları job formatına çevir
+      const freshContactsFromCRM = await fetchContactsFromDataverse(
+        userSession.accessToken,
+        userSession.crmUrl,
+        userSession.tenantId
+      );
       
-      if (userSession && userSession.crmUrl && userSession.accessToken) {
-        // Fetch fresh contacts from CRM
-        let freshContacts = [];
+      const updatedContacts = freshContactsFromCRM.map((contact, index) => {
+        const contactId = contact.contactid || contact.id || `contact_${index}`;
         
-        try {
-          console.log(`📥 Fetching fresh contacts from CRM for user ${userId}`);
-          console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
-          
-          const { fetchContactsFromDataverse } = require('../helpers/dynamics');
-          
-          const freshContactsFromCRM = await fetchContactsFromDataverse(
-            userSession.accessToken,
-            userSession.crmUrl,
-            userSession.tenantId
-          );
-          
-          if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
-            console.log(`📋 Fresh contacts from CRM: ${freshContactsFromCRM.length}`);
-            
-            // Convert CRM contacts to job format
-            const updatedContacts = freshContactsFromCRM.map((contact, index) => {
-              const contactId = contact.contactid || contact.id || `contact_${index}`;
-              
-              // Try multiple LinkedIn URL fields
-              let linkedinUrl = contact.uds_linkedin || 
-                               contact.linkedinurl || 
-                               contact.linkedin_url || 
-                               contact.websiteurl || 
-                               null;
-              
-              // Clean LinkedIn URL if found
-              if (linkedinUrl) {
-                linkedinUrl = linkedinUrl.replace(/^https?:\/\/(www\.)?/, 'https://www.');
-                if (!linkedinUrl.includes('linkedin.com')) {
-                  linkedinUrl = null;
-                }
-              }
-              
-              console.log(`📋 Contact ${index + 1}: ID=${contactId}, LinkedIn=${linkedinUrl ? 'YES' : 'NO'}`);
-              
-              return {
-                contactId,
-                linkedinUrl,
-                status: 'pending',
-                error: null
-              };
-            });
-            
-            // Include ALL contacts (even without LinkedIn URLs for manual processing)
-            freshContacts = updatedContacts;
-            
-            console.log(`✅ Fresh contacts prepared: ${freshContacts.length} total contacts`);
-            
-          } else {
-            console.log(`⚠️ No contacts fetched from CRM, falling back to existing contacts`);
-            // Fallback to existing contacts if CRM fetch fails
-            freshContacts = lastCompletedJob.contacts ? lastCompletedJob.contacts.map(contact => ({
-              contactId: contact.contactId,
-              linkedinUrl: contact.linkedinUrl,
-              status: 'pending',
-              error: null
-            })) : [];
+        // Try multiple LinkedIn URL fields
+        let linkedinUrl = contact.uds_linkedin || 
+                         contact.linkedinurl || 
+                         contact.linkedin_url || 
+                         contact.websiteurl || 
+                         null;
+        
+        // Clean LinkedIn URL if found
+        if (linkedinUrl) {
+          linkedinUrl = linkedinUrl.replace(/^https?:\/\/(www\.)?/, 'https://www.');
+          if (!linkedinUrl.includes('linkedin.com')) {
+            linkedinUrl = null;
           }
-          
-        } catch (crmError) {
-          console.error(`❌ Error fetching contacts from CRM: ${crmError.message}`);
-          console.log(`⚠️ Falling back to existing contacts`);
-          
-          // Fallback to existing contacts
-          freshContacts = lastCompletedJob.contacts ? lastCompletedJob.contacts.map(contact => ({
-            contactId: contact.contactId,
-            linkedinUrl: contact.linkedinUrl,
-            status: 'pending',
-            error: null
-          })) : [];
         }
         
-        if (freshContacts.length === 0) {
-          return res.status(400).json({
-            success: false,
-            message: "No contacts available to process"
-          });
-        }
+        console.log(`📋 İşlenecek Contact ${index + 1}: ID=${contactId}, LinkedIn=${linkedinUrl ? 'VAR' : 'YOK'}`);
         
-        // Create new job with fresh contacts
-        const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const now = new Date();
+        return {
+          contactId,
+          linkedinUrl,
+          status: 'pending',
+          error: null
+        };
+      });
+      
+      console.log(`✅ Toplam hazırlanan contact: ${updatedContacts.length}`);
+      
+      // Create new job with fresh contacts
+      const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const now = new Date();
         
         const newJob = {
           jobId: newJobId,
           userId: userId,
           status: 'pending',
-          contacts: freshContacts,
-          totalContacts: freshContacts.length,
+          contacts: updatedContacts,
+          totalContacts: updatedContacts.length,
           processedCount: 0,
           successCount: 0,
           failureCount: 0,
@@ -3181,48 +3186,27 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
           newJob: {
             jobId: newJobId,
             status: 'pending',
-            totalContacts: freshContacts.length,
+            totalContacts: updatedContacts.length,
             processedCount: 0
           },
           autoStarted: true,
           canStartNewJob: true
         });
         
-      } else {
-        res.status(200).json({
-          success: true,
-          message: `Cooldown period overridden (simple method)`,
-          overriddenJob: {
-            jobId: lastCompletedJob.jobId,
-            completedAt: lastCompletedJob.completedAt,
-            overriddenAt: lastCompletedJob.overriddenAt,
-            overrideReason: lastCompletedJob.overrideReason
-          },
-          canStartNewJob: true,
-          autoStartFailed: "Missing session or contacts data"
-        });
-      }
-      
     } catch (error) {
-      res.status(200).json({
-        success: true,
-        message: `Cooldown period overridden (simple method)`,
-        overriddenJob: {
-          jobId: lastCompletedJob.jobId,
-          completedAt: lastCompletedJob.completedAt,
-          overriddenAt: lastCompletedJob.overriddenAt,
-          overrideReason: lastCompletedJob.overrideReason
-        },
-        canStartNewJob: true,
-        autoStartFailed: error.message
+      console.error(`❌ Job oluşturma hatası: ${error.message}`);
+      res.status(500).json({
+        success: false,
+        message: "Job oluşturulurken hata oluştu",
+        error: error.message
       });
     }
     
   } catch (error) {
-    console.error(`❌ Error in simple override: ${error.message}`);
+    console.error(`❌ Override cooldown hatası: ${error.message}`);
     res.status(500).json({
       success: false,
-      message: "Error in simple override",
+      message: "Override cooldown işleminde hata",
       error: error.message
     });
   }
