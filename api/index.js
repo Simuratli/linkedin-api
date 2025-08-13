@@ -2421,18 +2421,142 @@ app.post("/override-cooldown/:userId", async (req, res) => {
     
     console.log(`✅ Cooldown overridden for user ${userId}. Job ${lastCompletedJob.jobId} marked as override.`);
     
-    res.status(200).json({
-      success: true,
-      message: `Cooldown period overridden. You can now start new processing.`,
-      overriddenJob: {
-        jobId: lastCompletedJob.jobId,
-        completedAt: lastCompletedJob.completedAt,
-        overriddenAt: lastCompletedJob.overriddenAt,
-        daysSinceCompletion,
-        daysRemaining: 30 - daysSinceCompletion
-      },
-      canStartNewJob: true
-    });
+    // After successful override, automatically start a new job
+    console.log(`🚀 Starting new job automatically after cooldown override for user ${userId}`);
+    
+    try {
+      // Get user session to check for CRM URL and contacts
+      const userSessions = await loadUserSessions();
+      const userSession = userSessions[userId];
+      
+      if (!userSession || !userSession.crmUrl) {
+        console.log(`⚠️ No user session or CRM URL found for ${userId}, cannot auto-start new job`);
+        return res.status(200).json({
+          success: true,
+          message: `Cooldown period overridden successfully`,
+          overriddenJob: {
+            jobId: lastCompletedJob.jobId,
+            completedAt: lastCompletedJob.completedAt,
+            overriddenAt: lastCompletedJob.overriddenAt,
+            daysRemaining: 30 - daysSinceCompletion
+          },
+          canStartNewJob: true,
+          autoStartFailed: "No user session or CRM URL found",
+          nextStep: "Please start a new job manually"
+        });
+      }
+      
+      // Create a new job with fresh contacts
+      const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const now = new Date();
+      
+      // Get contacts from the previous job and reset them
+      const previousContacts = lastCompletedJob.contacts || [];
+      const freshContacts = previousContacts.map(contact => ({
+        contactId: contact.contactId,
+        linkedinUrl: contact.linkedinUrl,
+        status: 'pending',  // Reset all to pending
+        error: null
+      }));
+      
+      if (freshContacts.length === 0) {
+        console.log(`⚠️ No contacts found in previous job ${lastCompletedJob.jobId}, cannot auto-start`);
+        return res.status(200).json({
+          success: true,
+          message: `Cooldown period overridden successfully`,
+          overriddenJob: {
+            jobId: lastCompletedJob.jobId,
+            completedAt: lastCompletedJob.completedAt,
+            overriddenAt: lastCompletedJob.overriddenAt,
+            daysRemaining: 30 - daysSinceCompletion
+          },
+          canStartNewJob: true,
+          autoStartFailed: "No contacts found in previous job",
+          nextStep: "Please add contacts and start a new job manually"
+        });
+      }
+      
+      // Create new job
+      const newJob = {
+        jobId: newJobId,
+        userId: userId,
+        status: 'pending',
+        contacts: freshContacts,
+        totalContacts: freshContacts.length,
+        processedCount: 0,
+        successCount: 0,
+        failureCount: 0,
+        currentBatchIndex: 0,
+        createdAt: now.toISOString(),
+        startTime: now.toISOString(),
+        errors: [],
+        humanPatterns: {
+          startPattern: null,
+          startTime: now.toISOString(),
+          patternHistory: []
+        },
+        dailyStats: {
+          startDate: now.toISOString().split('T')[0],
+          processedToday: 0,
+          patternBreakdown: {}
+        }
+      };
+      
+      // Save the new job
+      const allJobs = await loadJobs();
+      allJobs[newJobId] = newJob;
+      await saveJobs(allJobs);
+      
+      // Update user session with new job ID
+      userSession.currentJobId = newJobId;
+      await saveUserSessions(userSessions);
+      
+      console.log(`✅ New job ${newJobId} created automatically with ${freshContacts.length} contacts reset to pending`);
+      
+      // Start background processing for the new job
+      setImmediate(() => {
+        console.log(`🔄 Starting background processing for new job ${newJobId}`);
+        processJobInBackground(newJobId);
+      });
+      
+      res.status(200).json({
+        success: true,
+        message: `Cooldown overridden and new job started automatically`,
+        overriddenJob: {
+          jobId: lastCompletedJob.jobId,
+          completedAt: lastCompletedJob.completedAt,
+          overriddenAt: lastCompletedJob.overriddenAt,
+          daysRemaining: 30 - daysSinceCompletion
+        },
+        newJob: {
+          jobId: newJobId,
+          status: 'pending',
+          totalContacts: freshContacts.length,
+          processedCount: 0,
+          message: 'New job started automatically with all contacts reset to pending'
+        },
+        autoStarted: true,
+        canStartNewJob: true
+      });
+      
+    } catch (autoStartError) {
+      console.error(`❌ Error auto-starting new job after override: ${autoStartError.message}`);
+      
+      // Still return success for the override, but mention auto-start failed
+      res.status(200).json({
+        success: true,
+        message: `Cooldown overridden successfully, but auto-start failed`,
+        overriddenJob: {
+          jobId: lastCompletedJob.jobId,
+          completedAt: lastCompletedJob.completedAt,
+          overriddenAt: lastCompletedJob.overriddenAt,
+          daysRemaining: 30 - daysSinceCompletion
+        },
+        canStartNewJob: true,
+        autoStartFailed: autoStartError.message,
+        nextStep: "Please start a new job manually"
+      });
+    }
     
   } catch (error) {
     console.error(`❌ Error overriding cooldown: ${error.message}`);
@@ -2489,17 +2613,107 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
     
     console.log(`✅ Simple override completed for user ${userId}, job ${lastCompletedJob.jobId}`);
     
-    res.status(200).json({
-      success: true,
-      message: `Cooldown period overridden (simple method)`,
-      overriddenJob: {
-        jobId: lastCompletedJob.jobId,
-        completedAt: lastCompletedJob.completedAt,
-        overriddenAt: lastCompletedJob.overriddenAt,
-        overrideReason: lastCompletedJob.overrideReason
-      },
-      canStartNewJob: true
-    });
+    // Auto-start new job after simple override
+    try {
+      console.log(`🚀 Auto-starting new job after simple override for user ${userId}`);
+      
+      const userSessions = await loadUserSessions();
+      const userSession = userSessions[userId];
+      
+      if (userSession && userSession.crmUrl && lastCompletedJob.contacts && lastCompletedJob.contacts.length > 0) {
+        // Create new job with reset contacts
+        const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const now = new Date();
+        
+        const freshContacts = lastCompletedJob.contacts.map(contact => ({
+          contactId: contact.contactId,
+          linkedinUrl: contact.linkedinUrl,
+          status: 'pending',
+          error: null
+        }));
+        
+        const newJob = {
+          jobId: newJobId,
+          userId: userId,
+          status: 'pending',
+          contacts: freshContacts,
+          totalContacts: freshContacts.length,
+          processedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          currentBatchIndex: 0,
+          createdAt: now.toISOString(),
+          startTime: now.toISOString(),
+          errors: [],
+          humanPatterns: {
+            startPattern: null,
+            startTime: now.toISOString(),
+            patternHistory: []
+          },
+          dailyStats: {
+            startDate: now.toISOString().split('T')[0],
+            processedToday: 0,
+            patternBreakdown: {}
+          }
+        };
+        
+        jobs[newJobId] = newJob;
+        await saveJobs(jobs);
+        
+        userSession.currentJobId = newJobId;
+        await saveUserSessions(userSessions);
+        
+        // Start processing
+        setImmediate(() => processJobInBackground(newJobId));
+        
+        res.status(200).json({
+          success: true,
+          message: `Cooldown overridden and new job started automatically (simple method)`,
+          overriddenJob: {
+            jobId: lastCompletedJob.jobId,
+            completedAt: lastCompletedJob.completedAt,
+            overriddenAt: lastCompletedJob.overriddenAt,
+            overrideReason: lastCompletedJob.overrideReason
+          },
+          newJob: {
+            jobId: newJobId,
+            status: 'pending',
+            totalContacts: freshContacts.length,
+            processedCount: 0
+          },
+          autoStarted: true,
+          canStartNewJob: true
+        });
+        
+      } else {
+        res.status(200).json({
+          success: true,
+          message: `Cooldown period overridden (simple method)`,
+          overriddenJob: {
+            jobId: lastCompletedJob.jobId,
+            completedAt: lastCompletedJob.completedAt,
+            overriddenAt: lastCompletedJob.overriddenAt,
+            overrideReason: lastCompletedJob.overrideReason
+          },
+          canStartNewJob: true,
+          autoStartFailed: "Missing session or contacts data"
+        });
+      }
+      
+    } catch (error) {
+      res.status(200).json({
+        success: true,
+        message: `Cooldown period overridden (simple method)`,
+        overriddenJob: {
+          jobId: lastCompletedJob.jobId,
+          completedAt: lastCompletedJob.completedAt,
+          overriddenAt: lastCompletedJob.overriddenAt,
+          overrideReason: lastCompletedJob.overrideReason
+        },
+        canStartNewJob: true,
+        autoStartFailed: error.message
+      });
+    }
     
   } catch (error) {
     console.error(`❌ Error in simple override: ${error.message}`);
