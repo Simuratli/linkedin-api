@@ -617,7 +617,7 @@ app.post("/start-processing", async (req, res) => {
         refreshToken,
         clientId,
         tenantId,
-        verifier: code_verifier,
+        verifier: verifier,
         crmUrl,
         lastActivity: new Date().toISOString()
       };
