@@ -508,7 +508,11 @@ app.post("/start-processing", async (req, res) => {
       if (!hasPendingContacts && lastCompletedJob) {
         const completedAt = new Date(lastCompletedJob.completedAt);
         const diffDays = (now - completedAt) / (1000 * 60 * 60 * 24);
-        if (diffDays < 30) {
+        
+        // Check if cooldown was overridden
+        const cooldownOverridden = lastCompletedJob.cooldownOverridden;
+        
+        if (diffDays < 30 && !cooldownOverridden) {
           return res.status(200).json({
             success: false,
             message: `All contacts were already processed. Please wait ${Math.ceil(30 - diffDays)} more day(s) before running again.`,
@@ -519,9 +523,13 @@ app.post("/start-processing", async (req, res) => {
             canResume: false,
             cooldownActive: true,
             cooldownDaysLeft: Math.ceil(30 - diffDays),
+            canOverrideCooldown: true, // Add this flag
+            overrideEndpoint: `/override-cooldown/${userId}`, // Provide override endpoint
             currentPattern: limitCheck.currentPattern,
             limitInfo: limitCheck,
           });
+        } else if (cooldownOverridden) {
+          console.log(`✅ Cooldown was overridden for user ${userId} on ${lastCompletedJob.overriddenAt}, allowing new job`);
         }
       }
 
@@ -2229,7 +2237,10 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
         failureCount: job.failureCount,
         createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
         completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
-        lastProcessedAt: job.lastProcessedAt ? new Date(job.lastProcessedAt).toISOString() : null
+        lastProcessedAt: job.lastProcessedAt ? new Date(job.lastProcessedAt).toISOString() : null,
+        cooldownOverridden: job.cooldownOverridden || false,
+        overriddenAt: job.overriddenAt ? new Date(job.overriddenAt).toISOString() : null,
+        overrideReason: job.overrideReason || null
       }))
       // Sort by creation date (newest first)
       .sort((a, b) => {
@@ -2240,6 +2251,26 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
     
     console.log(`Found ${userJobs.length} jobs for user ${userId}`);
     
+    // Calculate cooldown status
+    const lastCompletedJob = userJobs.find(job => job.status === 'completed');
+    let cooldownInfo = { active: false };
+    
+    if (lastCompletedJob) {
+      const completedAt = new Date(lastCompletedJob.completedAt);
+      const now = new Date();
+      const diffDays = (now - completedAt) / (1000 * 60 * 60 * 24);
+      
+      cooldownInfo = {
+        active: diffDays < 30 && !lastCompletedJob.cooldownOverridden,
+        daysLeft: Math.max(0, Math.ceil(30 - diffDays)),
+        completedAt: lastCompletedJob.completedAt,
+        overridden: lastCompletedJob.cooldownOverridden || false,
+        overriddenAt: lastCompletedJob.overriddenAt || null,
+        overrideReason: lastCompletedJob.overrideReason || null,
+        canOverride: diffDays < 30 && !lastCompletedJob.cooldownOverridden
+      };
+    }
+    
     // Get user session to determine current job
     const userSessions = await loadUserSessions();
     const currentJobId = userSessions[userId]?.currentJobId;
@@ -2247,13 +2278,154 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
     res.status(200).json({
       success: true,
       currentJobId,
-      jobs: userJobs
+      jobs: userJobs,
+      cooldownInfo
     });
   } catch (error) {
     console.error(`❌ Error getting user job history: ${error.message}`);
     res.status(500).json({
       success: false,
       message: "Error retrieving user job history",
+      error: error.message
+    });
+  }
+});
+
+// Endpoint to override cooldown and allow new processing
+app.post("/override-cooldown/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { forceOverride = false, reason = "Manual override" } = req.body;
+    
+    console.log(`🔓 Cooldown override requested for user ${userId}:`, { forceOverride, reason });
+    
+    // Load jobs to check current status
+    const jobs = await loadJobs();
+    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
+    
+    if (userJobs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No jobs found for this user"
+      });
+    }
+    
+    // Find the most recent completed job
+    const completedJobs = userJobs
+      .filter(job => job.status === "completed" && job.completedAt)
+      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+    
+    if (completedJobs.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No completed jobs found to override cooldown for"
+      });
+    }
+    
+    const lastCompletedJob = completedJobs[0];
+    const completedAt = new Date(lastCompletedJob.completedAt);
+    const now = new Date();
+    const daysSinceCompletion = Math.floor((now - completedAt) / (1000 * 60 * 60 * 24));
+    
+    // Check if override is needed
+    if (daysSinceCompletion >= 30) {
+      return res.status(200).json({
+        success: false,
+        message: "Cooldown period has already ended naturally. You can start new processing.",
+        daysSinceCompletion,
+        cooldownNeeded: false
+      });
+    }
+    
+    // Add override flag to the job
+    lastCompletedJob.cooldownOverridden = true;
+    lastCompletedJob.overriddenAt = now.toISOString();
+    lastCompletedJob.overrideReason = reason;
+    lastCompletedJob.daysSinceCompletionAtOverride = daysSinceCompletion;
+    
+    // Save the updated job
+    jobs[lastCompletedJob.jobId] = lastCompletedJob;
+    await saveJobs(jobs);
+    
+    console.log(`✅ Cooldown overridden for user ${userId}. Job ${lastCompletedJob.jobId} marked as override.`);
+    
+    res.status(200).json({
+      success: true,
+      message: `Cooldown period overridden. You can now start new processing.`,
+      overriddenJob: {
+        jobId: lastCompletedJob.jobId,
+        completedAt: lastCompletedJob.completedAt,
+        overriddenAt: lastCompletedJob.overriddenAt,
+        daysSinceCompletion,
+        daysRemaining: 30 - daysSinceCompletion
+      },
+      canStartNewJob: true
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error overriding cooldown: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error overriding cooldown",
+      error: error.message
+    });
+  }
+});
+
+// Endpoint to check if cooldown can be overridden
+app.get("/can-override-cooldown/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const jobs = await loadJobs();
+    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
+    
+    // Find the most recent completed job
+    const completedJobs = userJobs
+      .filter(job => job.status === "completed" && job.completedAt)
+      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+    
+    if (completedJobs.length === 0) {
+      return res.status(200).json({
+        success: true,
+        canOverride: false,
+        reason: "No completed jobs found",
+        inCooldown: false
+      });
+    }
+    
+    const lastCompletedJob = completedJobs[0];
+    const completedAt = new Date(lastCompletedJob.completedAt);
+    const now = new Date();
+    const daysSinceCompletion = Math.floor((now - completedAt) / (1000 * 60 * 60 * 24));
+    const daysRemaining = Math.max(0, 30 - daysSinceCompletion);
+    
+    // Check if already overridden
+    const alreadyOverridden = lastCompletedJob.cooldownOverridden;
+    
+    // Check if in cooldown period
+    const inCooldown = daysSinceCompletion < 30 && !alreadyOverridden;
+    
+    res.status(200).json({
+      success: true,
+      canOverride: inCooldown,
+      inCooldown,
+      alreadyOverridden,
+      daysSinceCompletion,
+      daysRemaining,
+      lastCompletedJob: {
+        jobId: lastCompletedJob.jobId,
+        completedAt: lastCompletedJob.completedAt,
+        processedCount: lastCompletedJob.processedCount,
+        totalContacts: lastCompletedJob.totalContacts
+      }
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error checking cooldown override status: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error checking cooldown override status",
       error: error.message
     });
   }
