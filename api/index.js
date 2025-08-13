@@ -3047,17 +3047,93 @@ app.post("/override-cooldown-simple/:userId", async (req, res) => {
       const userSessions = await loadUserSessions();
       const userSession = userSessions[userId];
       
-      if (userSession && userSession.crmUrl && lastCompletedJob.contacts && lastCompletedJob.contacts.length > 0) {
-        // Create new job with reset contacts
+      if (userSession && userSession.crmUrl && userSession.accessToken) {
+        // Fetch fresh contacts from CRM
+        let freshContacts = [];
+        
+        try {
+          console.log(`📥 Fetching fresh contacts from CRM for user ${userId}`);
+          console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
+          
+          const { fetchContactsFromDataverse } = require('../helpers/dynamics');
+          
+          const freshContactsFromCRM = await fetchContactsFromDataverse(
+            userSession.accessToken,
+            userSession.crmUrl,
+            userSession.tenantId
+          );
+          
+          if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
+            console.log(`📋 Fresh contacts from CRM: ${freshContactsFromCRM.length}`);
+            
+            // Convert CRM contacts to job format
+            const updatedContacts = freshContactsFromCRM.map((contact, index) => {
+              const contactId = contact.contactid || contact.id || `contact_${index}`;
+              
+              // Try multiple LinkedIn URL fields
+              let linkedinUrl = contact.uds_linkedin || 
+                               contact.linkedinurl || 
+                               contact.linkedin_url || 
+                               contact.websiteurl || 
+                               null;
+              
+              // Clean LinkedIn URL if found
+              if (linkedinUrl) {
+                linkedinUrl = linkedinUrl.replace(/^https?:\/\/(www\.)?/, 'https://www.');
+                if (!linkedinUrl.includes('linkedin.com')) {
+                  linkedinUrl = null;
+                }
+              }
+              
+              console.log(`📋 Contact ${index + 1}: ID=${contactId}, LinkedIn=${linkedinUrl ? 'YES' : 'NO'}`);
+              
+              return {
+                contactId,
+                linkedinUrl,
+                status: 'pending',
+                error: null
+              };
+            });
+            
+            // Include ALL contacts (even without LinkedIn URLs for manual processing)
+            freshContacts = updatedContacts;
+            
+            console.log(`✅ Fresh contacts prepared: ${freshContacts.length} total contacts`);
+            
+          } else {
+            console.log(`⚠️ No contacts fetched from CRM, falling back to existing contacts`);
+            // Fallback to existing contacts if CRM fetch fails
+            freshContacts = lastCompletedJob.contacts ? lastCompletedJob.contacts.map(contact => ({
+              contactId: contact.contactId,
+              linkedinUrl: contact.linkedinUrl,
+              status: 'pending',
+              error: null
+            })) : [];
+          }
+          
+        } catch (crmError) {
+          console.error(`❌ Error fetching contacts from CRM: ${crmError.message}`);
+          console.log(`⚠️ Falling back to existing contacts`);
+          
+          // Fallback to existing contacts
+          freshContacts = lastCompletedJob.contacts ? lastCompletedJob.contacts.map(contact => ({
+            contactId: contact.contactId,
+            linkedinUrl: contact.linkedinUrl,
+            status: 'pending',
+            error: null
+          })) : [];
+        }
+        
+        if (freshContacts.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "No contacts available to process"
+          });
+        }
+        
+        // Create new job with fresh contacts
         const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const now = new Date();
-        
-        const freshContacts = lastCompletedJob.contacts.map(contact => ({
-          contactId: contact.contactId,
-          linkedinUrl: contact.linkedinUrl,
-          status: 'pending',
-          error: null
-        }));
         
         const newJob = {
           jobId: newJobId,
