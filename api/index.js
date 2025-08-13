@@ -1041,9 +1041,9 @@ const processJobInBackground = async (jobId) => {
       try {
         console.log(`🔍 Kullanıcı oturumu kontrol ediliyor: ${job.userId}`);
         const currentUserSessions = await loadUserSessions();
-        const currentUserSession = currentUserSessions[job.userId];
+        const userSessionForValidation = currentUserSessions[job.userId];
 
-        if (!currentUserSession) {
+        if (!userSessionForValidation) {
           console.error(`❌ Kullanıcı ${job.userId} için oturum bulunamadı`);
           job.status = "paused";
           job.pauseReason = "session_not_found";
@@ -1056,7 +1056,7 @@ const processJobInBackground = async (jobId) => {
           return;
         }
         
-        if (!currentUserSession.accessToken) {
+        if (!userSessionForValidation.accessToken) {
           console.error(`❌ Kullanıcı ${job.userId} için Dataverse erişim token'ı yok`);
           job.status = "paused";
           job.pauseReason = "dataverse_session_invalid";
@@ -1069,7 +1069,7 @@ const processJobInBackground = async (jobId) => {
           return;
         }
         
-        if (!currentUserSession.li_at || !currentUserSession.jsessionid) {
+        if (!userSessionForValidation.li_at || !userSessionForValidation.jsessionid) {
           console.error(`❌ Kullanıcı ${job.userId} için LinkedIn oturum bilgisi eksik`);
           job.status = "paused";
           job.pauseReason = "linkedin_session_invalid";
