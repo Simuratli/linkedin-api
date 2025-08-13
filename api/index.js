@@ -1234,13 +1234,13 @@ const processJobInBackground = async (jobId) => {
             job.dailyStats.patternBreakdown[currentPatternName]++;
 
             // Update CRM-based daily stats (shared across users)
-            const currentUserSession = await (async () => {
+            const userSessionForStats = await (async () => {
               const sessions = await loadUserSessions();
               return sessions[job.userId];
             })();
             
-            if (currentUserSession?.crmUrl) {
-              await updateUserDailyStats(job.userId, currentUserSession.crmUrl);
+            if (userSessionForStats?.crmUrl) {
+              await updateUserDailyStats(job.userId, userSessionForStats.crmUrl);
             } else {
               await updateUserDailyStats(job.userId); // Fallback to user-based
             }
