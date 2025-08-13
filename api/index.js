@@ -2754,22 +2754,78 @@ app.post("/restart-processing/:userId", async (req, res) => {
         );
         
         if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
-          // Convert CRM contacts to job format
-          const updatedContacts = freshContactsFromCRM.map(contact => ({
-            contactId: contact.contactid || contact.id,
-            linkedinUrl: contact.linkedinurl || contact.linkedin_url || contact.websiteurl,
-            status: 'pending',
-            error: null
-          })).filter(contact => contact.linkedinUrl); // Only include contacts with LinkedIn URLs
+          console.log(`📋 Raw contacts from CRM: ${freshContactsFromCRM.length}`);
+          
+          // Convert CRM contacts to job format with detailed logging
+          const updatedContacts = freshContactsFromCRM.map((contact, index) => {
+            const contactId = contact.contactid || contact.id;
+            const linkedinUrl = contact.uds_linkedin || contact.linkedinurl || contact.linkedin_url || contact.websiteurl || contact.linkedinprofileurl;
+            
+            console.log(`Contact ${index + 1}:`, {
+              contactId,
+              linkedinUrl,
+              hasLinkedIn: !!linkedinUrl,
+              rawContact: {
+                contactid: contact.contactid,
+                id: contact.id,
+                uds_linkedin: contact.uds_linkedin,
+                linkedinurl: contact.linkedinurl,
+                linkedin_url: contact.linkedin_url,
+                websiteurl: contact.websiteurl,
+                linkedinprofileurl: contact.linkedinprofileurl
+              }
+            });
+            
+            return {
+              contactId,
+              linkedinUrl,
+              status: 'pending',
+              error: null
+            };
+          });
+          
+          // Filter only contacts with LinkedIn URLs
+          const contactsWithLinkedIn = updatedContacts.filter(contact => {
+            const hasValidLinkedIn = contact.linkedinUrl && 
+                                   contact.linkedinUrl.trim() !== '' && 
+                                   contact.linkedinUrl !== 'null' &&
+                                   contact.linkedinUrl !== 'undefined';
+            
+            if (!hasValidLinkedIn) {
+              console.log(`⚠️ Filtering out contact ${contact.contactId}: invalid LinkedIn URL: "${contact.linkedinUrl}"`);
+            }
+            
+            return hasValidLinkedIn;
+          });
           
           const oldContactCount = currentJob.contacts ? currentJob.contacts.length : 0;
-          const newContactCount = updatedContacts.length;
+          const totalFromCRM = freshContactsFromCRM.length;
+          const validContactCount = contactsWithLinkedIn.length;
           
-          console.log(`📊 Updated contacts from CRM: ${oldContactCount} → ${newContactCount} contacts`);
+          console.log(`📊 Contact summary:`, {
+            totalFromCRM,
+            validContacts: validContactCount,
+            filteredOut: totalFromCRM - validContactCount,
+            oldCount: oldContactCount
+          });
           
-          // Update job with fresh contacts
-          currentJob.contacts = updatedContacts;
-          currentJob.totalContacts = newContactCount;
+          if (contactsWithLinkedIn.length > 0) {
+            // Update job with fresh contacts
+            currentJob.contacts = contactsWithLinkedIn;
+            currentJob.totalContacts = validContactCount;
+            
+            console.log(`✅ Updated contacts: ${oldContactCount} → ${validContactCount} contacts`);
+          } else {
+            console.log(`⚠️ No valid LinkedIn URLs found in CRM contacts, keeping existing contacts`);
+            
+            // Reset existing contacts to pending
+            if (currentJob.contacts) {
+              currentJob.contacts.forEach(contact => {
+                contact.status = 'pending';
+                contact.error = null;
+              });
+            }
+          }
           
         } else {
           console.log(`⚠️ No contacts found in CRM for user ${userId}, keeping existing contacts`);
