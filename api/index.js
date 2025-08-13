@@ -2709,6 +2709,114 @@ app.post("/admin/reset-user-completely/:userId", async (req, res) => {
   }
 });
 
+// Simple restart endpoint - reset counts to 0 and disable cooldown
+app.post("/restart-processing/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason = "Manual restart" } = req.body;
+    
+    console.log(`🔄 Restart processing requested for user ${userId}`);
+    
+    // Load jobs
+    const jobs = await loadJobs();
+    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
+    
+    if (userJobs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No jobs found for this user"
+      });
+    }
+    
+    // Find the most recent job (completed or not)
+    const sortedJobs = userJobs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const currentJob = sortedJobs[0];
+    
+    console.log(`🔧 Resetting job ${currentJob.jobId} counts to 0 and disabling cooldown`);
+    
+    // Reset all counts to 0
+    currentJob.processedCount = 0;
+    currentJob.successCount = 0;
+    currentJob.failureCount = 0;
+    currentJob.currentBatchIndex = 0;
+    
+    // Reset all contacts to pending
+    if (currentJob.contacts) {
+      currentJob.contacts.forEach(contact => {
+        contact.status = 'pending';
+        contact.error = null;
+      });
+    }
+    
+    // Change status back to pending
+    currentJob.status = 'pending';
+    
+    // Remove completion date and reset times
+    delete currentJob.completedAt;
+    delete currentJob.failedAt;
+    currentJob.lastProcessedAt = null;
+    currentJob.lastProcessedTime = null;
+    
+    // Disable cooldown by setting override
+    currentJob.cooldownOverridden = true;
+    currentJob.overriddenAt = new Date().toISOString();
+    currentJob.overrideReason = reason;
+    
+    // Reset daily stats
+    if (currentJob.dailyStats) {
+      currentJob.dailyStats.processedToday = 0;
+      currentJob.dailyStats.patternBreakdown = {};
+    }
+    
+    // Clear errors
+    currentJob.errors = [];
+    
+    // Save the updated job
+    jobs[currentJob.jobId] = currentJob;
+    await saveJobs(jobs);
+    
+    // Update user session to point to this job
+    const userSessions = await loadUserSessions();
+    if (userSessions[userId]) {
+      userSessions[userId].currentJobId = currentJob.jobId;
+      await saveUserSessions(userSessions);
+    }
+    
+    console.log(`✅ Job ${currentJob.jobId} reset to 0 counts and cooldown disabled`);
+    
+    // Start processing immediately
+    setImmediate(() => {
+      console.log(`🚀 Starting background processing for reset job ${currentJob.jobId}`);
+      processJobInBackground(currentJob.jobId);
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: "Processing restarted - all counts reset to 0 and cooldown disabled",
+      job: {
+        jobId: currentJob.jobId,
+        status: 'pending',
+        processedCount: 0,
+        successCount: 0,
+        failureCount: 0,
+        totalContacts: currentJob.totalContacts,
+        cooldownOverridden: true,
+        overriddenAt: currentJob.overriddenAt
+      },
+      restarted: true,
+      processingStarted: true
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error restarting processing: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error restarting processing",
+      error: error.message
+    });
+  }
+});
+
 // Simple override endpoint without verification (for testing)
 app.post("/override-cooldown-simple/:userId", async (req, res) => {
   try {
