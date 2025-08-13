@@ -2753,6 +2753,8 @@ app.post("/restart-processing/:userId", async (req, res) => {
           userSession.crmUrl,
           userSession.tenantId
         );
+
+        console.log(freshContactsFromCRM,'freshContactsFromCRM')
         
         if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
           console.log(`📋 Raw contacts from CRM: ${freshContactsFromCRM.length}`);
