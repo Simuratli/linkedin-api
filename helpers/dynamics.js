@@ -237,16 +237,7 @@ async function fetchContactsFromDataverse(token, crmUrl, tenantId) {
       'fullname',
       'firstname', 
       'lastname',
-      'emailaddress1',
-      'telephone1',
-      'websiteurl',
       'uds_linkedin',
-      'linkedinurl',
-      'linkedin_url', 
-      'linkedinprofileurl',
-      'uds_linkedinurl',
-      'uds_linkedinprofileurl',
-      'statecode'
     ].join(',');
     
     // Construct the endpoint for contacts with field selection and active contacts filter
