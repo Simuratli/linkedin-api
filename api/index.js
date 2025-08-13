@@ -2713,7 +2713,7 @@ app.post("/admin/reset-user-completely/:userId", async (req, res) => {
 app.post("/restart-processing/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const { reason = "Manual restart" } = req.body;
+    const { reason = "Manual restart", updateContacts = true } = req.body;
     
     console.log(`🔄 Restart processing requested for user ${userId}`);
     
@@ -2734,19 +2734,95 @@ app.post("/restart-processing/:userId", async (req, res) => {
     
     console.log(`🔧 Resetting job ${currentJob.jobId} counts to 0 and disabling cooldown`);
     
+    // Get user session for CRM access
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    // Update contacts from CRM if requested and session exists
+    if (updateContacts && userSession && userSession.crmUrl && userSession.accessToken) {
+      try {
+        console.log(`📥 Fetching updated contacts from CRM for user ${userId}`);
+        
+        // Import the function to fetch contacts from CRM
+        const { fetchContactsFromDataverse } = require('./helpers/dynamics');
+        
+        // Fetch fresh contacts from CRM
+        const freshContactsFromCRM = await fetchContactsFromDataverse(
+          userSession.accessToken,
+          userSession.crmUrl,
+          userSession.tenantId
+        );
+        
+        if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
+          // Convert CRM contacts to job format
+          const updatedContacts = freshContactsFromCRM.map(contact => ({
+            contactId: contact.contactid || contact.id,
+            linkedinUrl: contact.linkedinurl || contact.linkedin_url || contact.websiteurl,
+            status: 'pending',
+            error: null
+          })).filter(contact => contact.linkedinUrl); // Only include contacts with LinkedIn URLs
+          
+          const oldContactCount = currentJob.contacts ? currentJob.contacts.length : 0;
+          const newContactCount = updatedContacts.length;
+          
+          console.log(`📊 Updated contacts from CRM: ${oldContactCount} → ${newContactCount} contacts`);
+          
+          // Update job with fresh contacts
+          currentJob.contacts = updatedContacts;
+          currentJob.totalContacts = newContactCount;
+          
+        } else {
+          console.log(`⚠️ No contacts found in CRM for user ${userId}, keeping existing contacts`);
+          
+          // Reset existing contacts to pending
+          if (currentJob.contacts) {
+            currentJob.contacts.forEach(contact => {
+              contact.status = 'pending';
+              contact.error = null;
+            });
+          }
+        }
+        
+      } catch (crmError) {
+        console.error(`❌ Error fetching contacts from CRM: ${crmError.message}`);
+        console.log(`⚠️ Falling back to resetting existing contacts to pending`);
+        
+        // Fallback: Reset existing contacts to pending
+        if (currentJob.contacts) {
+          currentJob.contacts.forEach(contact => {
+            contact.status = 'pending';
+            contact.error = null;
+          });
+        }
+      }
+    } else {
+      console.log(`📝 Resetting existing contacts to pending (updateContacts: ${updateContacts})`);
+      
+      // Reset existing contacts to pending and update total count
+      if (currentJob.contacts) {
+        currentJob.contacts.forEach(contact => {
+          contact.status = 'pending';
+          contact.error = null;
+        });
+        
+        // Update total contacts count based on actual contacts array
+        const actualContactCount = currentJob.contacts.length;
+        if (currentJob.totalContacts !== actualContactCount) {
+          console.log(`📊 Updating totalContacts from ${currentJob.totalContacts} to ${actualContactCount}`);
+          currentJob.totalContacts = actualContactCount;
+        }
+      } else {
+        console.log(`⚠️ No contacts array found in job ${currentJob.jobId}`);
+        currentJob.contacts = [];
+        currentJob.totalContacts = 0;
+      }
+    }
+    
     // Reset all counts to 0
     currentJob.processedCount = 0;
     currentJob.successCount = 0;
     currentJob.failureCount = 0;
     currentJob.currentBatchIndex = 0;
-    
-    // Reset all contacts to pending
-    if (currentJob.contacts) {
-      currentJob.contacts.forEach(contact => {
-        contact.status = 'pending';
-        contact.error = null;
-      });
-    }
     
     // Change status back to pending
     currentJob.status = 'pending';
@@ -2775,8 +2851,7 @@ app.post("/restart-processing/:userId", async (req, res) => {
     jobs[currentJob.jobId] = currentJob;
     await saveJobs(jobs);
     
-    // Update user session to point to this job
-    const userSessions = await loadUserSessions();
+    // Update user session to point to this job (reuse userSessions from above)
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = currentJob.jobId;
       await saveUserSessions(userSessions);
