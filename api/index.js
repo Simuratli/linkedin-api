@@ -38,6 +38,36 @@ const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
 const BURST_LIMIT = 15; // Max profiles in one hour (fallback)
 const HOUR_IN_MS = 60 * 60 * 1000;
 
+// CRM URL normalization for shared processing
+const normalizeCrmUrl = (crmUrl) => {
+  if (!crmUrl) return 'unknown_crm';
+  try {
+    const url = new URL(crmUrl);
+    return url.hostname.toLowerCase().replace(/\./g, '_'); // Convert dots to underscores for MongoDB keys
+  } catch (error) {
+    return crmUrl.toLowerCase().replace(/[^a-z0-9]/g, '_');
+  }
+};
+
+// CRM-based key generation functions for shared limits
+const getTodayCrmKey = (crmUrl) => {
+  const normalizedCrm = normalizeCrmUrl(crmUrl);
+  return `${normalizedCrm}_${new Date().toISOString().split("T")[0]}`; // crm_YYYY-MM-DD
+};
+
+const getHourCrmKey = (crmUrl) => {
+  const normalizedCrm = normalizeCrmUrl(crmUrl);
+  const now = new Date();
+  return `${normalizedCrm}_${now.toISOString().split("T")[0]}-${now.getHours()}`; // crm_YYYY-MM-DD-HH
+};
+
+const getPatternCrmKey = (crmUrl) => {
+  const normalizedCrm = normalizeCrmUrl(crmUrl);
+  const now = new Date();
+  const currentPattern = getCurrentHumanPattern();
+  return `${normalizedCrm}_${new Date().toISOString().split("T")[0]}-${currentPattern.name}`; // crm_YYYY-MM-DD-patternName
+};
+
 // Ensure data directory exists (keep for backwards compatibility)
 const ensureDataDir = async () => {
   try {
@@ -62,18 +92,21 @@ const getPatternKey = () => {
   return `${getTodayKey()}-${currentPattern.name}`; // YYYY-MM-DD-patternName
 };
 
-// Enhanced limit checking with human patterns
-const checkDailyLimit = async (userId) => {
+// Enhanced limit checking with CRM-based sharing
+const checkDailyLimit = async (userId, crmUrl) => {
   const stats = await loadDailyStats();
-  const today = getTodayKey();
-  const hourKey = getHourKey();
-  const patternKey = getPatternKey();
+  
+  // CRM-based keys for shared limits
+  const todayCrmKey = getTodayCrmKey(crmUrl);
+  const hourCrmKey = getHourCrmKey(crmUrl);
+  const patternCrmKey = getPatternCrmKey(crmUrl);
   const currentPattern = getCurrentHumanPattern();
+  const normalizedCrm = normalizeCrmUrl(crmUrl);
 
-  const userStats = stats[userId] || {};
-  const todayCount = userStats[today] || 0;
-  const hourCount = userStats[hourKey] || 0;
-  const patternCount = userStats[patternKey] || 0;
+  // Get CRM-wide counts (shared across all users of same CRM)
+  const todayCount = stats[todayCrmKey] || 0;
+  const hourCount = stats[hourCrmKey] || 0;
+  const patternCount = stats[patternCrmKey] || 0;
 
   // Check if in pause period
   const inPause = isDuringPause();
@@ -81,12 +114,19 @@ const checkDailyLimit = async (userId) => {
   // Get pattern-specific limit
   const patternLimit = currentPattern.maxProfiles || 0;
 
-  // Determine if can process based on multiple factors
+  // Determine if can process based on CRM-wide limits
   const canProcess =
     !inPause &&
     todayCount < DAILY_PROFILE_LIMIT &&
     hourCount < BURST_LIMIT &&
     (patternLimit === 0 || patternCount < patternLimit);
+
+  console.log(`📊 CRM ${normalizedCrm} limits:`, {
+    today: `${todayCount}/${DAILY_PROFILE_LIMIT}`,
+    hour: `${hourCount}/${BURST_LIMIT}`,
+    pattern: `${patternCount}/${patternLimit || '∞'}`,
+    canProcess
+  });
 
   return {
     canProcess,
@@ -100,6 +140,8 @@ const checkDailyLimit = async (userId) => {
     inPause,
     nextActivePattern: getNextActivePattern(),
     estimatedResumeTime: getEstimatedResumeTime(),
+    crmUrl: normalizedCrm,
+    sharedLimits: `Shared with all users of ${normalizedCrm}`
   };
 };
 
@@ -148,16 +190,36 @@ const getEstimatedResumeTime = () => {
   return resumeTime.toISOString();
 };
 
-const updateUserDailyStats = async (userId) => {
+const updateCrmDailyStats = async (crmUrl) => {
   try {
-    const today = getTodayKey();
-    const hourKey = getHourKey();
-    const patternKey = getPatternKey();
+    const todayKey = getTodayCrmKey(crmUrl);
+    const hourKey = getHourCrmKey(crmUrl);
+    const patternKey = getPatternCrmKey(crmUrl);
+    const normalizedCrm = normalizeCrmUrl(crmUrl);
     
-    // Use MongoDB-based update
-    await updateDailyStats(userId, today, hourKey, patternKey);
+    // Use CRM-based keys instead of user-based keys
+    await updateDailyStats(normalizedCrm, todayKey, hourKey, patternKey);
     
-    console.log(`📊 Updated daily stats for user ${userId}: ${today}, ${hourKey}, ${patternKey}`);
+    console.log(`📊 Updated CRM daily stats for ${normalizedCrm}: day=${todayKey}, hour=${hourKey}, pattern=${patternKey}`);
+  } catch (error) {
+    console.error("❌ Error updating CRM daily stats:", error?.message);
+  }
+};
+
+const updateUserDailyStats = async (userId, crmUrl) => {
+  try {
+    if (crmUrl) {
+      // Use CRM-based stats for shared processing
+      await updateCrmDailyStats(crmUrl);
+    } else {
+      // Fallback to user-based stats for backward compatibility
+      const today = getTodayKey();
+      const hourKey = getHourKey();
+      const patternKey = getPatternKey();
+      
+      await updateDailyStats(userId, today, hourKey, patternKey);
+      console.log(`📊 Updated user daily stats for ${userId}: ${today}, ${hourKey}, ${patternKey}`);
+    }
   } catch (error) {
     console.error("❌ Error updating daily stats:", error?.message);
   }
@@ -383,11 +445,12 @@ app.post("/start-processing", async (req, res) => {
 
     console.log("🔍 Processing request for user:", userId, {
       resume,
-      hasRefreshToken: !!refreshToken
+      hasRefreshToken: !!refreshToken,
+      crmUrl: normalizeCrmUrl(crmUrl)
     });
 
-    // Enhanced limit checking with human patterns
-    const limitCheck = await checkDailyLimit(userId);
+    // Enhanced limit checking with CRM-based sharing
+    const limitCheck = await checkDailyLimit(userId, crmUrl);
 
     // Load jobs once at the start
     const allJobs = await loadJobs();
@@ -505,20 +568,25 @@ app.post("/start-processing", async (req, res) => {
     const jobs = await loadJobs();
     const userSessions = await loadUserSessions();
     
-    // Check for existing incomplete jobs and restore session if needed
+    // Check for existing CRM-wide job (shared across all users of same CRM)
     let existingJob = null;
     let jobId = null;
+    const normalizedCrm = normalizeCrmUrl(crmUrl);
 
-    // First, check if there are any incomplete jobs for this user
+    // First, check if there are any incomplete jobs for this CRM (not just user)
     for (const job of Object.values(jobs)) {
-      if (job.userId === userId && 
+      const jobCrmUrl = userSessions[job.userId]?.crmUrl;
+      if (jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm && 
           job.status !== "completed" && 
           job.contacts && 
           job.processedCount < job.totalContacts) {
         existingJob = job;
         jobId = job.jobId;
-        console.log("📋 Found incomplete job for user:", {
+        console.log("📋 Found CRM-shared incomplete job:", {
           jobId: job.jobId,
+          originalUserId: job.userId,
+          currentUserId: userId,
+          crmUrl: normalizedCrm,
           status: job.status,
           processed: job.processedCount,
           total: job.totalContacts
@@ -527,11 +595,20 @@ app.post("/start-processing", async (req, res) => {
       }
     }
 
-    // If we found an incomplete job, restore/update the user session
+    // If we found a CRM-shared job, add current user to the job participants
     if (existingJob) {
-      console.log(`🔧 Restoring user session for incomplete job ${jobId}`);
+      console.log(`🔧 Adding user ${userId} to CRM-shared job ${jobId}`);
       
-      // Update or create user session with fresh data from frontend
+      // Add current user to job participants (if not already added)
+      if (!existingJob.participants) {
+        existingJob.participants = [existingJob.userId]; // Add original creator
+      }
+      if (!existingJob.participants.includes(userId)) {
+        existingJob.participants.push(userId);
+        console.log(`✅ User ${userId} added to job participants:`, existingJob.participants);
+      }
+      
+      // Update user session with the shared job
       userSessions[userId] = {
         currentJobId: jobId,
         li_at,
@@ -545,9 +622,11 @@ app.post("/start-processing", async (req, res) => {
         lastActivity: new Date().toISOString()
       };
       
-      // Save updated session immediately
+      // Save updated data
+      jobs[jobId] = existingJob;
+      await saveJobs(jobs);
       await saveUserSessions(userSessions);
-      console.log("✅ User session restored with fresh frontend data");
+      console.log("✅ User session updated with CRM-shared job");
 
       // If job was paused due to missing session or token issues, resume it
       if (existingJob.status === "paused" && 
@@ -722,7 +801,9 @@ app.post("/start-processing", async (req, res) => {
       const currentPattern = getCurrentHumanPattern();
       existingJob = {
         jobId,
-        userId,
+        userId, // Original creator
+        participants: [userId], // Track all users sharing this job
+        crmUrl: normalizedCrm, // Store normalized CRM URL
         totalContacts: contacts.length,
         contacts: contacts.map((c) => ({
           contactId: c.contactid,
@@ -745,6 +826,7 @@ app.post("/start-processing", async (req, res) => {
           startDate: getTodayKey(),
           processedToday: 0,
           patternBreakdown: {},
+          crmBased: true, // Flag to indicate CRM-based processing
         },
       };
 
@@ -904,8 +986,10 @@ const processJobInBackground = async (jobId) => {
         processedInSession = 0; // Reset for new pattern
       }
 
-      // Enhanced limit checking with human patterns
-      const limitCheck = await checkDailyLimit(job.userId);
+      // Enhanced limit checking with CRM-based sharing
+      const currentUserSession = currentUserSessions[job.userId];
+      const jobCrmUrl = currentUserSession?.crmUrl;
+      const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
       if (!limitCheck.canProcess) {
         console.log(`🚫 Limits reached for user ${job.userId}. Pausing job.`);
         console.log(
@@ -1148,8 +1232,17 @@ const processJobInBackground = async (jobId) => {
             
             job.dailyStats.patternBreakdown[currentPatternName]++;
 
-            // Update daily stats
-            await updateUserDailyStats(job.userId);
+            // Update CRM-based daily stats (shared across users)
+            const currentUserSession = await (async () => {
+              const sessions = await loadUserSessions();
+              return sessions[job.userId];
+            })();
+            
+            if (currentUserSession?.crmUrl) {
+              await updateUserDailyStats(job.userId, currentUserSession.crmUrl);
+            } else {
+              await updateUserDailyStats(job.userId); // Fallback to user-based
+            }
 
             console.log(
               `✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`
@@ -1364,7 +1457,10 @@ app.get("/job-status/:jobId", async (req, res) => {
     await synchronizeJobWithDailyStats(job.userId, job);
 
     // Include current pattern and daily limit info
-    const limitCheck = await checkDailyLimit(job.userId);
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[job.userId];
+    const jobCrmUrl = userSession?.crmUrl;
+    const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
     const currentPattern = getCurrentHumanPattern();
     
     // Format dates properly
@@ -1443,35 +1539,70 @@ app.get("/user-job/:userId", async (req, res) => {
     
     console.log(`🔍 Checking job for user ${userId}:`, 
       userSession ? 
-      { hasSession: true, currentJobId: userSession.currentJobId } : 
+      { hasSession: true, currentJobId: userSession.currentJobId, crmUrl: normalizeCrmUrl(userSession.crmUrl || '') } : 
       { hasSession: false }
     );
 
+    // If no direct session, check for CRM-shared jobs
+    let sharedJobId = null;
     if (!userSession || !userSession.currentJobId) {
-      const limitCheck = await checkDailyLimit(userId);
-      console.log(`❌ No active job found for user ${userId}`);
-      return res.status(200).json({
-        success: false,
-        message: "No active job found for user",
-        canResume: false,
-        job: null,
-        currentPattern: getCurrentHumanPattern().name,
-        limitInfo: limitCheck,
-      });
+      if (userSession?.crmUrl) {
+        const normalizedCrm = normalizeCrmUrl(userSession.crmUrl);
+        const jobs = await loadJobs();
+        
+        // Look for any job from same CRM
+        for (const job of Object.values(jobs)) {
+          const jobUserSession = userSessions[job.userId];
+          if (jobUserSession?.crmUrl && 
+              normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrm &&
+              job.status !== "completed" &&
+              job.contacts && 
+              job.processedCount < job.totalContacts) {
+            sharedJobId = job.jobId;
+            console.log(`📋 Found CRM-shared job for user ${userId}:`, {
+              jobId: job.jobId,
+              originalCreator: job.userId,
+              crmUrl: normalizedCrm
+            });
+            break;
+          }
+        }
+      }
+      
+      if (!sharedJobId) {
+        const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
+        console.log(`❌ No active job found for user ${userId}`);
+        return res.status(200).json({
+          success: false,
+          message: "No active job found for user",
+          canResume: false,
+          job: null,
+          currentPattern: getCurrentHumanPattern().name,
+          limitInfo: limitCheck,
+        });
+      }
     }
 
     const jobs = await loadJobs();
-    const job = jobs[userSession.currentJobId];
+    const jobId = sharedJobId || userSession.currentJobId;
+    const job = jobs[jobId];
     
     if (!job) {
-      console.error(`❌ Job ${userSession.currentJobId} not found for user ${userId}`);
+      console.error(`❌ Job ${jobId} not found for user ${userId}`);
       return res.status(200).json({
         success: false,
-        message: `Job with ID ${userSession.currentJobId} not found`,
+        message: `Job with ID ${jobId} not found`,
         canResume: false,
         job: null,
         currentPattern: getCurrentHumanPattern().name,
       });
+    }
+
+    // If this is a shared job, make sure user is added to participants
+    if (sharedJobId && job.participants && !job.participants.includes(userId)) {
+      job.participants.push(userId);
+      await saveJobs({ ...jobs, [jobId]: job });
+      console.log(`✅ Added user ${userId} to shared job participants`);
     }
 
     // Calculate job age
@@ -1492,7 +1623,7 @@ app.get("/user-job/:userId", async (req, res) => {
     console.log(`🔄 Synchronizing job stats for user ${userId}`);
     await synchronizeJobWithDailyStats(userId, job);
 
-    const limitCheck = await checkDailyLimit(userId);
+    const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
     const currentPattern = getCurrentHumanPattern();
 
     // Format dates properly
