@@ -2335,15 +2335,31 @@ app.post("/override-cooldown/:userId", async (req, res) => {
     const now = new Date();
     const daysSinceCompletion = Math.floor((now - completedAt) / (1000 * 60 * 60 * 24));
     
+    // Check if already overridden
+    if (lastCompletedJob.cooldownOverridden) {
+      return res.status(200).json({
+        success: false,
+        message: "Cooldown has already been overridden for this user",
+        alreadyOverridden: true,
+        overriddenAt: lastCompletedJob.overriddenAt,
+        overrideReason: lastCompletedJob.overrideReason,
+        canStartNewJob: true
+      });
+    }
+    
     // Check if override is needed
     if (daysSinceCompletion >= 30) {
       return res.status(200).json({
         success: false,
         message: "Cooldown period has already ended naturally. You can start new processing.",
         daysSinceCompletion,
-        cooldownNeeded: false
+        cooldownNeeded: false,
+        canStartNewJob: true
       });
     }
+    
+    // Perform the override
+    console.log(`🔧 Updating job ${lastCompletedJob.jobId} with override flags for user ${userId}`);
     
     // Add override flag to the job
     lastCompletedJob.cooldownOverridden = true;
@@ -2351,7 +2367,7 @@ app.post("/override-cooldown/:userId", async (req, res) => {
     lastCompletedJob.overrideReason = reason;
     lastCompletedJob.daysSinceCompletionAtOverride = daysSinceCompletion;
     
-    console.log(`🔧 Updating job ${lastCompletedJob.jobId} with override flags:`, {
+    console.log(`🔧 Override data:`, {
       cooldownOverridden: lastCompletedJob.cooldownOverridden,
       overriddenAt: lastCompletedJob.overriddenAt,
       overrideReason: lastCompletedJob.overrideReason
@@ -2361,10 +2377,19 @@ app.post("/override-cooldown/:userId", async (req, res) => {
     jobs[lastCompletedJob.jobId] = lastCompletedJob;
     await saveJobs(jobs);
     
-    // Verify the save worked
+    // Verify the save worked by reloading
     const reloadedJobs = await loadJobs();
     const verifyJob = reloadedJobs[lastCompletedJob.jobId];
     console.log(`✅ Verification - Job ${lastCompletedJob.jobId} cooldownOverridden: ${verifyJob?.cooldownOverridden}`);
+    
+    if (!verifyJob?.cooldownOverridden) {
+      console.error(`❌ Override save failed! Job ${lastCompletedJob.jobId} cooldownOverridden is still: ${verifyJob?.cooldownOverridden}`);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to save override. Please try again.",
+        error: "Save verification failed"
+      });
+    }
     
     console.log(`✅ Cooldown overridden for user ${userId}. Job ${lastCompletedJob.jobId} marked as override.`);
     
@@ -2518,6 +2543,147 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
   } catch (error) {
     console.error("❌ Error restarting job:", error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint to clean up and reset user data (for debugging cooldown issues)
+app.post("/admin/cleanup-user/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { resetJobs = false, resetSessions = false, resetAll = false } = req.body;
+    
+    console.log(`🧹 Cleanup requested for user ${userId}:`, { resetJobs, resetSessions, resetAll });
+    
+    let cleanedItems = [];
+    
+    if (resetAll || resetJobs) {
+      // Clean up processing jobs
+      const jobs = await loadJobs();
+      const userJobIds = Object.keys(jobs).filter(jobId => jobs[jobId].userId === userId);
+      
+      userJobIds.forEach(jobId => {
+        delete jobs[jobId];
+      });
+      
+      await saveJobs(jobs);
+      cleanedItems.push(`${userJobIds.length} processing jobs`);
+      console.log(`🗑️ Removed ${userJobIds.length} jobs for user ${userId}`);
+    }
+    
+    if (resetAll || resetSessions) {
+      // Clean up user sessions
+      const userSessions = await loadUserSessions();
+      if (userSessions[userId]) {
+        delete userSessions[userId];
+        await saveUserSessions(userSessions);
+        cleanedItems.push('user session');
+        console.log(`🗑️ Removed session for user ${userId}`);
+      }
+    }
+    
+    if (resetAll) {
+      // Clean up other data files that might reference this user
+      try {
+        // Daily stats
+        const dailyStats = await require('./helpers/fileLock').readJsonFile('./data/daily_stats.json');
+        if (dailyStats[userId]) {
+          delete dailyStats[userId];
+          await require('./helpers/fileLock').writeJsonFile('./data/daily_stats.json', dailyStats);
+          cleanedItems.push('daily stats');
+        }
+        
+        // Daily rate limits
+        const rateLimits = await require('./helpers/fileLock').readJsonFile('./data/daily_rate_limits.json');
+        if (rateLimits[userId]) {
+          delete rateLimits[userId];
+          await require('./helpers/fileLock').writeJsonFile('./data/daily_rate_limits.json', rateLimits);
+          cleanedItems.push('rate limits');
+        }
+      } catch (error) {
+        console.log(`⚠️ Some optional cleanup failed: ${error.message}`);
+      }
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: `User ${userId} data cleaned up successfully`,
+      cleanedItems,
+      canStartFresh: true
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error during cleanup: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error during cleanup",
+      error: error.message
+    });
+  }
+});
+
+// Get user data overview (for debugging)
+app.get("/admin/user-data/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Get jobs
+    const jobs = await loadJobs();
+    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
+    
+    // Get sessions
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    // Get completed jobs info
+    const completedJobs = userJobs
+      .filter(job => job.status === "completed" && job.completedAt)
+      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+    
+    const lastCompletedJob = completedJobs.length > 0 ? completedJobs[0] : null;
+    
+    let cooldownInfo = { active: false };
+    if (lastCompletedJob) {
+      const completedAt = new Date(lastCompletedJob.completedAt);
+      const now = new Date();
+      const diffDays = (now - completedAt) / (1000 * 60 * 60 * 24);
+      
+      cooldownInfo = {
+        active: diffDays < 30 && !lastCompletedJob.cooldownOverridden,
+        daysLeft: Math.max(0, Math.ceil(30 - diffDays)),
+        completedAt: lastCompletedJob.completedAt,
+        overridden: lastCompletedJob.cooldownOverridden || false,
+        overriddenAt: lastCompletedJob.overriddenAt || null,
+        overrideReason: lastCompletedJob.overrideReason || null,
+        jobId: lastCompletedJob.jobId
+      };
+    }
+    
+    res.status(200).json({
+      success: true,
+      userId,
+      jobsCount: userJobs.length,
+      completedJobsCount: completedJobs.length,
+      hasSession: !!userSession,
+      currentJobId: userSession?.currentJobId,
+      cooldownInfo,
+      jobs: userJobs.map(job => ({
+        jobId: job.jobId,
+        status: job.status,
+        completedAt: job.completedAt,
+        cooldownOverridden: job.cooldownOverridden,
+        overriddenAt: job.overriddenAt,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts
+      }))
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error getting user data: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error getting user data",
+      error: error.message
+    });
   }
 });
 
