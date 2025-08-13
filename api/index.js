@@ -2568,6 +2568,147 @@ app.post("/override-cooldown/:userId", async (req, res) => {
   }
 });
 
+// Clean override endpoint - removes all jobs and starts fresh
+app.post("/override-cooldown-clean/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason = "Clean override - fresh start" } = req.body;
+    
+    console.log(`🧹 Clean cooldown override requested for user ${userId}`);
+    
+    // 1. Remove ALL jobs for this user from MongoDB
+    const jobs = await loadJobs();
+    const userJobIds = Object.keys(jobs).filter(jobId => jobs[jobId].userId === userId);
+    
+    console.log(`🗑️ Removing ${userJobIds.length} existing jobs for user ${userId}`);
+    
+    // Remove from jobs object
+    userJobIds.forEach(jobId => {
+      delete jobs[jobId];
+    });
+    
+    // Save updated jobs (without user's jobs)
+    await saveJobs(jobs);
+    
+    // 2. Clear user session
+    const userSessions = await loadUserSessions();
+    if (userSessions[userId]) {
+      delete userSessions[userId];
+      await saveUserSessions(userSessions);
+      console.log(`🗑️ Cleared user session for ${userId}`);
+    }
+    
+    // 3. Clear other user data
+    try {
+      // Daily stats
+      const dailyStats = await require('./helpers/fileLock').readJsonFile('./data/daily_stats.json');
+      if (dailyStats[userId]) {
+        delete dailyStats[userId];
+        await require('./helpers/fileLock').writeJsonFile('./data/daily_stats.json', dailyStats);
+      }
+      
+      // Daily rate limits
+      const rateLimits = await require('./helpers/fileLock').readJsonFile('./data/daily_rate_limits.json');
+      if (rateLimits[userId]) {
+        delete rateLimits[userId];
+        await require('./helpers/fileLock').writeJsonFile('./data/daily_rate_limits.json', rateLimits);
+      }
+    } catch (cleanupError) {
+      console.log(`⚠️ Optional cleanup warning: ${cleanupError.message}`);
+    }
+    
+    console.log(`✅ All data cleared for user ${userId}. User can now start completely fresh.`);
+    
+    res.status(200).json({
+      success: true,
+      message: `All jobs and data cleared for user ${userId}. You can now start fresh from 0.`,
+      clearedJobs: userJobIds.length,
+      clearedJobIds: userJobIds,
+      overrideReason: reason,
+      overriddenAt: new Date().toISOString(),
+      canStartFresh: true,
+      nextStep: "Import contacts and start a new job - everything starts from 0"
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error in clean override: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error in clean override",
+      error: error.message
+    });
+  }
+});
+
+// Complete reset endpoint - nuclear option
+app.post("/admin/reset-user-completely/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { confirmReset = false } = req.body;
+    
+    if (!confirmReset) {
+      return res.status(400).json({
+        success: false,
+        message: "Please confirm reset by sending confirmReset: true",
+        warning: "This will completely remove ALL data for this user"
+      });
+    }
+    
+    console.log(`🔥 COMPLETE RESET requested for user ${userId}`);
+    
+    // Remove all jobs
+    const jobs = await loadJobs();
+    const userJobIds = Object.keys(jobs).filter(jobId => jobs[jobId].userId === userId);
+    userJobIds.forEach(jobId => delete jobs[jobId]);
+    await saveJobs(jobs);
+    
+    // Remove user session
+    const userSessions = await loadUserSessions();
+    delete userSessions[userId];
+    await saveUserSessions(userSessions);
+    
+    // Remove from all data files
+    const dataFiles = [
+      './data/daily_stats.json',
+      './data/daily_rate_limits.json',
+      './data/user_sessions.json',
+      './data/direct_sessions.json',
+      './data/free_sessions.json'
+    ];
+    
+    for (const file of dataFiles) {
+      try {
+        const data = await require('./helpers/fileLock').readJsonFile(file);
+        if (data[userId]) {
+          delete data[userId];
+          await require('./helpers/fileLock').writeJsonFile(file, data);
+          console.log(`🗑️ Removed ${userId} from ${file}`);
+        }
+      } catch (fileError) {
+        console.log(`⚠️ Could not clean ${file}: ${fileError.message}`);
+      }
+    }
+    
+    console.log(`🔥 COMPLETE RESET completed for user ${userId}`);
+    
+    res.status(200).json({
+      success: true,
+      message: `User ${userId} has been completely reset. All data removed.`,
+      removedJobs: userJobIds.length,
+      resetAt: new Date().toISOString(),
+      status: "User can start completely fresh as if they never used the system"
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error in complete reset: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error in complete reset",
+      error: error.message
+    });
+  }
+});
+
 // Simple override endpoint without verification (for testing)
 app.post("/override-cooldown-simple/:userId", async (req, res) => {
   try {
