@@ -549,12 +549,13 @@ app.post("/start-processing", async (req, res) => {
       await saveUserSessions(userSessions);
       console.log("✅ User session restored with fresh frontend data");
 
-      // If job was paused due to missing session, resume it
+      // If job was paused due to missing session or token issues, resume it
       if (existingJob.status === "paused" && 
           (existingJob.pauseReason === "user_session_missing" || 
            existingJob.pauseReason === "linkedin_session_invalid" ||
-           existingJob.pauseReason === "dataverse_session_invalid")) {
-        console.log("🔄 Resuming paused job with restored session");
+           existingJob.pauseReason === "dataverse_session_invalid" ||
+           existingJob.pauseReason === "token_refresh_failed")) {
+        console.log(`🔄 Resuming paused job with restored session. Previous pause reason: ${existingJob.pauseReason}`);
         existingJob.status = "processing";
         existingJob.resumedAt = new Date().toISOString();
         existingJob.lastProcessedAt = new Date().toISOString();
@@ -1176,10 +1177,18 @@ const processJobInBackground = async (jobId) => {
             });
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
-              console.log(`⏸️ Pausing job ${jobId} - token refresh failed`);
+              console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
               job.status = "paused";
               job.pauseReason = "token_refresh_failed";
-              throw error;
+              job.pausedAt = new Date().toISOString();
+              job.lastError = {
+                type: "TOKEN_ERROR",
+                message: "Token refresh failed. Please reconnect through extension.",
+                timestamp: new Date().toISOString()
+              };
+              await saveJobs({ ...(await loadJobs()), [jobId]: job });
+              console.log(`💡 Job ${jobId} will resume when user reconnects with fresh tokens`);
+              return; // Stop processing, wait for frontend
             }
           }
         } catch (error) {
