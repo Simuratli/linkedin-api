@@ -102,6 +102,36 @@ const UserSession = mongoose.model('UserSession', userSessionSchema);
 const UserCooldown = mongoose.model('UserCooldown', userCooldownSchema);
 const DailyStats = mongoose.model('DailyStats', dailyStatsSchema);
 
+// Direct Sessions Schema
+const directSessionSchema = new mongoose.Schema({
+  sessionId: { type: String, required: true, unique: true },
+  sessionData: { type: Object, required: true },
+  userId: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date, required: true },
+  isActive: { type: Boolean, default: true },
+  metadata: {
+    userAgent: String,
+    ipAddress: String,
+    requestCount: { type: Number, default: 0 },
+    lastUsed: { type: Date, default: Date.now }
+  }
+});
+
+// Direct Sessions Stats Schema
+const directSessionStatsSchema = new mongoose.Schema({
+  totalRequests: { type: Number, default: 0 },
+  successfulRequests: { type: Number, default: 0 },
+  failedRequests: { type: Number, default: 0 },
+  sessionsCreated: { type: Number, default: 0 },
+  sessionsExpired: { type: Number, default: 0 },
+  lastError: { type: String, default: null },
+  lastUpdate: { type: Date, default: Date.now }
+});
+
+const DirectSession = mongoose.model('DirectSession', directSessionSchema);
+const DirectSessionStats = mongoose.model('DirectSessionStats', directSessionStatsSchema);
+
 // Load jobs from MongoDB
 const loadJobs = async () => {
   try {
@@ -186,9 +216,58 @@ const initializeDB = async () => {
     // Remove deprecated options
     await mongoose.connect(process.env.MONGODB_URI);
     console.log('✅ Connected to MongoDB');
+    
+    // Migrate direct sessions data if needed
+    await migrateDirectSessionsData();
+    
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
+  }
+};
+
+// Migrate direct sessions from file to MongoDB
+const migrateDirectSessionsData = async () => {
+  const fs = require('fs/promises');
+  const path = require('path');
+  
+  try {
+    const directSessionsPath = path.join(process.cwd(), 'data', 'direct_sessions.json');
+    
+    // Check if file exists
+    try {
+      await fs.access(directSessionsPath);
+    } catch {
+      console.log('📄 No direct_sessions.json file found, skipping migration');
+      return;
+    }
+
+    // Check if already migrated (if MongoDB has sessions)
+    const existingSessions = await DirectSession.countDocuments();
+    if (existingSessions > 0) {
+      console.log('✅ Direct sessions already migrated to MongoDB');
+      return;
+    }
+
+    // Read file data
+    const fileContent = await fs.readFile(directSessionsPath, 'utf8');
+    const directSessionsData = JSON.parse(fileContent);
+
+    console.log('🔄 Migrating direct sessions from file to MongoDB...');
+    
+    // Save to MongoDB
+    await saveDirectSessions(directSessionsData);
+    
+    console.log('✅ Direct sessions migration completed');
+    
+    // Optionally backup and remove the file
+    const backupPath = `${directSessionsPath}.backup`;
+    await fs.copyFile(directSessionsPath, backupPath);
+    console.log(`📁 Original file backed up to ${backupPath}`);
+    
+  } catch (error) {
+    console.error('❌ Error migrating direct sessions:', error.message);
+    // Don't fail initialization if migration fails
   }
 };
 
@@ -435,11 +514,147 @@ const cleanOldDailyStats = async () => {
   }
 };
 
+// Direct Sessions MongoDB fonksiyonları
+const loadDirectSessions = async () => {
+  try {
+    const sessions = await DirectSession.find({ isActive: true });
+    const stats = await DirectSessionStats.findOne() || {
+      totalRequests: 0,
+      successfulRequests: 0,
+      failedRequests: 0,
+      sessionsCreated: 0,
+      sessionsExpired: 0,
+      lastError: null,
+      lastUpdate: new Date()
+    };
+
+    return {
+      sessions: sessions.map(session => ({
+        sessionId: session.sessionId,
+        sessionData: session.sessionData,
+        userId: session.userId,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+        metadata: session.metadata
+      })),
+      stats: {
+        totalRequests: stats.totalRequests,
+        successfulRequests: stats.successfulRequests,
+        failedRequests: stats.failedRequests,
+        sessionsCreated: stats.sessionsCreated,
+        sessionsExpired: stats.sessionsExpired,
+        lastError: stats.lastError,
+        lastUpdate: stats.lastUpdate
+      }
+    };
+  } catch (error) {
+    console.error('❌ Error loading direct sessions from MongoDB:', error.message);
+    // Fallback to empty structure
+    return {
+      sessions: [],
+      stats: {
+        totalRequests: 0,
+        successfulRequests: 0,
+        failedRequests: 0,
+        sessionsCreated: 0,
+        sessionsExpired: 0,
+        lastError: null,
+        lastUpdate: new Date()
+      }
+    };
+  }
+};
+
+const saveDirectSessions = async (directSessionsData) => {
+  try {
+    const { sessions, stats } = directSessionsData;
+
+    // Clear existing sessions
+    await DirectSession.deleteMany({});
+
+    // Save new sessions
+    if (sessions && sessions.length > 0) {
+      await DirectSession.insertMany(sessions.map(session => ({
+        sessionId: session.sessionId,
+        sessionData: session.sessionData,
+        userId: session.userId,
+        createdAt: session.createdAt || new Date(),
+        expiresAt: session.expiresAt,
+        isActive: true,
+        metadata: session.metadata || {}
+      })));
+    }
+
+    // Update stats
+    await DirectSessionStats.updateOne(
+      {},
+      {
+        totalRequests: stats.totalRequests || 0,
+        successfulRequests: stats.successfulRequests || 0,
+        failedRequests: stats.failedRequests || 0,
+        sessionsCreated: stats.sessionsCreated || 0,
+        sessionsExpired: stats.sessionsExpired || 0,
+        lastError: stats.lastError,
+        lastUpdate: new Date()
+      },
+      { upsert: true }
+    );
+
+    console.log(`✅ Saved ${sessions ? sessions.length : 0} direct sessions to MongoDB`);
+  } catch (error) {
+    console.error('❌ Error saving direct sessions to MongoDB:', error.message);
+    throw error;
+  }
+};
+
+const updateDirectSessionStats = async (statUpdate) => {
+  try {
+    await DirectSessionStats.updateOne(
+      {},
+      {
+        $inc: statUpdate,
+        lastUpdate: new Date()
+      },
+      { upsert: true }
+    );
+    console.log('✅ Updated direct session stats in MongoDB');
+  } catch (error) {
+    console.error('❌ Error updating direct session stats:', error.message);
+    throw error;
+  }
+};
+
+const cleanExpiredDirectSessions = async () => {
+  try {
+    const now = new Date();
+    const result = await DirectSession.deleteMany({
+      $or: [
+        { expiresAt: { $lt: now } },
+        { isActive: false }
+      ]
+    });
+
+    if (result.deletedCount > 0) {
+      console.log(`🧹 Cleaned ${result.deletedCount} expired direct sessions from MongoDB`);
+      
+      // Update stats
+      await updateDirectSessionStats({ sessionsExpired: result.deletedCount });
+    }
+
+    return result.deletedCount;
+  } catch (error) {
+    console.error('❌ Error cleaning expired direct sessions:', error.message);
+    return 0;
+  }
+};
+
 module.exports = {
   Job,
   UserSession,
   UserCooldown,
   DailyStats,
+  DirectSession,
+  DirectSessionStats,
   loadJobs,
   saveJobs,
   loadUserSessions,
@@ -451,5 +666,9 @@ module.exports = {
   loadDailyStats,
   saveDailyStats,
   updateDailyStats,
-  cleanOldDailyStats
+  cleanOldDailyStats,
+  loadDirectSessions,
+  saveDirectSessions,
+  updateDirectSessionStats,
+  cleanExpiredDirectSessions
 };
