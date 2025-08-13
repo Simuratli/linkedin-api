@@ -987,6 +987,7 @@ const processJobInBackground = async (jobId) => {
       }
 
       // Enhanced limit checking with CRM-based sharing
+      const currentUserSessions = await loadUserSessions();
       const currentUserSession = currentUserSessions[job.userId];
       const jobCrmUrl = currentUserSession?.crmUrl;
       const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
