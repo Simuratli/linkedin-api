@@ -2745,7 +2745,7 @@ app.post("/restart-processing/:userId", async (req, res) => {
         console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
         
         // Import the function to fetch contacts from CRM
-        const { fetchContactsFromDataverse } = require('./helpers/dynamics');
+        const { fetchContactsFromDataverse } = require('../helpers/dynamics');
         
         // Fetch fresh contacts from CRM
         const freshContactsFromCRM = await fetchContactsFromDataverse(
