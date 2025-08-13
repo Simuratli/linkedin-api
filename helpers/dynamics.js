@@ -226,8 +226,41 @@ async function getAccessTokenRequest(clientId, tenantId, crmUrl, verifier, type,
   }
 }
 
+// Fetch contacts from Dataverse CRM
+async function fetchContactsFromDataverse(token, crmUrl, tenantId) {
+  try {
+    console.log(`📋 Fetching contacts from Dataverse CRM: ${crmUrl}`);
+    
+    // Construct the endpoint for contacts
+    const endpoint = `${crmUrl}/api/data/v9.2/contacts`;
+    
+    // Use getDataverse function to fetch contacts
+    const response = await getDataverse(endpoint, token);
+    
+    if (!response || response.error) {
+      console.error(`❌ Error fetching contacts from Dataverse:`, response?.error || 'Unknown error');
+      return [];
+    }
+    
+    if (!response.value || !Array.isArray(response.value)) {
+      console.error(`❌ Invalid response format from Dataverse contacts API:`, response);
+      return [];
+    }
+    
+    console.log(`✅ Successfully fetched ${response.value.length} contacts from Dataverse`);
+    
+    // Return the contacts array
+    return response.value;
+    
+  } catch (error) {
+    console.error(`❌ Exception in fetchContactsFromDataverse:`, error.message);
+    return [];
+  }
+}
+
 module.exports = {
   createDataverse,
   getDataverse,
-  getAccessTokenRequest
+  getAccessTokenRequest,
+  fetchContactsFromDataverse
 };

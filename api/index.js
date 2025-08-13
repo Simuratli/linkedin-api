@@ -2742,6 +2742,7 @@ app.post("/restart-processing/:userId", async (req, res) => {
     if (updateContacts && userSession && userSession.crmUrl && userSession.accessToken) {
       try {
         console.log(`📥 Fetching updated contacts from CRM for user ${userId}`);
+        console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
         
         // Import the function to fetch contacts from CRM
         const { fetchContactsFromDataverse } = require('./helpers/dynamics');
@@ -2756,24 +2757,30 @@ app.post("/restart-processing/:userId", async (req, res) => {
         if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
           console.log(`📋 Raw contacts from CRM: ${freshContactsFromCRM.length}`);
           
+          // Log sample contact structure for debugging
+          if (freshContactsFromCRM.length > 0) {
+            console.log(`📝 Sample contact structure:`, Object.keys(freshContactsFromCRM[0]));
+            console.log(`📝 Sample contact data:`, JSON.stringify(freshContactsFromCRM[0], null, 2));
+          }
+          
           // Convert CRM contacts to job format with detailed logging
           const updatedContacts = freshContactsFromCRM.map((contact, index) => {
             const contactId = contact.contactid || contact.id;
-            const linkedinUrl = contact.uds_linkedin || contact.linkedinurl || contact.linkedin_url || contact.websiteurl || contact.linkedinprofileurl;
             
-            console.log(`Contact ${index + 1}:`, {
+            // Try multiple possible field names for LinkedIn URL
+            const linkedinUrl = contact.uds_linkedin || 
+                               contact.linkedinurl || 
+                               contact.linkedin_url || 
+                               contact.websiteurl || 
+                               contact.linkedinprofileurl ||
+                               contact.uds_linkedinprofileurl ||
+                               contact.uds_linkedinurl;
+            
+            console.log(`Contact ${index + 1}/${freshContactsFromCRM.length}:`, {
               contactId,
-              linkedinUrl,
+              linkedinUrl: linkedinUrl || 'NOT_FOUND',
               hasLinkedIn: !!linkedinUrl,
-              rawContact: {
-                contactid: contact.contactid,
-                id: contact.id,
-                uds_linkedin: contact.uds_linkedin,
-                linkedinurl: contact.linkedinurl,
-                linkedin_url: contact.linkedin_url,
-                websiteurl: contact.websiteurl,
-                linkedinprofileurl: contact.linkedinprofileurl
-              }
+              allFields: Object.keys(contact).filter(key => key.toLowerCase().includes('linkedin'))
             });
             
             return {
@@ -2784,15 +2791,18 @@ app.post("/restart-processing/:userId", async (req, res) => {
             };
           });
           
-          // Filter only contacts with LinkedIn URLs
+          // Filter only contacts with valid LinkedIn URLs
           const contactsWithLinkedIn = updatedContacts.filter(contact => {
             const hasValidLinkedIn = contact.linkedinUrl && 
                                    contact.linkedinUrl.trim() !== '' && 
                                    contact.linkedinUrl !== 'null' &&
-                                   contact.linkedinUrl !== 'undefined';
+                                   contact.linkedinUrl !== 'undefined' &&
+                                   (contact.linkedinUrl.includes('linkedin.com') || contact.linkedinUrl.includes('linkedin'));
             
             if (!hasValidLinkedIn) {
               console.log(`⚠️ Filtering out contact ${contact.contactId}: invalid LinkedIn URL: "${contact.linkedinUrl}"`);
+            } else {
+              console.log(`✅ Valid contact ${contact.contactId}: LinkedIn URL: "${contact.linkedinUrl}"`);
             }
             
             return hasValidLinkedIn;
@@ -2802,11 +2812,12 @@ app.post("/restart-processing/:userId", async (req, res) => {
           const totalFromCRM = freshContactsFromCRM.length;
           const validContactCount = contactsWithLinkedIn.length;
           
-          console.log(`📊 Contact summary:`, {
+          console.log(`📊 Contact processing summary:`, {
             totalFromCRM,
             validContacts: validContactCount,
             filteredOut: totalFromCRM - validContactCount,
-            oldCount: oldContactCount
+            oldCount: oldContactCount,
+            updateType: 'CRM_REFRESH'
           });
           
           if (contactsWithLinkedIn.length > 0) {
@@ -2814,9 +2825,9 @@ app.post("/restart-processing/:userId", async (req, res) => {
             currentJob.contacts = contactsWithLinkedIn;
             currentJob.totalContacts = validContactCount;
             
-            console.log(`✅ Updated contacts: ${oldContactCount} → ${validContactCount} contacts`);
+            console.log(`✅ Updated job contacts: ${oldContactCount} → ${validContactCount} contacts from CRM`);
           } else {
-            console.log(`⚠️ No valid LinkedIn URLs found in CRM contacts, keeping existing contacts`);
+            console.log(`⚠️ No valid LinkedIn URLs found in ${totalFromCRM} CRM contacts, keeping existing contacts`);
             
             // Reset existing contacts to pending
             if (currentJob.contacts) {
@@ -2824,11 +2835,15 @@ app.post("/restart-processing/:userId", async (req, res) => {
                 contact.status = 'pending';
                 contact.error = null;
               });
+              currentJob.totalContacts = currentJob.contacts.length;
+            } else {
+              currentJob.contacts = [];
+              currentJob.totalContacts = 0;
             }
           }
           
         } else {
-          console.log(`⚠️ No contacts found in CRM for user ${userId}, keeping existing contacts`);
+          console.log(`⚠️ No contacts returned from CRM API for user ${userId}, keeping existing contacts`);
           
           // Reset existing contacts to pending
           if (currentJob.contacts) {
@@ -2836,11 +2851,16 @@ app.post("/restart-processing/:userId", async (req, res) => {
               contact.status = 'pending';
               contact.error = null;
             });
+            currentJob.totalContacts = currentJob.contacts.length;
+          } else {
+            currentJob.contacts = [];
+            currentJob.totalContacts = 0;
           }
         }
         
       } catch (crmError) {
         console.error(`❌ Error fetching contacts from CRM: ${crmError.message}`);
+        console.log(`⚠️ CRM Error details:`, crmError);
         console.log(`⚠️ Falling back to resetting existing contacts to pending`);
         
         // Fallback: Reset existing contacts to pending
@@ -2849,6 +2869,10 @@ app.post("/restart-processing/:userId", async (req, res) => {
             contact.status = 'pending';
             contact.error = null;
           });
+          currentJob.totalContacts = currentJob.contacts.length;
+        } else {
+          currentJob.contacts = [];
+          currentJob.totalContacts = 0;
         }
       }
     } else {
