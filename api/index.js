@@ -3132,68 +3132,27 @@ app.post("/restart-processing/:userId", async (req, res) => {
       }
     }
     
-    // Reset all counts to 0
-    currentJob.processedCount = 0;
-    currentJob.successCount = 0;
-    currentJob.failureCount = 0;
-    currentJob.currentBatchIndex = 0;
-    
-    // Change status back to pending
-    currentJob.status = 'pending';
-    
-    // Remove completion date and reset times
-    delete currentJob.completedAt;
-    delete currentJob.failedAt;
-    currentJob.lastProcessedAt = null;
-    currentJob.lastProcessedTime = null;
-    
-    // Disable cooldown by setting override
-    currentJob.cooldownOverridden = true;
-    currentJob.overriddenAt = new Date().toISOString();
-    currentJob.overrideReason = reason;
-    
-    // Reset daily stats
-    if (currentJob.dailyStats) {
-      currentJob.dailyStats.processedToday = 0;
-      currentJob.dailyStats.patternBreakdown = {};
-    }
-    
-    // Clear errors
-    currentJob.errors = [];
-    
-    // Save the updated job
-    jobs[currentJob.jobId] = currentJob;
-    await saveJobs(jobs);
-    
-    // Update user session to point to this job (reuse userSessions from above)
-    if (userSessions[userId]) {
-      userSessions[userId].currentJobId = currentJob.jobId;
+    // **ONLY CLEAR COOLDOWN** - Don't start processing automatically  
+    if (userSession) {
+      // Clear cooldown settings
+      userSession.cooldownActive = false;
+      userSession.cooldownEndDate = null;
+      userSession.lastJobCompleted = null;
+      userSession.currentJobId = null; // Clear current job
+      
+      userSessions[userId] = userSession;
       await saveUserSessions(userSessions);
+      console.log(`✅ Cooldown cleared for user ${userId} - ready for new processing`);
     }
     
-    console.log(`✅ Job ${currentJob.jobId} reset to 0 counts and cooldown disabled`);
-    
-    // Start processing immediately
-    setImmediate(() => {
-      console.log(`🚀 Starting background processing for reset job ${currentJob.jobId}`);
-      processJobInBackground(currentJob.jobId);
-    });
+    console.log(`✅ Override completed for user ${userId} - staying in ready state`);
     
     res.status(200).json({
       success: true,
-      message: "Processing restarted - all counts reset to 0 and cooldown disabled",
-      job: {
-        jobId: currentJob.jobId,
-        status: 'pending',
-        processedCount: 0,
-        successCount: 0,
-        failureCount: 0,
-        totalContacts: currentJob.totalContacts,
-        cooldownOverridden: true,
-        overriddenAt: currentJob.overriddenAt
-      },
+      message: "Cooldown overridden successfully! You can now start new processing.",
       restarted: true,
-      processingStarted: true
+      processingStarted: false, // Don't auto-start
+      readyForNewJob: true
     });
     
   } catch (error) {

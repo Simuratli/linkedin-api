@@ -613,32 +613,12 @@ function App() {
           type: "PROCESS_STATUS",
           data: {
             status: "ready",
-            message: "✅ Processing restarted successfully! All counts reset to 0. You can now start processing contacts again.",
+            message: "✅ Cooldown overridden! You can now start processing contacts again.",
           },
         });
         
-        // Re-check job status and restart monitoring after override
-        if (currentUserFullname && accessToken) {
-          setTimeout(async () => {
-            await debugJobMemory();
-            // Check if there's still a job after override and restart monitoring if needed
-            const userId = getUserId();
-            try {
-              const response = await fetch(`${API_BASE_URL}/debug-job-memory/${encodeURIComponent(userId)}`);
-              if (response.ok) {
-                const debugResult = await response.json();
-                if (debugResult.debug.jobForCurrentSession) {
-                  const job = debugResult.debug.jobForCurrentSession;
-                  console.log("🔄 Found existing job after override, setting job status:", job.jobId);
-                  setJobStatus(job);
-                  // startJobMonitoring will be triggered by the useEffect when jobStatus updates
-                }
-              }
-            } catch (error) {
-              console.error("Error checking for job after override:", error);
-            }
-          }, 1000);
-        }
+        // **DON'T CHECK FOR JOBS** - Just stay in ready state
+        console.log("✅ Override completed - staying in ready state, no job check");
         
         return true;
       } else {
