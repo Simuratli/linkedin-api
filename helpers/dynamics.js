@@ -97,7 +97,7 @@ async function getDataverse(url, token) {
 
   try {
     const response = await fetch(url, options);
-    
+    console.log(`Response status inside dynamics: ${response.status} ${response.statusText}`);
     if (!response.ok) {
       let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
       

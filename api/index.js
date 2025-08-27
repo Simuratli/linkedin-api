@@ -3003,12 +3003,14 @@ app.post("/restart-processing/:userId", async (req, res) => {
             console.log(`⚠️ No valid LinkedIn URLs found in ${totalFromCRM} CRM contacts, keeping existing contacts`);
             
             // Reset existing contacts to pending
+            console.log(currentJob,'currentJob if not exist')
             if (currentJob.contacts) {
               currentJob.contacts.forEach(contact => {
                 contact.status = 'pending';
                 contact.error = null;
               });
               currentJob.totalContacts = currentJob.contacts.length;
+              currentJob.status = 'processing'; // Ensure job status is pending
             } else {
               currentJob.contacts = [];
               currentJob.totalContacts = 0;
