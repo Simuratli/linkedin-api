@@ -3516,6 +3516,318 @@ app.get("/admin/user-data/:userId", async (req, res) => {
   }
 });
 
+// Cancel all processing for a user - STOP button functionality
+app.post("/cancel-processing/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason = "User cancelled processing", saveProgress = true } = req.body;
+    
+    console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason, saveProgress });
+    
+    // Get user session to find CRM URL for shared processing
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    if (!userSession || !userSession.crmUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "User session or CRM URL not found"
+      });
+    }
+    
+    const normalizedCrmUrl = normalizeCrmUrl(userSession.crmUrl);
+    console.log(`🔗 CRM URL for cancellation: ${normalizedCrmUrl}`);
+    
+    // Find ALL users who share the same CRM URL (shared processing)
+    const sharedUsers = Object.keys(userSessions).filter(sessionUserId => {
+      const session = userSessions[sessionUserId];
+      return session.crmUrl && normalizeCrmUrl(session.crmUrl) === normalizedCrmUrl;
+    });
+    
+    console.log(`👥 Found ${sharedUsers.length} users sharing CRM URL:`, sharedUsers);
+    
+    // Load jobs and find active jobs for ALL users sharing the same CRM
+    const jobs = await loadJobs();
+    const sharedActiveJobs = Object.values(jobs).filter(job => {
+      // Check if job belongs to any user sharing the CRM URL
+      const jobUserSession = userSessions[job.userId];
+      if (!jobUserSession || !jobUserSession.crmUrl) return false;
+      
+      const jobCrmUrl = normalizeCrmUrl(jobUserSession.crmUrl);
+      const isSharedCrm = jobCrmUrl === normalizedCrmUrl;
+      const isActiveJob = job.status === "processing" || job.status === "paused" || job.status === "pending";
+      
+      return isSharedCrm && isActiveJob;
+    });
+    
+    if (sharedActiveJobs.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "No active jobs to cancel for this CRM",
+        cancelledJobs: [],
+        alreadyStopped: true,
+        sharedUsers,
+        crmUrl: normalizedCrmUrl
+      });
+    }
+    
+    console.log(`🛑 Found ${sharedActiveJobs.length} active jobs for CRM ${normalizedCrmUrl}:`, sharedActiveJobs.map(j => `${j.jobId} (user: ${j.userId})`));
+    
+    const cancelledJobs = [];
+    const now = new Date().toISOString();
+    
+    // Cancel each active job for the shared CRM
+    for (const job of sharedActiveJobs) {
+      console.log(`🛑 Cancelling job ${job.jobId} for user ${job.userId} (CRM: ${normalizedCrmUrl})`);
+      
+      if (saveProgress) {
+        // Save current progress and mark as cancelled
+        job.status = "cancelled";
+        job.cancelledAt = now;
+        job.cancelReason = `${reason} (CRM shared cancellation by user ${userId})`;
+        job.lastProcessedAt = job.lastProcessedAt || now;
+        
+        // Add cancellation info to errors array for visibility
+        if (!job.errors) job.errors = [];
+        job.errors.push({
+          contactId: 'SYSTEM',
+          error: `Job cancelled by user ${userId}: ${reason}`,
+          timestamp: now,
+          humanPattern: getCurrentHumanPattern().name
+        });
+        
+        console.log(`✅ Job ${job.jobId} marked as cancelled with progress saved`);
+      } else {
+        // Mark as failed without saving progress
+        job.status = "failed";
+        job.failedAt = now;
+        job.error = `Job cancelled by user ${userId}: ${reason}`;
+        
+        console.log(`✅ Job ${job.jobId} marked as failed (progress not saved)`);
+      }
+      
+      // Update the job in the jobs object
+      jobs[job.jobId] = job;
+      
+      cancelledJobs.push({
+        jobId: job.jobId,
+        userId: job.userId,
+        status: job.status,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts,
+        cancelledAt: saveProgress ? job.cancelledAt : job.failedAt,
+        progressSaved: saveProgress
+      });
+    }
+    
+    // Save all updated jobs
+    await saveJobs(jobs);
+    console.log(`💾 Saved ${cancelledJobs.length} cancelled jobs to database`);
+    
+    // Clear current job ID for ALL users sharing the CRM
+    for (const sharedUserId of sharedUsers) {
+      if (userSessions[sharedUserId]) {
+        const oldJobId = userSessions[sharedUserId].currentJobId;
+        userSessions[sharedUserId].currentJobId = null;
+        userSessions[sharedUserId].lastActivity = now;
+        userSessions[sharedUserId].lastCancellation = {
+          timestamp: now,
+          reason: reason,
+          cancelledJobId: oldJobId,
+          cancelledBy: userId,
+          crmUrl: normalizedCrmUrl
+        };
+        console.log(`🧹 Cleared current job ID from user session for ${sharedUserId}`);
+      }
+    }
+    
+    await saveUserSessions(userSessions);
+    
+    // Note: Background processing will naturally stop when it checks job status
+    // and sees the job is cancelled/failed
+    
+    const successMessage = saveProgress 
+      ? `✅ Processing cancelled successfully for CRM. Progress saved for ${cancelledJobs.length} jobs across ${sharedUsers.length} users.`
+      : `🛑 Processing stopped for CRM. ${cancelledJobs.length} jobs marked as failed across ${sharedUsers.length} users.`;
+    
+    console.log(`✅ Cancellation completed for CRM ${normalizedCrmUrl}:`, {
+      cancelledJobCount: cancelledJobs.length,
+      affectedUsers: sharedUsers.length,
+      saveProgress,
+      reason
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: successMessage,
+      cancelledJobs,
+      totalCancelled: cancelledJobs.length,
+      affectedUsers: sharedUsers,
+      affectedUserCount: sharedUsers.length,
+      crmUrl: normalizedCrmUrl,
+      progressSaved: saveProgress,
+      cancelledAt: now,
+      reason,
+      cancelledBy: userId
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error cancelling processing: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error cancelling processing",
+      error: error.message
+    });
+  }
+});
+
+// Force stop specific job (admin endpoint)
+app.post("/admin/force-stop-job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { reason = "Admin force stop" } = req.body;
+    
+    console.log(`🚨 FORCE STOP requested for job ${jobId}`);
+    
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: `Job ${jobId} not found`
+      });
+    }
+    
+    const now = new Date().toISOString();
+    const oldStatus = job.status;
+    
+    // Force stop the job
+    job.status = "cancelled";
+    job.cancelledAt = now;
+    job.cancelReason = reason;
+    job.adminForceStop = true;
+    job.lastProcessedAt = job.lastProcessedAt || now;
+    
+    if (!job.errors) job.errors = [];
+    job.errors.push({
+      contactId: 'ADMIN',
+      error: `Job force stopped by admin: ${reason}`,
+      timestamp: now,
+      humanPattern: getCurrentHumanPattern().name
+    });
+    
+    // Save the job
+    jobs[jobId] = job;
+    await saveJobs(jobs);
+    
+    console.log(`🚨 Force stopped job ${jobId}: ${oldStatus} → cancelled`);
+    
+    res.status(200).json({
+      success: true,
+      message: `Job ${jobId} force stopped successfully`,
+      job: {
+        jobId: job.jobId,
+        oldStatus,
+        newStatus: job.status,
+        userId: job.userId,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts,
+        cancelledAt: job.cancelledAt,
+        reason
+      }
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error force stopping job: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error force stopping job",
+      error: error.message
+    });
+  }
+});
+
+// Emergency stop all processing (admin endpoint)
+app.post("/admin/emergency-stop-all", async (req, res) => {
+  try {
+    const { reason = "Emergency stop all processing" } = req.body;
+    
+    console.log(`🚨🚨 EMERGENCY STOP ALL requested: ${reason}`);
+    
+    const jobs = await loadJobs();
+    const activeJobs = Object.values(jobs).filter(job => 
+      job.status === "processing" || 
+      job.status === "paused" || 
+      job.status === "pending"
+    );
+    
+    if (activeJobs.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "No active jobs to stop",
+        stoppedJobs: 0
+      });
+    }
+    
+    const now = new Date().toISOString();
+    const stoppedJobs = [];
+    
+    // Stop all active jobs
+    for (const job of activeJobs) {
+      const oldStatus = job.status;
+      
+      job.status = "cancelled";
+      job.cancelledAt = now;
+      job.cancelReason = reason;
+      job.emergencyStop = true;
+      job.lastProcessedAt = job.lastProcessedAt || now;
+      
+      if (!job.errors) job.errors = [];
+      job.errors.push({
+        contactId: 'EMERGENCY',
+        error: `Emergency stop: ${reason}`,
+        timestamp: now,
+        humanPattern: getCurrentHumanPattern().name
+      });
+      
+      jobs[job.jobId] = job;
+      
+      stoppedJobs.push({
+        jobId: job.jobId,
+        userId: job.userId,
+        oldStatus,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts
+      });
+      
+      console.log(`🚨 Emergency stopped job ${job.jobId} for user ${job.userId}`);
+    }
+    
+    // Save all updated jobs
+    await saveJobs(jobs);
+    
+    console.log(`🚨🚨 Emergency stop completed: ${stoppedJobs.length} jobs stopped`);
+    
+    res.status(200).json({
+      success: true,
+      message: `Emergency stop completed: ${stoppedJobs.length} jobs stopped`,
+      stoppedJobs,
+      totalStopped: stoppedJobs.length,
+      stoppedAt: now,
+      reason
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error in emergency stop: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error in emergency stop",
+      error: error.message
+    });
+  }
+});
+
 // Initialize data directory, MongoDB and start server
 (async () => {
   try {
