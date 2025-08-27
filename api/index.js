@@ -697,6 +697,38 @@ app.post("/start-processing", async (req, res) => {
 
     // If there's an existing job, check its state
     if (existingJob) {
+      // Check if job is cancelled and handle restart
+      if (existingJob.status === "cancelled" || existingJob.status === "failed") {
+        console.log(`🛑 Found cancelled/failed job ${existingJob.jobId} for user ${userId}`);
+        
+        // Check if user session has cancellation info
+        const userSession = userSessions[userId];
+        const hasCancellationInfo = userSession?.lastCancellation?.cancelledJobId === existingJob.jobId;
+        
+        const cancelInfo = {
+          jobId: existingJob.jobId,
+          status: existingJob.status,
+          cancelledAt: existingJob.cancelledAt || existingJob.failedAt,
+          reason: existingJob.cancelReason || existingJob.error,
+          processedCount: existingJob.processedCount,
+          totalContacts: existingJob.totalContacts
+        };
+        
+        return res.status(200).json({
+          success: false,
+          message: `Previous job was ${existingJob.status}. You can restart processing with your previous contacts.`,
+          jobCancelled: true,
+          jobStatus: existingJob.status,
+          cancelInfo,
+          canRestart: true,
+          restartEndpoint: `/restart-after-cancel/${userId}`,
+          processingBlocked: true,
+          hasCancellationInfo,
+          currentPattern: limitCheck.currentPattern,
+          limitInfo: limitCheck
+        });
+      }
+      
       const hasUnprocessedContacts = existingJob.processedCount < existingJob.totalContacts;
       console.log("📊 Job status check:", {
         hasUnprocessedContacts,
@@ -3724,7 +3756,14 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       progressSaved: saveProgress,
       cancelledAt: now,
       reason,
-      cancelledBy: userId
+      cancelledBy: userId,
+      canRestart: true, // Add flag to indicate restart is possible
+      jobDetails: cancelledJobs.length > 0 ? {
+        processedCount: cancelledJobs[0].processedCount,
+        totalContacts: cancelledJobs[0].totalContacts,
+        successCount: sharedActiveJobs[0]?.successCount || 0,
+        failureCount: sharedActiveJobs[0]?.failureCount || 0
+      } : null
     });
     
   } catch (error) {
@@ -3732,6 +3771,172 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error cancelling processing",
+      error: error.message
+    });
+  }
+});
+
+// Restart processing after cancellation
+app.post("/restart-after-cancel/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason = "Restart after cancellation", resetContacts = true } = req.body;
+    
+    console.log(`🔄 RESTART AFTER CANCEL requested for user ${userId}`, { reason, resetContacts });
+    
+    // Get user session
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    if (!userSession) {
+      return res.status(400).json({
+        success: false,
+        message: "User session not found"
+      });
+    }
+    
+    // Check if there was a recent cancellation
+    if (!userSession.lastCancellation) {
+      return res.status(400).json({
+        success: false,
+        message: "No recent cancellation found to restart from"
+      });
+    }
+    
+    const cancelledJobId = userSession.lastCancellation.cancelledJobId;
+    console.log(`🔍 Looking for cancelled job: ${cancelledJobId}`);
+    
+    // Load jobs and find the cancelled job
+    const jobs = await loadJobs();
+    const cancelledJob = jobs[cancelledJobId];
+    
+    if (!cancelledJob) {
+      return res.status(404).json({
+        success: false,
+        message: "Cancelled job not found"
+      });
+    }
+    
+    if (cancelledJob.status !== "cancelled" && cancelledJob.status !== "failed") {
+      return res.status(400).json({
+        success: false,
+        message: `Job is not in cancelled/failed state (current status: ${cancelledJob.status})`
+      });
+    }
+    
+    console.log(`🔧 Restarting cancelled job ${cancelledJobId} for user ${userId}`);
+    
+    // Create a new job based on the cancelled one
+    const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = new Date();
+    
+    let newContacts;
+    if (resetContacts) {
+      // Reset all contacts to pending
+      newContacts = (cancelledJob.contacts || []).map(contact => ({
+        ...contact,
+        status: 'pending',
+        error: null
+      }));
+      console.log(`🔄 Reset ${newContacts.length} contacts to pending`);
+    } else {
+      // Only restart failed/pending contacts
+      newContacts = (cancelledJob.contacts || []).map(contact => {
+        if (contact.status === 'success') {
+          return contact; // Keep successful contacts as-is
+        } else {
+          return {
+            ...contact,
+            status: 'pending',
+            error: null
+          };
+        }
+      });
+      const pendingCount = newContacts.filter(c => c.status === 'pending').length;
+      console.log(`🔄 ${pendingCount} contacts reset to pending (keeping ${newContacts.length - pendingCount} successful)`);
+    }
+    
+    // Create new job
+    const newJob = {
+      jobId: newJobId,
+      userId: userId,
+      status: 'pending',
+      contacts: newContacts,
+      totalContacts: newContacts.length,
+      processedCount: resetContacts ? 0 : newContacts.filter(c => c.status === 'success').length,
+      successCount: resetContacts ? 0 : newContacts.filter(c => c.status === 'success').length,
+      failureCount: 0,
+      currentBatchIndex: 0,
+      createdAt: now.toISOString(),
+      startTime: now.toISOString(),
+      errors: [],
+      humanPatterns: {
+        startPattern: null,
+        startTime: now.toISOString(),
+        patternHistory: []
+      },
+      dailyStats: {
+        startDate: now.toISOString().split('T')[0],
+        processedToday: 0,
+        patternBreakdown: {}
+      },
+      restartedFrom: {
+        originalJobId: cancelledJobId,
+        cancelledAt: cancelledJob.cancelledAt || cancelledJob.failedAt,
+        cancelReason: cancelledJob.cancelReason || cancelledJob.error,
+        restartedAt: now.toISOString(),
+        restartReason: reason,
+        resetContacts
+      }
+    };
+    
+    // Save the new job
+    jobs[newJobId] = newJob;
+    await saveJobs(jobs);
+    
+    // Update user session with new job ID and clear cancellation info
+    userSession.currentJobId = newJobId;
+    userSession.lastActivity = now.toISOString();
+    delete userSession.lastCancellation; // Clear cancellation info
+    await saveUserSessions(userSessions);
+    
+    console.log(`✅ New job ${newJobId} created to restart from cancelled job ${cancelledJobId}`);
+    
+    // Start background processing for the new job
+    setImmediate(() => {
+      console.log(`🚀 Starting background processing for restarted job ${newJobId}`);
+      processJobInBackground(newJobId);
+    });
+    
+    const message = resetContacts 
+      ? `🔄 Processing restarted with all ${newContacts.length} contacts reset to pending`
+      : `🔄 Processing restarted with ${newContacts.filter(c => c.status === 'pending').length} pending contacts (${newContacts.filter(c => c.status === 'success').length} already completed)`;
+    
+    res.status(200).json({
+      success: true,
+      message,
+      newJob: {
+        jobId: newJobId,
+        status: 'pending',
+        totalContacts: newJob.totalContacts,
+        processedCount: newJob.processedCount,
+        successCount: newJob.successCount,
+        pendingCount: newContacts.filter(c => c.status === 'pending').length
+      },
+      originalJob: {
+        jobId: cancelledJobId,
+        cancelledAt: cancelledJob.cancelledAt || cancelledJob.failedAt,
+        reason: cancelledJob.cancelReason || cancelledJob.error
+      },
+      processingStarted: true,
+      resetContacts
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error restarting after cancellation: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error restarting processing after cancellation",
       error: error.message
     });
   }
