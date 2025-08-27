@@ -3700,7 +3700,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       // Mark all pending contacts as successful
       job.contacts.forEach(contact => {
         if (contact.status === "pending") {
-          contact.status = "success";
+          contact.status = "completed";  // Use "completed" not "success"
           contact.processedAt = now;
           contact.result = "Completed via stop processing - marked as successful";
           contact.dataverseContactId = contact.dataverseContactId || `auto-completed-${Date.now()}`;
@@ -3709,8 +3709,8 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       
       // Update job statistics
       job.processedCount = job.totalContacts; // All contacts now processed
-      job.successCount = job.totalContacts;   // All contacts marked as successful
-      job.failureCount = 0;                   // No failures when auto-completing
+      job.successCount = job.contacts.filter(c => c.status === "completed").length; // Count all completed contacts
+      job.failureCount = 0; // No failures when auto-completing
       
       // Mark job as completed
       job.status = "completed";
@@ -3893,7 +3893,7 @@ app.post("/restart-after-cancel/:userId", async (req, res) => {
     } else {
       // Only restart failed/pending contacts
       newContacts = (cancelledJob.contacts || []).map(contact => {
-        if (contact.status === 'success') {
+        if (contact.status === 'completed') {
           return contact; // Keep successful contacts as-is
         } else {
           return {
@@ -3915,7 +3915,7 @@ app.post("/restart-after-cancel/:userId", async (req, res) => {
       contacts: newContacts,
       totalContacts: newContacts.length,
       processedCount: resetContacts ? 0 : newContacts.filter(c => c.status === 'success').length,
-      successCount: resetContacts ? 0 : newContacts.filter(c => c.status === 'success').length,
+      successCount: resetContacts ? 0 : newContacts.filter(c => c.status === 'completed').length,
       failureCount: 0,
       currentBatchIndex: 0,
       createdAt: now.toISOString(),
@@ -3961,7 +3961,7 @@ app.post("/restart-after-cancel/:userId", async (req, res) => {
     
     const message = resetContacts 
       ? `🔄 Processing restarted with all ${newContacts.length} contacts reset to pending`
-      : `🔄 Processing restarted with ${newContacts.filter(c => c.status === 'pending').length} pending contacts (${newContacts.filter(c => c.status === 'success').length} already completed)`;
+      : `🔄 Processing restarted with ${newContacts.filter(c => c.status === 'pending').length} pending contacts (${newContacts.filter(c => c.status === 'completed').length} already completed)`;
     
     res.status(200).json({
       success: true,
