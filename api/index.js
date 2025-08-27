@@ -1914,7 +1914,10 @@ app.get("/user-job/:userId", async (req, res) => {
           createdTimestamp: jobCreatedAt.getTime(),
           isOld: jobAgeInDays > 1, // Flag jobs older than 1 day
           isVeryOld: jobAgeInDays > 7 // Flag jobs older than 1 week
-        }
+        },
+        // **ADD COOLDOWN OVERRIDE INFO** from user session
+        cooldownOverridden: userSession?.cooldownOverridden || false,
+        overriddenAt: userSession?.overriddenAt || null
       },
       simpleClientStats: null,
       simpleClientInitialized: true
@@ -3134,15 +3137,17 @@ app.post("/restart-processing/:userId", async (req, res) => {
     
     // **ONLY CLEAR COOLDOWN** - Don't start processing automatically  
     if (userSession) {
-      // Clear cooldown settings
+      // Clear cooldown settings and mark as overridden
       userSession.cooldownActive = false;
       userSession.cooldownEndDate = null;
       userSession.lastJobCompleted = null;
       userSession.currentJobId = null; // Clear current job
+      userSession.cooldownOverridden = true; // Mark as overridden
+      userSession.overriddenAt = new Date().toISOString();
       
       userSessions[userId] = userSession;
       await saveUserSessions(userSessions);
-      console.log(`✅ Cooldown cleared for user ${userId} - ready for new processing`);
+      console.log(`✅ Cooldown cleared and marked as overridden for user ${userId} - ready for new processing`);
     }
     
     console.log(`✅ Override completed for user ${userId} - staying in ready state`);

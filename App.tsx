@@ -921,6 +921,27 @@ function App() {
           
           // Additional check for cooldown even if not explicitly returned
           if (result.job && result.job.status === "completed") {
+            // **CHECK FOR COOLDOWN OVERRIDE** - If job was override, don't trigger cooldown
+            if (result.job.cooldownOverridden) {
+              console.log("🔓 Job was cooldown overridden - ignoring completed job and staying ready");
+              setJobStatus(null);
+              setAuthError(null);
+              const readyMessage = limits 
+                ? `Ready to process. Today: ${limits.dailyCount}/${limits.dailyLimit} | Current pattern: ${limits.currentPattern} (${limits.patternCount}/${limits.patternLimit || '∞'})`
+                : "Ready to process LinkedIn profiles";
+              
+              chrome.runtime.sendMessage({
+                type: "PROCESS_STATUS",
+                data: {
+                  status: "ready",
+                  message: readyMessage,
+                  dailyLimitInfo: limits,
+                  humanPattern: patternInfo?.currentPattern?.info,
+                },
+              });
+              return;
+            }
+            
             const completedAt = new Date(result.job.completedAt);
             const daysSinceCompletion = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60 * 24);
             
