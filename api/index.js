@@ -1834,9 +1834,9 @@ app.get("/user-job/:userId", async (req, res) => {
           isOld: jobAgeInDays > 1, // Flag jobs older than 1 day
           isVeryOld: jobAgeInDays > 7 // Flag jobs older than 1 week
         },
-        // **ADD COOLDOWN OVERRIDE INFO** from user session
-        cooldownOverridden: userSession?.cooldownOverridden || false,
-        overriddenAt: userSession?.overriddenAt || null
+  // **ADD COOLDOWN OVERRIDE INFO** from job object
+  cooldownOverridden: job.cooldownOverridden || false,
+  overriddenAt: job.overriddenAt || null
       },
       simpleClientStats: null,
       simpleClientInitialized: true
