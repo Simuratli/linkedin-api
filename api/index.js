@@ -4060,41 +4060,42 @@ app.post("/admin/emergency-stop-all", async (req, res) => {
     const now = new Date().toISOString();
     const stoppedJobs = [];
     
-    // Stop all active jobs
-    for (const job of activeJobs) {
-      const oldStatus = job.status;
-      
-      job.status = "cancelled";
-      job.cancelledAt = now;
-      job.cancelReason = reason;
-      job.emergencyStop = true;
-      job.lastProcessedAt = job.lastProcessedAt || now;
-      
-      if (!job.errors) job.errors = [];
-      job.errors.push({
-        contactId: 'EMERGENCY',
-        error: `Emergency stop: ${reason}`,
-        timestamp: now,
-        humanPattern: getCurrentHumanPattern().name
-      });
-      
+    // Complete each active job
+    for (const job of userActiveJobs) {
+      console.log(`✅ Completing job ${job.jobId}`);
+      // Mark all remaining pending/processing contacts as completed
+      let newlyCompletedCount = 0;
+      if (job.contacts) {
+        job.contacts.forEach(contact => {
+          if (contact.status === "pending" || contact.status === "processing") {
+            contact.status = "completed";
+            contact.completedAt = now;
+            newlyCompletedCount++;
+          }
+        });
+      }
+      // Update job counts
+      job.successCount += newlyCompletedCount;
+      job.processedCount = job.successCount + job.failureCount;
+      // Mark job as completed
+      job.status = "completed";
+      job.completedAt = now;
+      job.completionReason = reason;
+      job.manualCompletion = true;
+      job.lastProcessedAt = now;
+      // Mark cooldown as overridden to prevent unwanted restart
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
       jobs[job.jobId] = job;
-      
-      stoppedJobs.push({
+      completedJobs.push({
         jobId: job.jobId,
-        userId: job.userId,
-        oldStatus,
+        status: job.status,
         processedCount: job.processedCount,
-        totalContacts: job.totalContacts
+        totalContacts: job.totalContacts,
+        newlyCompletedCount
       });
-      
-      console.log(`🚨 Emergency stopped job ${job.jobId} for user ${job.userId}`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
     }
-    
-    // Save all updated jobs
-    await saveJobs(jobs);
-    
-    console.log(`🚨🚨 Emergency stop completed: ${stoppedJobs.length} jobs stopped`);
     
     res.status(200).json({
       success: true,
