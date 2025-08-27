@@ -1373,6 +1373,16 @@ const processJobInBackground = async (jobId) => {
     const remainingPending = job.contacts.filter(
       (c) => c.status === "pending"
     ).length;
+    
+    console.log(`📊 Job completion check for ${jobId}:`, {
+      remainingPending,
+      totalContacts: job.totalContacts,
+      processedCount: job.processedCount,
+      successCount: job.successCount,
+      failureCount: job.failureCount,
+      allContactsAccountedFor: (job.successCount + job.failureCount) === job.totalContacts
+    });
+    
     if (remainingPending === 0) {
       job.status = "completed";
       job.completedAt = new Date().toISOString();
@@ -1397,6 +1407,25 @@ const processJobInBackground = async (jobId) => {
         `🎉 Job ${jobId} completed! Final pattern breakdown:`,
         job.dailyStats.patternBreakdown
       );
+    } else if (remainingPending > 0) {
+      // Check if we've processed all available contacts but some are still pending
+      // This can happen if processing was interrupted
+      console.log(`⚠️ Job ${jobId} has ${remainingPending} pending contacts remaining after background processing`);
+      console.log(`🔍 Investigating stuck contacts...`);
+      
+      // Get the pending contacts and their details
+      const pendingContacts = job.contacts.filter(c => c.status === "pending");
+      pendingContacts.forEach((contact, index) => {
+        console.log(`📋 Pending contact ${index + 1}: ${contact.contactId} - ${contact.linkedinUrl}`);
+      });
+      
+      // Mark job as stalled and set it up for auto-restart
+      job.status = "processing"; // Keep as processing but mark stall time
+      job.lastProcessedAt = new Date().toISOString();
+      job.stalledAt = new Date().toISOString();
+      job.stalledReason = `${remainingPending} contacts remain pending after background processing completed`;
+      
+      console.log(`🔄 Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
     }
 
     // Final save
@@ -1452,13 +1481,39 @@ app.get("/job-status/:jobId", async (req, res) => {
     const lastProcessed = job.lastProcessedAt ? new Date(job.lastProcessedAt) : null;
     const timeSinceLastProcess = lastProcessed ? (now - lastProcessed) / 1000 : 0;
     
-    // If job is in processing state but hasn't been updated for 5 minutes, restart it
+    // Enhanced stall detection
     const isStalled = job.status === "processing" && 
                      job.processedCount < job.totalContacts && 
-                     timeSinceLastProcess > 300; // 5 minutes
+                     (timeSinceLastProcess > 300 || // 5 minutes timeout
+                      (job.stalledAt && timeSinceLastProcess > 60)); // 1 minute if marked as stalled
                      
-    if (isStalled) {
-      console.log(`⚠️ Job ${jobId} appears stalled (${Math.round(timeSinceLastProcess)}s since last update), restarting...`);
+    // Additional check for stuck pending contacts
+    const pendingContacts = job.contacts ? job.contacts.filter(c => c.status === "pending") : [];
+    const hasStuckContacts = job.status === "processing" && 
+                            pendingContacts.length > 0 && 
+                            timeSinceLastProcess > 120; // 2 minutes for stuck contacts
+                     
+    if (isStalled || hasStuckContacts) {
+      console.log(`⚠️ Job ${jobId} appears stalled:`, {
+        timeSinceLastProcess: Math.round(timeSinceLastProcess),
+        pendingContacts: pendingContacts.length,
+        reason: isStalled ? 'timeout' : 'stuck_contacts',
+        stalledAt: job.stalledAt
+      });
+      
+      if (hasStuckContacts) {
+        console.log(`🔍 Stuck contacts found:`, pendingContacts.map(c => ({
+          contactId: c.contactId,
+          status: c.status,
+          linkedinUrl: c.linkedinUrl
+        })));
+      }
+      
+      console.log(`🔄 Restarting background processing for job ${jobId}...`);
+      
+      // Clear stalled flags
+      delete job.stalledAt;
+      delete job.stalledReason;
       
       // Restart background processing
       setImmediate(() => processJobInBackground(jobId));
@@ -1466,6 +1521,7 @@ app.get("/job-status/:jobId", async (req, res) => {
       // Update job status to indicate restart
       job.restartedAt = now.toISOString();
       job.restartCount = (job.restartCount || 0) + 1;
+      job.lastProcessedAt = now.toISOString(); // Update to prevent immediate re-stall
       await saveJobs({ ...jobs, [jobId]: job });
     }
 
