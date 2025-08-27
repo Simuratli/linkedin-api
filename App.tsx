@@ -687,7 +687,7 @@ function App() {
       if (result.success) {
         console.log("✅ Processing completed successfully:", result.message);
         
-        // Clear job status and monitoring
+        // Clear job status and monitoring IMMEDIATELY
         setJobStatus(null);
         
         // **CLEAR MONITORING ON COMPLETION**
@@ -697,20 +697,15 @@ function App() {
           console.log("🧹 Cleared monitoring during processing completion");
         }
         
-        // **IMMEDIATE STATUS UPDATE** - Force immediate status check to update UI
-        setTimeout(async () => {
-          console.log("🔄 Triggering immediate status refresh after stop processing");
-          await forceJobStatusRefresh(); // Force check current job status
-          chrome.runtime.sendMessage({
-            type: "PROCESS_STATUS",
-            data: {
-              status: "completed",
-              message: "✅ All processing stopped - job completed successfully",
-            },
-          });
-        }, 100);
+        // **IMMEDIATE COOLDOWN ACTIVATION** - Set user into cooldown mode immediately
+        setCooldownInfo({
+          active: true,
+          daysLeft: 30, // Set 30 days cooldown
+          lastCompleted: new Date().toISOString()
+        });
+        console.log("🚫 User set into cooldown mode immediately after completion");
         
-        // Send completion message with detailed info
+        // Send completion message with COOLDOWN status (not ready)
         const completionMessage = result.affectedUserCount > 1 
           ? `✅ Processing completed for ${result.affectedUserCount} users sharing this CRM. ${result.totalCompleted} jobs completed with ${result.totalAutoCompleted} contacts auto-completed as successful.`
           : `✅ Processing completed successfully! All contacts marked as successful: ${result.jobDetails?.totalContacts || 0} total contacts (${result.jobDetails?.autoCompletedContacts || 0} auto-completed).`;
@@ -718,15 +713,20 @@ function App() {
         chrome.runtime.sendMessage({
           type: "PROCESS_STATUS",
           data: {
-            status: "completed",
-            message: completionMessage,
+            status: "cooldown_active", // **CHANGED FROM "completed" TO "cooldown_active"**
+            message: `🚫 All contacts processed. 30 days cooldown period started. Use override cooldown to restart processing.`,
+            cooldownInfo: {
+              active: true,
+              daysLeft: 30,
+              lastCompleted: new Date().toISOString()
+            },
             progress: result.jobDetails ? {
               total: result.jobDetails.totalContacts,
               processed: result.jobDetails.processedCount,
               success: result.jobDetails.successCount,
               failed: result.jobDetails.failureCount || 0,
             } : undefined,
-            canRestart: false, // No restart needed - job is completed
+            canRestart: false, // No restart needed - must use cooldown override
             completionDetails: {
               autoCompleted: result.totalAutoCompleted,
               method: "stop_processing_complete_all"
@@ -734,35 +734,10 @@ function App() {
           },
         });
         
-        // **ENHANCED IMMEDIATE RESPONSE** - Also force refresh job status every second for next 10 seconds
-        // This ensures we catch the completion status immediately
-        let refreshCount = 0;
-        const forceRefreshInterval = setInterval(async () => {
-          refreshCount++;
-          console.log(`🔄 Force refresh attempt ${refreshCount}/10 after stop processing`);
-          
-          // Check if job is actually completed in the API
-          const userId = getUserId();
-          try {
-            const statusResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
-            if (statusResponse.ok) {
-              const statusResult = await statusResponse.json();
-              if (statusResult.success && statusResult.job && statusResult.job.status === 'completed') {
-                console.log("✅ Confirmed job is completed on server - stopping force refresh");
-                setJobStatus(statusResult.job);
-                clearInterval(forceRefreshInterval);
-                return;
-              }
-            }
-          } catch (error) {
-            console.error("Error during force refresh:", error);
-          }
-          
-          // Stop after 10 attempts (10 seconds)
-          if (refreshCount >= 10) {
-            console.log("🔄 Force refresh completed - 10 attempts done");
-            clearInterval(forceRefreshInterval);
-          }
+        // **FORCE COOLDOWN CHECK** - Verify cooldown is set on server
+        setTimeout(async () => {
+          console.log("🔄 Force checking cooldown status after completion");
+          await checkCooldownStatus(userId);
         }, 1000);
         
         return true;

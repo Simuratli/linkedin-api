@@ -3811,6 +3811,17 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     
     await saveUserSessions(userSessions);
     
+    // **CRITICAL FIX** - Set cooldown for ALL users after completing processing
+    console.log(`🚫 Setting cooldown for all ${sharedUsers.length} users sharing CRM`);
+    for (const sharedUserId of sharedUsers) {
+      try {
+        await checkAndSetUserCooldown(sharedUserId);
+        console.log(`✅ Cooldown set for user: ${sharedUserId}`);
+      } catch (cooldownError) {
+        console.error(`❌ Error setting cooldown for user ${sharedUserId}:`, cooldownError.message);
+      }
+    }
+    
     // Note: Background processing will naturally stop when it checks job status
     // and sees the job is completed
     
