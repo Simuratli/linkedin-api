@@ -3135,19 +3135,38 @@ app.post("/restart-processing/:userId", async (req, res) => {
       }
     }
     
-    // **ONLY CLEAR COOLDOWN** - Don't start processing automatically  
+    // **CLEAR COOLDOWN AND MARK AS OVERRIDDEN**
     if (userSession) {
       // Clear cooldown settings and mark as overridden
       userSession.cooldownActive = false;
       userSession.cooldownEndDate = null;
       userSession.lastJobCompleted = null;
-      userSession.currentJobId = null; // Clear current job
+      userSession.currentJobId = null; // Clear current job reference
       userSession.cooldownOverridden = true; // Mark as overridden
       userSession.overriddenAt = new Date().toISOString();
       
       userSessions[userId] = userSession;
       await saveUserSessions(userSessions);
       console.log(`✅ Cooldown cleared and marked as overridden for user ${userId} - ready for new processing`);
+    }
+    
+    // **ALSO MARK ALL COMPLETED JOBS AS OVERRIDDEN** - This prevents reload restart
+    const allUserJobs = Object.values(jobs).filter(job => job.userId === userId);
+    let markedJobs = 0;
+    
+    for (const job of allUserJobs) {
+      if (job.status === "completed") {
+        job.cooldownOverridden = true;
+        job.overriddenAt = new Date().toISOString();
+        jobs[job.jobId] = job;
+        markedJobs++;
+        console.log(`🔓 Marked job ${job.jobId} as cooldown overridden`);
+      }
+    }
+    
+    if (markedJobs > 0) {
+      await saveJobs(jobs);
+      console.log(`✅ Marked ${markedJobs} completed jobs as overridden to prevent reload restart`);
     }
     
     console.log(`✅ Override completed for user ${userId} - staying in ready state`);
