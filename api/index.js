@@ -3707,6 +3707,101 @@ app.post("/cancel-processing/:userId", async (req, res) => {
   }
 });
 
+// Complete all processing for a user - marks all remaining contacts as successful
+app.post("/complete-processing/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason = "User completed processing manually" } = req.body;
+    
+    console.log(`✅ COMPLETE PROCESSING requested for user ${userId}`, { reason });
+    
+    // Load jobs and find active jobs for this user
+    const jobs = await loadJobs();
+    const userActiveJobs = Object.values(jobs).filter(job => 
+      job.userId === userId && 
+      (job.status === "processing" || job.status === "paused" || job.status === "pending")
+    );
+    
+    if (userActiveJobs.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "No active jobs to complete",
+        completedJobs: []
+      });
+    }
+    
+    console.log(`✅ Found ${userActiveJobs.length} active jobs for user ${userId}`);
+    
+    const completedJobs = [];
+    const now = new Date().toISOString();
+    
+    // Complete each active job
+    for (const job of userActiveJobs) {
+      console.log(`✅ Completing job ${job.jobId}`);
+      
+      // Mark all remaining pending/processing contacts as completed
+      let newlyCompletedCount = 0;
+      if (job.contacts) {
+        job.contacts.forEach(contact => {
+          if (contact.status === "pending" || contact.status === "processing") {
+            contact.status = "completed";
+            contact.processedAt = now;
+            contact.completionType = "manual_completion";
+            newlyCompletedCount++;
+          }
+        });
+      }
+      
+      // Update job counts
+      job.successCount += newlyCompletedCount;
+      job.processedCount = job.successCount + job.failureCount;
+      
+      // Mark job as completed
+      job.status = "completed";
+      job.completedAt = now;
+      job.completionReason = reason;
+      job.manualCompletion = true;
+      job.lastProcessedAt = now;
+      
+      jobs[job.jobId] = job;
+      
+      completedJobs.push({
+        jobId: job.jobId,
+        status: job.status,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts,
+        newlyCompletedCount
+      });
+      
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful`);
+    }
+    
+    await saveJobs(jobs);
+    
+    // Clear current job ID from user session
+    const userSessions = await loadUserSessions();
+    if (userSessions[userId]) {
+      userSessions[userId].currentJobId = null;
+      userSessions[userId].lastActivity = now;
+    }
+    await saveUserSessions(userSessions);
+    
+    res.status(200).json({
+      success: true,
+      message: "Processing completed successfully. All remaining contacts marked as successful.",
+      completedJobs
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error completing processing: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error completing processing",
+      error: error.message
+    });
+  }
+});
+
 // Restart processing after cancellation
 app.post("/restart-after-cancel/:userId", async (req, res) => {
   try {
