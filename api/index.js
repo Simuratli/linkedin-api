@@ -3004,6 +3004,12 @@ app.post("/restart-processing/:userId", async (req, res) => {
             currentJob.cooldownOverridden = false;
             currentJob.currentBatchIndex = 0;
             currentJob.status = 'processing';
+            // Reset pattern breakdown if exists
+            if (currentJob.dailyStats && currentJob.dailyStats.patternBreakdown) {
+              Object.keys(currentJob.dailyStats.patternBreakdown).forEach(key => {
+                currentJob.dailyStats.patternBreakdown[key] = 0;
+              });
+            }
             console.log(`✅ Updated job contacts: ${oldContactCount} → ${validContactCount} contacts from CRM, counters reset`);
           } else {
             console.log(`⚠️ No valid LinkedIn URLs found in ${totalFromCRM} CRM contacts, keeping existing contacts`);
