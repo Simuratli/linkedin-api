@@ -932,6 +932,7 @@ app.post("/start-processing", async (req, res) => {
 // Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
   console.log(`🔄 Starting background processing for job: ${jobId}`);
+  console.log(`🕐 Process start time: ${new Date().toISOString()}`);
   
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
@@ -943,7 +944,12 @@ const processJobInBackground = async (jobId) => {
   }
 
   if (job.status === "completed") {
-    console.log(`⏹️ Job ${jobId} is already completed`);
+    console.log(`⏹️ Job ${jobId} is already completed - terminating background processing`);
+    return;
+  }
+
+  if (job.status === "cancelled") {
+    console.log(`🛑 Job ${jobId} is cancelled - terminating background processing`);
     return;
   }
 
@@ -1018,8 +1024,9 @@ const processJobInBackground = async (jobId) => {
       const latestJobs = await loadJobs();
       const latestJob = latestJobs[jobId];
       if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
-        console.log(`🛑 Job ${jobId} has been cancelled/failed/completed. Stopping background processing.`);
+        console.log(`🛑 Job ${jobId} has been cancelled/failed/completed. Stopping background processing immediately.`);
         console.log(`Current status: ${latestJob?.status || 'NOT_FOUND'}`);
+        console.log(`🧹 Terminating all processing for job ${jobId}`);
         return; // Exit the processing loop immediately
       }
       
@@ -1169,7 +1176,8 @@ const processJobInBackground = async (jobId) => {
           const latestJob = latestJobs[jobId];
           if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
             console.log(`🛑 Job ${jobId} cancelled/completed during contact processing. Skipping contact ${contact.contactId}`);
-            throw new Error(`Job cancelled/completed - status: ${latestJob?.status || 'NOT_FOUND'}`);
+            console.log(`📊 Job status: ${latestJob?.status || 'NOT_FOUND'} | Contact: ${contact.contactId}`);
+            throw new Error(`STOP_PROCESSING - Job ${latestJob?.status || 'NOT_FOUND'}`);
           }
           
           console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
@@ -1388,6 +1396,14 @@ const processJobInBackground = async (jobId) => {
           );
           await new Promise((resolve) => setTimeout(resolve, breakTime));
           console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
+          
+          // **ADDITIONAL STATUS CHECK** - Check if job completed during break
+          const latestJobs = await loadJobs();
+          const latestJob = latestJobs[jobId];
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
+            console.log(`🛑 Job ${jobId} completed/cancelled during break. Stopping processing.`);
+            return;
+          }
         }
 
         // Wait between batches with human pattern timing
@@ -1398,6 +1414,14 @@ const processJobInBackground = async (jobId) => {
           );
           await new Promise((resolve) => setTimeout(resolve, waitTime));
           console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
+          
+          // **ADDITIONAL STATUS CHECK** - Check if job completed during delay
+          const latestJobs = await loadJobs();
+          const latestJob = latestJobs[jobId];
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
+            console.log(`🛑 Job ${jobId} completed/cancelled during delay. Stopping processing.`);
+            return;
+          }
         }
 
         console.log(
@@ -1414,6 +1438,11 @@ const processJobInBackground = async (jobId) => {
       } catch (error) {
         if (error.message.includes("TOKEN_REFRESH_FAILED") || error.message.includes("AUTH_REQUIRED")) {
           break;
+        }
+        if (error.message.includes("STOP_PROCESSING") || error.message.includes("Job cancelled") || error.message.includes("Job completed")) {
+          console.log(`🛑 Stop processing signal received: ${error.message}`);
+          console.log(`🏁 Terminating background processing for job ${jobId}`);
+          return; // Exit immediately
         }
       }
     }
@@ -3628,6 +3657,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     const { reason = "User cancelled processing", saveProgress = true } = req.body;
     
     console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason, saveProgress });
+    console.log(`🚨 IMMEDIATE STOP SIGNAL - All background processing for user ${userId} should terminate immediately`);
     
     // Get user session to find CRM URL for shared processing
     const userSessions = await loadUserSessions();

@@ -240,6 +240,14 @@ function App() {
     return null;
   };
 
+  // **ENHANCED** Force immediate job status refresh
+  const forceJobStatusRefresh = async () => {
+    if (jobStatus?.jobId) {
+      console.log("🔄 Force refreshing job status for:", jobStatus.jobId);
+      await checkJobStatus(jobStatus.jobId);
+    }
+  };
+
   // **FIXED** Enhanced job monitoring with pattern awareness and proper job ID handling
   const checkJobStatus = async (jobId: string) => {
     if (!jobId) return;
@@ -428,7 +436,7 @@ function App() {
     // Initial check immediately
     checkJobStatus(jobId);
 
-    // Start periodic checks every 15 seconds for more responsive updates
+    // Start periodic checks every 5 seconds for more responsive updates to stop processing
     const intervalId = window.setInterval(() => {
       // **DEFENSIVE CHECK** - Only check if this is still the current job
       if (jobStatus?.jobId === jobId) {
@@ -441,7 +449,7 @@ function App() {
         });
         window.clearInterval(intervalId);
       }
-    }, 15000);
+    }, 5000); // **REDUCED from 15000 to 5000 for faster stop processing detection**
     
     jobMonitorInterval.current = intervalId;
     console.log("✅ Job monitoring started with interval ID:", intervalId);
@@ -618,7 +626,7 @@ function App() {
             try {
               const response = await fetch(`${API_BASE_URL}/debug-job-memory/${encodeURIComponent(userId)}`);
               if (response.ok) {
-                const debugResult = await debugResponse.json();
+                const debugResult = await response.json();
                 if (debugResult.debug.jobForCurrentSession) {
                   const job = debugResult.debug.jobForCurrentSession;
                   console.log("🔄 Found existing job after override, setting job status:", job.jobId);
@@ -689,6 +697,19 @@ function App() {
           console.log("🧹 Cleared monitoring during processing completion");
         }
         
+        // **IMMEDIATE STATUS UPDATE** - Force immediate status check to update UI
+        setTimeout(async () => {
+          console.log("🔄 Triggering immediate status refresh after stop processing");
+          await forceJobStatusRefresh(); // Force check current job status
+          chrome.runtime.sendMessage({
+            type: "PROCESS_STATUS",
+            data: {
+              status: "completed",
+              message: "✅ All processing stopped - job completed successfully",
+            },
+          });
+        }, 100);
+        
         // Send completion message with detailed info
         const completionMessage = result.affectedUserCount > 1 
           ? `✅ Processing completed for ${result.affectedUserCount} users sharing this CRM. ${result.totalCompleted} jobs completed with ${result.totalAutoCompleted} contacts auto-completed as successful.`
@@ -712,6 +733,37 @@ function App() {
             }
           },
         });
+        
+        // **ENHANCED IMMEDIATE RESPONSE** - Also force refresh job status every second for next 10 seconds
+        // This ensures we catch the completion status immediately
+        let refreshCount = 0;
+        const forceRefreshInterval = setInterval(async () => {
+          refreshCount++;
+          console.log(`🔄 Force refresh attempt ${refreshCount}/10 after stop processing`);
+          
+          // Check if job is actually completed in the API
+          const userId = getUserId();
+          try {
+            const statusResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+            if (statusResponse.ok) {
+              const statusResult = await statusResponse.json();
+              if (statusResult.success && statusResult.job && statusResult.job.status === 'completed') {
+                console.log("✅ Confirmed job is completed on server - stopping force refresh");
+                setJobStatus(statusResult.job);
+                clearInterval(forceRefreshInterval);
+                return;
+              }
+            }
+          } catch (error) {
+            console.error("Error during force refresh:", error);
+          }
+          
+          // Stop after 10 attempts (10 seconds)
+          if (refreshCount >= 10) {
+            console.log("🔄 Force refresh completed - 10 attempts done");
+            clearInterval(forceRefreshInterval);
+          }
+        }, 1000);
         
         return true;
       } else {
