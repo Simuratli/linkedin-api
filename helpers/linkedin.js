@@ -13,16 +13,16 @@ const USER_AGENTS = [
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ];
 
-// Human behavior patterns based on time of day
+// Human behavior patterns based on time of day - ULTRA FAST TIMING
 const HUMAN_PATTERNS = {
   morningBurst: {
     time: "9-11 AM (Weekdays)",
     profiles: 25,
-    delay: "1-2 min",
+    delay: "8-15 sec", // Ultra fast morning burst
     hourStart: 9,
     hourEnd: 11,
-    minDelay: 60000, // 1 min
-    maxDelay: 120000, // 2 min
+    minDelay: 8000, // 8 sec
+    maxDelay: 15000, // 15 sec
     maxProfiles: 25,
     weekdayOnly: true,
   },
@@ -36,22 +36,22 @@ const HUMAN_PATTERNS = {
   afternoonWork: {
     time: "2-5 PM (Weekdays)",
     profiles: 35,
-    delay: "2-3 min",
+    delay: "10-20 sec", // Fast work pace
     hourStart: 14,
     hourEnd: 17,
-    minDelay: 120000, // 2 min
-    maxDelay: 180000, // 3 min
+    minDelay: 10000, // 10 sec
+    maxDelay: 20000, // 20 sec
     maxProfiles: 35,
     weekdayOnly: true,
   },
   eveningLight: {
     time: "6-8 PM (Weekdays)",
     profiles: 15,
-    delay: "3-5 min",
+    delay: "12-25 sec", // Quick evening check
     hourStart: 18,
     hourEnd: 20,
-    minDelay: 180000, // 3 min
-    maxDelay: 300000, // 5 min
+    minDelay: 12000, // 12 sec
+    maxDelay: 25000, // 25 sec
     maxProfiles: 15,
     weekdayOnly: true,
   },
@@ -64,33 +64,33 @@ const HUMAN_PATTERNS = {
   weekendBurst: {
     time: "9 AM-12 PM (Weekends)",
     profiles: 50,
-    delay: "1-2 min",
+    delay: "15-30 sec", // Fast weekend burst
     hourStart: 9,
     hourEnd: 12,
-    minDelay: 60000, // 1 min
-    maxDelay: 120000, // 2 min
+    minDelay: 15000, // 15 sec
+    maxDelay: 30000, // 30 sec
     maxProfiles: 50,
     weekendOnly: true,
   },
   weekendEvening: {
     time: "5-9 PM (Weekends)",
     profiles: 25,
-    delay: "2-4 min",
+    delay: "20-40 sec", // Quick weekend evening
     hourStart: 17,
     hourEnd: 21,
-    minDelay: 120000,
-    maxDelay: 240000,
+    minDelay: 20000, // 20 sec
+    maxDelay: 40000, // 40 sec
     maxProfiles: 25,
     weekendOnly: true,
   },
   weekendAfternoon: {
     time: "1-4 PM (Weekends)",
     profiles: 30,
-    delay: "2-3 min",
+    delay: "18-35 sec", // Efficient weekend afternoon
     hourStart: 13,
     hourEnd: 16,
-    minDelay: 120000, // 2 min
-    maxDelay: 180000, // 3 min
+    minDelay: 18000, // 18 sec
+    maxDelay: 35000, // 35 sec
     maxProfiles: 30,
     weekendOnly: true,
   },
@@ -336,7 +336,7 @@ class SimpleQueue {
       await new Promise((resolve) => setTimeout(resolve, waitTime));
     }
 
-    const jitter = getRandomDelay(15000, 60000);
+    const jitter = getRandomDelay(2000, 8000); // Ultra fast: 2-8 seconds
     console.log(
       `😴 Human behavior jitter: additional ${Math.round(jitter / 1000)} second pause...`
     );
