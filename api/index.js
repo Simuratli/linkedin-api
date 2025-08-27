@@ -3020,23 +3020,26 @@ app.post("/restart-processing/:userId", async (req, res) => {
         } else {
           console.log(`⚠️ No contacts returned from CRM API for user ${userId}, keeping existing contacts`);
           console.log(currentJob,'currentjhob')
+          
           // Reset existing contacts to pending
-            
-          if (currentJob.contacts) {
+          if (currentJob.contacts && currentJob.contacts.length > 0) {
             currentJob.contacts.forEach(contact => {
               contact.status = 'pending';
               contact.error = null;
             });
+            // Keep the existing contact count - DON'T set to 0
             currentJob.totalContacts = currentJob.contacts.length;
             currentJob.status = 'processing'; 
             currentJob.successCount = 0; 
-            currentJob.totalContacts = 0; 
             currentJob.processedCount = 0; 
             currentJob.currentBatchIndex = 0; 
-            currentJob.cooldownOverridden = false; 
+            currentJob.cooldownOverridden = false;
+            
+            console.log(`✅ Reset ${currentJob.contacts.length} existing contacts to pending status`);
           } else {
             currentJob.contacts = [];
             currentJob.totalContacts = 0;
+            console.log(`⚠️ No existing contacts found to reset`);
           }
         }
         
@@ -3046,22 +3049,30 @@ app.post("/restart-processing/:userId", async (req, res) => {
         console.log(`⚠️ Falling back to resetting existing contacts to pending`);
         
         // Fallback: Reset existing contacts to pending
-        if (currentJob.contacts) {
+        if (currentJob.contacts && currentJob.contacts.length > 0) {
           currentJob.contacts.forEach(contact => {
             contact.status = 'pending';
             contact.error = null;
           });
+          // Keep the existing contact count - DON'T set to 0
           currentJob.totalContacts = currentJob.contacts.length;
+          currentJob.status = 'processing';
+          currentJob.successCount = 0; 
+          currentJob.processedCount = 0; 
+          currentJob.currentBatchIndex = 0;
+          
+          console.log(`✅ Fallback: Reset ${currentJob.contacts.length} existing contacts to pending status`);
         } else {
           currentJob.contacts = [];
           currentJob.totalContacts = 0;
+          console.log(`⚠️ Fallback: No existing contacts found to reset`);
         }
       }
     } else {
       console.log(`📝 Resetting existing contacts to pending (updateContacts: ${updateContacts})`);
       
       // Reset existing contacts to pending and update total count
-      if (currentJob.contacts) {
+      if (currentJob.contacts && currentJob.contacts.length > 0) {
         currentJob.contacts.forEach(contact => {
           contact.status = 'pending';
           contact.error = null;
@@ -3073,6 +3084,14 @@ app.post("/restart-processing/:userId", async (req, res) => {
           console.log(`📊 Updating totalContacts from ${currentJob.totalContacts} to ${actualContactCount}`);
           currentJob.totalContacts = actualContactCount;
         }
+        
+        // Reset other job counters
+        currentJob.successCount = 0; 
+        currentJob.processedCount = 0; 
+        currentJob.currentBatchIndex = 0;
+        currentJob.status = 'processing';
+        
+        console.log(`✅ Reset ${actualContactCount} existing contacts to pending status`);
       } else {
         console.log(`⚠️ No contacts array found in job ${currentJob.jobId}`);
         currentJob.contacts = [];
@@ -3109,19 +3128,28 @@ app.post("/restart-processing/:userId", async (req, res) => {
       }
     }
     
+    // Save the current job changes
+    jobs[currentJob.jobId] = currentJob;
+    await saveJobs(jobs);
+    
     if (markedJobs > 0) {
-      await saveJobs(jobs);
       console.log(`✅ Marked ${markedJobs} completed jobs as overridden to prevent reload restart`);
     }
     
     console.log(`✅ Override completed for user ${userId} - staying in ready state`);
+    console.log(`📊 Final job state: ${currentJob.totalContacts} total contacts, ${currentJob.contacts ? currentJob.contacts.length : 0} contacts in array`);
     
     res.status(200).json({
       success: true,
       message: "Cooldown overridden successfully! You can now start new processing.",
       restarted: true,
       processingStarted: false, // Don't auto-start
-      readyForNewJob: true
+      readyForNewJob: true,
+      jobStatus: {
+        totalContacts: currentJob.totalContacts,
+        contactsInArray: currentJob.contacts ? currentJob.contacts.length : 0,
+        status: currentJob.status
+      }
     });
     
   } catch (error) {
