@@ -687,58 +687,46 @@ function App() {
       if (result.success) {
         console.log("✅ Processing completed successfully:", result.message);
         
-        // Clear job status and monitoring IMMEDIATELY
+        // **IMMEDIATE CLEANUP** - Clear everything immediately
         setJobStatus(null);
         
-        // **CLEAR MONITORING ON COMPLETION**
         if (jobMonitorInterval.current) {
           window.clearInterval(jobMonitorInterval.current);
           jobMonitorInterval.current = null;
           console.log("🧹 Cleared monitoring during processing completion");
         }
         
-        // **IMMEDIATE COOLDOWN ACTIVATION** - Set user into cooldown mode immediately
-        setCooldownInfo({
-          active: true,
-          daysLeft: 30, // Set 30 days cooldown
-          lastCompleted: new Date().toISOString()
-        });
-        console.log("🚫 User set into cooldown mode immediately after completion");
-        
-        // Send completion message with COOLDOWN status (not ready)
-        const completionMessage = result.affectedUserCount > 1 
-          ? `✅ Processing completed for ${result.affectedUserCount} users sharing this CRM. ${result.totalCompleted} jobs completed with ${result.totalAutoCompleted} contacts auto-completed as successful.`
-          : `✅ Processing completed successfully! All contacts marked as successful: ${result.jobDetails?.totalContacts || 0} total contacts (${result.jobDetails?.autoCompletedContacts || 0} auto-completed).`;
-        
-        chrome.runtime.sendMessage({
-          type: "PROCESS_STATUS",
-          data: {
-            status: "cooldown_active", // **CHANGED FROM "completed" TO "cooldown_active"**
-            message: `🚫 All contacts processed. 30 days cooldown period started. Use override cooldown to restart processing.`,
-            cooldownInfo: {
+        // **FORCE SERVER COOLDOWN CHECK** - Wait for server to set cooldown, then check
+        setTimeout(async () => {
+          console.log("🔄 Checking if server set cooldown after completion...");
+          const isInCooldown = await checkCooldownStatus(userId);
+          
+          if (isInCooldown) {
+            console.log("✅ Server cooldown confirmed");
+          } else {
+            console.log("⚠️ Server cooldown not found, setting frontend cooldown");
+            // **FALLBACK** - Set frontend cooldown if server didn't set it
+            setCooldownInfo({
               active: true,
               daysLeft: 30,
               lastCompleted: new Date().toISOString()
-            },
-            progress: result.jobDetails ? {
-              total: result.jobDetails.totalContacts,
-              processed: result.jobDetails.processedCount,
-              success: result.jobDetails.successCount,
-              failed: result.jobDetails.failureCount || 0,
-            } : undefined,
-            canRestart: false, // No restart needed - must use cooldown override
-            completionDetails: {
-              autoCompleted: result.totalAutoCompleted,
-              method: "stop_processing_complete_all"
-            }
-          },
-        });
-        
-        // **FORCE COOLDOWN CHECK** - Verify cooldown is set on server
-        setTimeout(async () => {
-          console.log("🔄 Force checking cooldown status after completion");
-          await checkCooldownStatus(userId);
-        }, 1000);
+            });
+            
+            chrome.runtime.sendMessage({
+              type: "PROCESS_STATUS",
+              data: {
+                status: "cooldown_active",
+                message: "🚫 30 days cooldown period started. Use override cooldown to restart processing.",
+                cooldownInfo: {
+                  active: true,
+                  daysLeft: 30,
+                  lastCompleted: new Date().toISOString()
+                },
+                canRestart: false,
+              },
+            });
+          }
+        }, 2000); // Wait 2 seconds for server to process
         
         return true;
       } else {

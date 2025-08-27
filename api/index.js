@@ -427,6 +427,49 @@ const checkAndSetUserCooldown = async (userId) => {
   }
 };
 
+// **NEW** Get user cooldown status from user sessions
+const getUserCooldownStatus = async (userId) => {
+  try {
+    console.log(`🔍 Getting cooldown status for user: ${userId}`);
+    
+    // Load user sessions to check cooldown
+    const userSessions = await loadUserSessions();
+    
+    if (!userSessions[userId]) {
+      console.log(`⚠️ No user session found for: ${userId}`);
+      return null;
+    }
+    
+    const userSession = userSessions[userId];
+    
+    // Check if user has cooldown set
+    if (!userSession.cooldownActive || !userSession.cooldownEndDate) {
+      console.log(`❌ No cooldown found for user: ${userId}`);
+      return null;
+    }
+    
+    const now = new Date();
+    const cooldownEndDate = new Date(userSession.cooldownEndDate);
+    const daysRemaining = Math.max(0, (cooldownEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    
+    const cooldownStatus = {
+      userId: userId,
+      allJobsCompleted: true, // Set by checkAndSetUserCooldown
+      jobsRestarted: false,
+      completedAt: userSession.lastJobCompleted,
+      cooldownEndDate: userSession.cooldownEndDate,
+      daysRemaining: daysRemaining,
+      cooldownPeriod: 30
+    };
+    
+    console.log(`✅ Cooldown status for user ${userId}:`, cooldownStatus);
+    return cooldownStatus;
+  } catch (error) {
+    console.error(`❌ Error getting cooldown status for user ${userId}:`, error);
+    return null;
+  }
+};
+
 // CORS setup
 app.use(cors());
 app.use((req, res, next) => {
