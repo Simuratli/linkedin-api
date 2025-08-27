@@ -244,6 +244,7 @@ async function fetchContactsFromDataverse(token, crmUrl, tenantId) {
     const endpoint = `${crmUrl}/api/data/v9.2/contacts?$select=${selectFields}&$filter=statecode eq 0`;
     
     console.log(`🔗 Fetching from endpoint: ${endpoint}`);
+    console.log(`🔗 Fetching from token: ${token}`);
     
     // Use getDataverse function to fetch contacts
     const response = await getDataverse(endpoint, token);

@@ -3690,7 +3690,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
-      // Mark job as completed
+      // Mark job as complet
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;

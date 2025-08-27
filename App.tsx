@@ -339,66 +339,66 @@ function App() {
             statusMessage += ` | ${currentPattern}: ${patternCount}/${patternLimit}`;
           }
         }
+      } 
+      else if (result.job.status === "paused") {
+        const ageInfo = result.job.jobAge?.days > 0 ? ` (${result.job.jobAge.days}d old)` : '';
+        
+        if (result.job.pauseReason === "daily_limit_reached") {
+          statusMessage = `⏸️ Paused${ageInfo} - Daily limit reached`;
         } 
-        else if (result.job.status === "paused") {
-          const ageInfo = result.job.jobAge?.days > 0 ? ` (${result.job.jobAge.days}d old)` : '';
-          
-          if (result.job.pauseReason === "daily_limit_reached") {
-            statusMessage = `⏸️ Paused${ageInfo} - Daily limit reached`;
-          } 
-          else if (result.job.pauseReason === "pattern_limit_reached") {
-            statusMessage = `⏸️ Paused${ageInfo} - ${result.job.dailyLimitInfo?.currentPattern} pattern limit reached`;
-          }
-          else if (result.job.pauseReason === "pause_period") {
-            const resumeTime = result.job.estimatedResumeTime 
-              ? new Date(result.job.estimatedResumeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'soon';
-            statusMessage = `⏸️ Paused${ageInfo} - Currently in ${result.job.dailyLimitInfo?.currentPattern} period. Resuming ${resumeTime}`;
-          }
-          else {
-            statusMessage = `⏸️ Job paused${ageInfo}. Processed: ${result.job.processedCount}/${result.job.totalContacts}`;
-          }
-        } 
-        else if (result.job.status === "completed") {
-          const successRate = result.job.totalContacts > 0 
-            ? Math.round((result.job.successCount / result.job.totalContacts) * 100) 
-            : 0;
-          const ageInfo = result.job.jobAge?.days > 0 ? ` (completed ${result.job.jobAge.days}d ago)` : '';
-          statusMessage = `✅ Completed${ageInfo}! ${result.job.successCount}/${result.job.totalContacts} (${successRate}% success)`;
-          processStatus = "completed";
+        else if (result.job.pauseReason === "pattern_limit_reached") {
+          statusMessage = `⏸️ Paused${ageInfo} - ${result.job.dailyLimitInfo?.currentPattern} pattern limit reached`;
         }
-        else if (result.job.status === "cancelled") {
-          const ageInfo = result.job.jobAge?.days > 0 ? ` (cancelled ${result.job.jobAge.days}d ago)` : '';
-          statusMessage = `🛑 Cancelled${ageInfo}. Progress saved: ${result.job.processedCount}/${result.job.totalContacts}`;
-          processStatus = "cancelled";
+        else if (result.job.pauseReason === "pause_period") {
+          const resumeTime = result.job.estimatedResumeTime 
+            ? new Date(result.job.estimatedResumeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : 'soon';
+          statusMessage = `⏸️ Paused${ageInfo} - Currently in ${result.job.dailyLimitInfo?.currentPattern} period. Resuming ${resumeTime}`;
         }
+        else {
+          statusMessage = `⏸️ Job paused${ageInfo}. Processed: ${result.job.processedCount}/${result.job.totalContacts}`;
+        }
+      } 
+      else if (result.job.status === "completed") {
+        const successRate = result.job.totalContacts > 0 
+          ? Math.round((result.job.successCount / result.job.totalContacts) * 100) 
+          : 0;
+        const ageInfo = result.job.jobAge?.days > 0 ? ` (completed ${result.job.jobAge.days}d ago)` : '';
+        statusMessage = `✅ Completed${ageInfo}! ${result.job.successCount}/${result.job.totalContacts} (${successRate}% success)`;
+        processStatus = "completed";
+      }
+      else if (result.job.status === "cancelled") {
+        const ageInfo = result.job.jobAge?.days > 0 ? ` (cancelled ${result.job.jobAge.days}d ago)` : '';
+        statusMessage = `🛑 Cancelled${ageInfo}. Progress saved: ${result.job.processedCount}/${result.job.totalContacts}`;
+        processStatus = "cancelled";
+      }
 
-        chrome.runtime.sendMessage({
-          type: "PROCESS_STATUS",
-          data: {
-            status: processStatus,
-            message: statusMessage,
-            progress: {
-              total: result.job.totalContacts,
-              processed: result.job.processedCount,
-              success: result.job.successCount,
-              failed: result.job.failureCount,
-            },
-            dailyLimitInfo: result.job.dailyLimitInfo,
-            pauseReason: result.job.pauseReason,
-            humanPattern: patternsResult?.currentPattern?.info || result.job.currentPatternInfo,
-            jobAge: result.job.jobAge,
-            canRestart: result.job.status === "cancelled",
+      chrome.runtime.sendMessage({
+        type: "PROCESS_STATUS",
+        data: {
+          status: processStatus,
+          message: statusMessage,
+          progress: {
+            total: result.job.totalContacts,
+            processed: result.job.processedCount,
+            success: result.job.successCount,
+            failed: result.job.failureCount,
           },
-        });
+          dailyLimitInfo: result.job.dailyLimitInfo,
+          pauseReason: result.job.pauseReason,
+          humanPattern: patternsResult?.currentPattern?.info || result.job.currentPatternInfo,
+          jobAge: result.job.jobAge,
+          canRestart: result.job.status === "cancelled",
+        },
+      });
 
-        if (result.job.status === "completed" || result.job.status === "failed" || result.job.status === "cancelled") {
-          if (jobMonitorInterval.current) {
-            window.clearInterval(jobMonitorInterval.current);
-            jobMonitorInterval.current = null;
-            console.log("🏁 Job monitoring stopped - job completed/failed/cancelled");
-          }
+      if (result.job.status === "completed" || result.job.status === "failed" || result.job.status === "cancelled") {
+        if (jobMonitorInterval.current) {
+          window.clearInterval(jobMonitorInterval.current);
+          jobMonitorInterval.current = null;
+          console.log("🏁 Job monitoring stopped - job completed/failed/cancelled");
         }
+      }
     } catch (error) {
       console.error("Job status check failed:", error);
       // **IMPROVED ERROR HANDLING** - Clear job on 404 errors
@@ -544,35 +544,44 @@ function App() {
   // Check for cooldown status
   const checkCooldownStatus = async (userId: string) => {
     try {
+      console.log("🔍 Checking cooldown status for user:", userId);
       const response = await fetch(`${API_BASE_URL}/user-cooldown/${encodeURIComponent(userId)}`);
+      console.log("🔍 Cooldown API response status:", response.status);
+
       if (response.ok) {
         const result = await response.json();
+        console.log("🔍 Cooldown API result:", result);
+
         if (result.success && result.cooldownStatus?.hasCooldown) {
           const cooldownData = result.cooldownStatus;
           const daysLeft = cooldownData.daysRemaining || 0;
-          
+
           console.log("🚫 User is in cooldown period:", {
             daysLeft,
             completedAt: cooldownData.completedAt,
             cooldownEndDate: cooldownData.cooldownEndDate
           });
-          
+
           setCooldownInfo({
             active: true,
             daysLeft: Math.max(0, Math.ceil(daysLeft)),
             lastCompleted: cooldownData.completedAt
           });
-          
+
           return true; // User is in cooldown
         } else {
+          console.log("✅ No cooldown active for user:", userId);
           setCooldownInfo(null);
           return false; // No cooldown
         }
+      } else {
+        console.log("❌ Cooldown API call failed with status:", response.status);
+        return false;
       }
     } catch (error) {
-      console.error("Error checking cooldown status:", error);
+      console.error("❌ Error checking cooldown status:", error);
+      return false;
     }
-    return false;
   };
 
   // Handle cooldown override
@@ -648,63 +657,121 @@ function App() {
   // **UPDATED** Handle stopping/completing processing - marks all remaining as successful
   const handleStopProcessing = async () => {
     const userId = getUserId();
-    console.log("🛑 Attempting to cancel processing for user:", userId);
-    
+    console.log("✅ Attempting to complete processing for user:", userId);
+
     try {
-      const response = await fetch(`${API_BASE_URL}/cancel-processing/${encodeURIComponent(userId)}`, {
+      const response = await fetch(`${API_BASE_URL}/complete-processing/${encodeURIComponent(userId)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          reason: 'User cancelled processing from extension'
+          reason: 'User completed processing from extension - all remaining contacts marked as successful'
         })
       });
-      
+
+      console.log("🔍 Complete API response status:", response.status);
+      console.log("🔍 Complete API response headers:", Object.fromEntries(response.headers.entries()));
+
       const result = await response.json();
-      
+      console.log("🔍 Complete API result:", result);
+
       if (result.success) {
-        console.log("✅ Processing cancelled successfully:", result.message);
-        
-        // Clear job status
+        console.log("✅ Processing completed successfully:", result.message);
+
+        // **FORCE CLEAR** job status and monitoring immediately
         setJobStatus(null);
-        
+
         if (jobMonitorInterval.current) {
           window.clearInterval(jobMonitorInterval.current);
           jobMonitorInterval.current = null;
-          console.log("🧹 Cleared monitoring after cancellation");
+          console.log("🧹 Cleared monitoring immediately after completion");
         }
-        
+
+        // **CHECK COOLDOWN STATUS AFTER COMPLETION**
+        console.log("🔍 Checking cooldown status after completion...");
+        const isInCooldown = await checkCooldownStatus(userId);
+        console.log("🔍 Cooldown status after completion:", isInCooldown);
+
         chrome.runtime.sendMessage({
           type: "PROCESS_STATUS",
           data: {
-            status: "ready",
-            message: "✅ Processing cancelled successfully. Ready to start new processing.",
+            status: "completed",
+            message: "✅ Processing completed successfully! All remaining contacts have been marked as successful.",
           },
         });
-        
+
         return true;
       } else {
-        console.error("❌ Processing cancellation failed:", result.message);
+        console.error("❌ Processing completion failed:", result.message);
         chrome.runtime.sendMessage({
           type: "PROCESS_STATUS",
           data: {
             status: "error",
-            message: `❌ Failed to cancel processing: ${result.message}`,
+            message: `❌ Failed to complete processing: ${result.message}`,
           },
         });
         return false;
       }
     } catch (error) {
-      console.error("❌ Error during cancellation:", error);
+      console.error("❌ Error during completion:", error);
+      console.error("❌ Error details:", {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
       chrome.runtime.sendMessage({
         type: "PROCESS_STATUS",
         data: {
           status: "error",
-          message: `❌ Error cancelling processing: ${error.message}`,
+          message: `❌ Error completing processing: ${error.message}`,
         },
       });
       return false;
+    }
+  };
+
+  const callStartProcessingAPI = async (requestData: any) => {
+    const userId = getUserId();
+
+    // **COOLDOWN CHECK BEFORE STARTING PROCESSING**
+    console.log("🔍 Checking cooldown before starting processing...");
+    const isInCooldown = await checkCooldownStatus(userId);
+    if (isInCooldown) {
+      console.log("🚫 Cannot start processing - user is in cooldown period");
+      throw new Error("Cannot start processing while in cooldown period. Please wait for the cooldown to end or use the override option.");
+    }
+    console.log("✅ No cooldown active, proceeding with processing start...");
+
+    const response = await fetch(`${API_BASE_URL}/start-processing`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify(requestData),
+    });
+
+    const result = await response.json();
+
+    // Handle different response cases
+    if (response.ok) {
+      // Success case
+      return result;
+    } else if (response.status === 400 && result.canResume) {
+      // Incomplete job case - this is actually expected behavior
+      console.log("📋 API returned incomplete job info:", result);
+      return result;
+    } else if (response.status === 400 && (result.jobCancelled || result.message?.includes('cancelled'))) {
+      // **NEW** Cancelled job case - return with cancelled flag
+      console.log("🛑 API returned cancelled job info:", result);
+      return { ...result, jobCancelled: true };
+    } else if (response.status === 429) {
+      // Rate limit case
+      throw new Error(result.message || "Daily/hourly rate limit exceeded. Please try again later.");
+    } else {
+      // Other error cases
+      throw new Error(result.message || `API call failed with status ${response.status}`);
     }
   };
 
@@ -715,38 +782,42 @@ function App() {
 
       const userId = getUserId();
       const lastRun = localStorage.getItem("lastJobRun");
-      
+
       console.log(`🔍 Enhanced job check for user: ${userId}`);
-      
+      console.log(`🔍 Last job run timestamp: ${lastRun}`);
+      console.log(`🔍 Has one month passed: ${hasOneMonthPassed(lastRun)}`);
+
       // **CLEAR OLD JOB STATUS FIRST** - This is the key fix!
       setJobStatus(null);
-      
+
       // Clear any existing monitoring intervals
       if (jobMonitorInterval.current) {
         window.clearInterval(jobMonitorInterval.current);
         jobMonitorInterval.current = null;
         console.log("🧹 Cleared old monitoring interval during job check");
       }
-      
-      // Check for cooldown first
+
+      // **FIRST PRIORITY: Check for cooldown status**
+      console.log("🔍 Step 1: Checking cooldown status...");
       const isInCooldown = await checkCooldownStatus(userId);
       if (isInCooldown) {
         console.log("🚫 User is in cooldown period, skipping other checks");
         return;
       }
-      
+      console.log("✅ No cooldown active, proceeding with job check...");
+
       // Check human patterns first
       const patternInfo = await fetchHumanPatterns();
-      
+
       // Check daily limits
       const limits = await checkDailyLimits(userId);
-      
+
       // If within one month and limits are exceeded, don't check for jobs
       if (!hasOneMonthPassed(lastRun)) {
         if (limits && !limits.canProcess) {
           console.log("🚫 Skipping job check - limits reached");
           let message = "Processing limits reached: ";
-          
+
           if (limits.inPause) {
             message += `Currently in ${limits.currentPattern} pause period. `;
             if (limits.estimatedResumeTime) {
@@ -776,17 +847,13 @@ function App() {
 
       setIsCheckingJob(true);
       try {
+        console.log("🔍 Step 2: Fetching user job information...");
         const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+        console.log("🔍 User job API response status:", response.status);
 
         if (response.ok) {
           const result = await response.json();
-          
-          console.log("📋 Enhanced job check result:", {
-            success: result.success,
-            canResume: result.canResume,
-            jobId: result.job?.jobId,
-            status: result.job?.status
-          });
+          console.log("📋 User job API result:", result);
           
           // Handle cooldown case from user-job endpoint
           if (result.cooldownActive) {
@@ -970,14 +1037,31 @@ function App() {
         const userId = getUserId();
 
         try {
+          // **FIRST PRIORITY: Check cooldown status before any processing**
+          console.log("🔍 Step 1: Checking cooldown status before processing...");
+          const isInCooldown = await checkCooldownStatus(userId);
+          if (isInCooldown) {
+            console.log("🚫 User is in cooldown period, blocking processing start");
+            chrome.runtime.sendMessage({
+              type: "PROCESS_STATUS",
+              data: {
+                status: "cooldown_active",
+                message: "🚫 Cannot start processing while in cooldown period. Please wait for the cooldown to end or use the override option.",
+                cooldownInfo: cooldownInfo
+              },
+            });
+            return;
+          }
+          console.log("✅ No cooldown active, proceeding with processing checks...");
+
           // Check human patterns first
           const patternInfo = await fetchHumanPatterns();
-          
+
           // Check daily limits before starting any job
           const limits = await checkDailyLimits(userId);
           if (limits && !limits.canProcess) {
             let message = "Cannot start processing: ";
-            
+
             if (limits.inPause) {
               message += `Currently in ${limits.currentPattern} pause period. `;
               if (limits.estimatedResumeTime) {
@@ -1104,6 +1188,35 @@ function App() {
         try {
           const result = await callStartProcessingAPI(requestData);
           
+          // Handle cooldown override 403 response
+          if (result.cooldownOverridden === true) {
+            // Always persist cooldownOverridden state in localStorage for reloads
+            const cooldownOverrideState = {
+              jobId: result.jobId,
+              status: "completed",
+              totalContacts: 0,
+              processedCount: 0,
+              successCount: 0,
+              failureCount: 0,
+              createdAt: new Date().toISOString(),
+              cooldownOverridden: true,
+              overriddenAt: result.overriddenAt,
+              message: result.message || "Cooldown is overridden. Please wait 1 month or contact admin.",
+            };
+            setJobStatus(cooldownOverrideState);
+            localStorage.setItem("jobStatusCooldownOverride", JSON.stringify(cooldownOverrideState));
+            chrome.runtime.sendMessage({
+              type: "PROCESS_STATUS",
+              data: {
+                status: "completed",
+                message: cooldownOverrideState.message,
+                cooldownOverridden: true,
+                overriddenAt: result.overriddenAt,
+              },
+            });
+            return;
+          }
+          
           // Handle cooldown case specifically
           if (result.cooldownActive) {
             setCooldownInfo({
@@ -1125,149 +1238,69 @@ function App() {
             });
             return;
           }
-          
-          // **NEW** Handle cancelled job case specifically
-          if (result.jobCancelled || result.message?.includes('cancelled')) {
+
+          // Handle cancelled job case
+          if (result.jobCancelled) {
+            setJobStatus(result.job || null);
             chrome.runtime.sendMessage({
               type: "PROCESS_STATUS",
               data: {
                 status: "cancelled",
-                message: result.message || "🛑 Previous job was cancelled. Please use the restart button to continue processing from where you left off.",
+                message: `🛑 Processing was cancelled. Progress saved: ${result.processedCount || 0}/${result.totalContacts || 0} contacts. You can restart processing from where you left off.`,
+                progress: {
+                  total: result.totalContacts || 0,
+                  processed: result.processedCount || 0,
+                  success: result.successCount || 0,
+                  failed: result.failureCount || 0,
+                },
                 canRestart: true,
+                jobData: result.job,
               },
             });
             return;
           }
-          
-          // Handle both successful start AND incomplete job cases
-          if (result.success) {
-            // Reset cooldown info and auth error on successful start
-            setCooldownInfo(null);
-            setAuthError(null);
-            
-            const newJobStatus: JobStatus = {
+
+          // Handle successful job start
+          if (result.success && result.jobId) {
+            console.log("✅ Job started successfully:", result.jobId);
+            const jobData = {
               jobId: result.jobId,
               status: "processing",
-              totalContacts: result.totalContacts,
-              processedCount: result.processedCount || 0,
+              totalContacts: result.totalContacts || 0,
+              processedCount: 0,
               successCount: 0,
               failureCount: 0,
               createdAt: new Date().toISOString(),
-              humanPatterns: {
-                startPattern: result.currentPattern,
-                startTime: new Date().toISOString(),
-              },
             };
-            
-            setJobStatus(newJobStatus);
-            setDailyLimitInfo(result.limitInfo);
-            // Job monitoring will start via useEffect
+            setJobStatus(jobData);
             setJobRunTimestamp();
 
             chrome.runtime.sendMessage({
               type: "PROCESS_STATUS",
               data: {
-                status: "started",
-                message: `✅ Job started during ${result.currentPattern} pattern! Processing ${result.totalContacts} LinkedIn profiles with human-like timing`,
-                dailyLimitInfo: result.limitInfo,
-                humanPattern: result.currentPatternInfo,
-              },
-            });
-          } else if (result.canResume && result.jobId) {
-            // Handle incomplete job case
-            console.log("📋 Found incomplete job, setting up monitoring:", result.jobId);
-            
-            const incompleteJobStatus: JobStatus = {
-              jobId: result.jobId,
-              status: result.status,
-              totalContacts: result.totalContacts,
-              processedCount: result.processedCount,
-              successCount: 0,
-              failureCount: 0,
-              createdAt: new Date().toISOString(),
-            };
-            
-            setJobStatus(incompleteJobStatus);
-            setDailyLimitInfo(result.limitInfo);
-            // Job monitoring will start via useEffect
-            setJobRunTimestamp();
-
-            chrome.runtime.sendMessage({
-              type: "PROCESS_STATUS",
-              data: {
-                status: "resuming",
-                message: `🔄 Resuming incomplete job... (${result.processedCount}/${result.totalContacts} contacts processed)`,
-                dailyLimitInfo: result.limitInfo,
-                humanPattern: result.currentPattern,
-              },
-            });
-          } else {
-            // Handle error case
-            chrome.runtime.sendMessage({
-              type: "PROCESS_STATUS",
-              data: {
-                status: "error",
-                message: result.message || "Failed to start processing",
-                canRestart: result.jobCancelled || result.message?.includes('cancelled'),
+                status: "processing",
+                message: `🔄 Processing started! Found ${result.totalContacts || 0} contacts to process.`,
+                progress: {
+                  total: result.totalContacts || 0,
+                  processed: 0,
+                  success: 0,
+                  failed: 0,
+                },
+                humanPattern: patternInfo?.currentPattern?.info,
               },
             });
           }
+
         } catch (error) {
-          console.error("❌ Job start failed:", error);
-          
-          // Check if it's an authentication error
-          const errorMessage = error.message || "";
-          if (errorMessage.includes("Missing required parameters") || 
-              errorMessage.includes("userId") || 
-              errorMessage.includes("li_at") || 
-              errorMessage.includes("accessToken") || 
-              errorMessage.includes("crmUrl") || 
-              errorMessage.includes("jsessionid")) {
-            setAuthError(errorMessage);
-          }
-          
+          console.error("Error starting processing:", error);
           chrome.runtime.sendMessage({
             type: "PROCESS_STATUS",
             data: {
               status: "error",
-              message: `❌ Failed to start job: ${error.message}`,
-              canRestart: errorMessage.includes('cancelled'),
+              message: `❌ Error: ${error.message}`,
             },
           });
         }
-      }
-    };
-
-    const callStartProcessingAPI = async (requestData: any) => {
-      const response = await fetch(`${API_BASE_URL}/start-processing`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-        body: JSON.stringify(requestData),
-      });
-
-      const result = await response.json();
-      
-      // Handle different response cases
-      if (response.ok) {
-        // Success case
-        return result;
-      } else if (response.status === 400 && result.canResume) {
-        // Incomplete job case - this is actually expected behavior
-        console.log("📋 API returned incomplete job info:", result);
-        return result;
-      } else if (response.status === 400 && (result.jobCancelled || result.message?.includes('cancelled'))) {
-        // **NEW** Cancelled job case - return with cancelled flag
-        console.log("🛑 API returned cancelled job info:", result);
-        return { ...result, jobCancelled: true };
-      } else if (response.status === 429) {
-        // Rate limit case
-        throw new Error(result.message || "Daily/hourly rate limit exceeded. Please try again later.");
-      } else {
-        // Other error cases
-        throw new Error(result.message || `API call failed with status ${response.status}`);
       }
     };
 
@@ -1372,4 +1405,4 @@ function App() {
   );
 }
 
-export default App;
+export default App
