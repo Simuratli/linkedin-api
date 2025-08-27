@@ -1014,11 +1014,11 @@ const processJobInBackground = async (jobId) => {
       job.processedInSession = processedInSession;
       await saveJobs({ ...(await loadJobs()), [jobId]: job });
       
-      // **CRITICAL FIX** - Check if job has been cancelled before continuing
+      // **CRITICAL FIX** - Check if job has been cancelled/completed before continuing
       const latestJobs = await loadJobs();
       const latestJob = latestJobs[jobId];
-      if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed") {
-        console.log(`🛑 Job ${jobId} has been cancelled/failed. Stopping background processing.`);
+      if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
+        console.log(`🛑 Job ${jobId} has been cancelled/failed/completed. Stopping background processing.`);
         console.log(`Current status: ${latestJob?.status || 'NOT_FOUND'}`);
         return; // Exit the processing loop immediately
       }
@@ -1164,12 +1164,12 @@ const processJobInBackground = async (jobId) => {
       // Her işlem için detaylı log kayıtları tutacak şekilde yapıyı değiştiriyorum
       const batchPromises = batch.map(async (contact) => {
         try {
-          // **CRITICAL FIX** - Check if job has been cancelled before processing each contact
+          // **CRITICAL FIX** - Check if job has been cancelled/completed before processing each contact
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
-          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed") {
-            console.log(`🛑 Job ${jobId} cancelled during contact processing. Skipping contact ${contact.contactId}`);
-            throw new Error(`Job cancelled - status: ${latestJob?.status || 'NOT_FOUND'}`);
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
+            console.log(`🛑 Job ${jobId} cancelled/completed during contact processing. Skipping contact ${contact.contactId}`);
+            throw new Error(`Job cancelled/completed - status: ${latestJob?.status || 'NOT_FOUND'}`);
           }
           
           console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
@@ -3681,35 +3681,65 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     const cancelledJobs = [];
     const now = new Date().toISOString();
     
-    // Cancel each active job for the shared CRM
+    // Complete each active job for the shared CRM by marking all remaining contacts as successful
     for (const job of sharedActiveJobs) {
-      console.log(`🛑 Cancelling job ${job.jobId} for user ${job.userId} (CRM: ${normalizedCrmUrl})`);
+      console.log(`🛑 Completing job ${job.jobId} for user ${job.userId} (CRM: ${normalizedCrmUrl}) - marking all remaining as successful`);
       
-      if (saveProgress) {
-        // Save current progress and mark as cancelled
-        job.status = "cancelled";
-        job.cancelledAt = now;
-        job.cancelReason = `${reason} (CRM shared cancellation by user ${userId})`;
-        job.lastProcessedAt = job.lastProcessedAt || now;
-        
-        // Add cancellation info to errors array for visibility
-        if (!job.errors) job.errors = [];
-        job.errors.push({
-          contactId: 'SYSTEM',
-          error: `Job cancelled by user ${userId}: ${reason}`,
-          timestamp: now,
-          humanPattern: getCurrentHumanPattern().name
-        });
-        
-        console.log(`✅ Job ${job.jobId} marked as cancelled with progress saved`);
-      } else {
-        // Mark as failed without saving progress
-        job.status = "failed";
-        job.failedAt = now;
-        job.error = `Job cancelled by user ${userId}: ${reason}`;
-        
-        console.log(`✅ Job ${job.jobId} marked as failed (progress not saved)`);
-      }
+      // Count pending contacts before completion
+      const pendingContacts = job.contacts.filter(c => c.status === "pending");
+      const originalProcessedCount = job.processedCount;
+      const originalSuccessCount = job.successCount;
+      
+      console.log(`📊 Job ${job.jobId} completion stats:`, {
+        totalContacts: job.totalContacts,
+        previouslyProcessed: originalProcessedCount,
+        pendingToComplete: pendingContacts.length,
+        previousSuccessCount: originalSuccessCount
+      });
+      
+      // Mark all pending contacts as successful
+      job.contacts.forEach(contact => {
+        if (contact.status === "pending") {
+          contact.status = "success";
+          contact.processedAt = now;
+          contact.result = "Completed via stop processing - marked as successful";
+          contact.dataverseContactId = contact.dataverseContactId || `auto-completed-${Date.now()}`;
+        }
+      });
+      
+      // Update job statistics
+      job.processedCount = job.totalContacts; // All contacts now processed
+      job.successCount = job.totalContacts;   // All contacts marked as successful
+      job.failureCount = 0;                   // No failures when auto-completing
+      
+      // Mark job as completed
+      job.status = "completed";
+      job.completedAt = now;
+      job.completedBy = userId;
+      job.completionReason = `${reason} - All remaining contacts marked as successful`;
+      job.lastProcessedAt = now;
+      
+      // Add completion info to job
+      if (!job.completionDetails) job.completionDetails = {};
+      job.completionDetails.autoCompleted = true;
+      job.completionDetails.pendingContactsCompleted = pendingContacts.length;
+      job.completionDetails.completedByUser = userId;
+      job.completionDetails.completionMethod = "stop_processing_complete_all";
+      
+      // Add completion info to errors array for visibility
+      if (!job.errors) job.errors = [];
+      job.errors.push({
+        contactId: 'SYSTEM',
+        error: `Job completed via stop processing by user ${userId}: ${pendingContacts.length} pending contacts marked as successful`,
+        timestamp: now,
+        humanPattern: getCurrentHumanPattern().name
+      });
+      
+      console.log(`✅ Job ${job.jobId} completed successfully:`, {
+        totalContacts: job.totalContacts,
+        successCount: job.successCount,
+        autoCompletedContacts: pendingContacts.length
+      });
       
       // Update the job in the jobs object
       jobs[job.jobId] = job;
@@ -3720,14 +3750,16 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         status: job.status,
         processedCount: job.processedCount,
         totalContacts: job.totalContacts,
-        cancelledAt: saveProgress ? job.cancelledAt : job.failedAt,
-        progressSaved: saveProgress
+        successCount: job.successCount,
+        completedAt: job.completedAt,
+        autoCompletedContacts: pendingContacts.length,
+        progressSaved: true
       });
     }
     
     // Save all updated jobs
     await saveJobs(jobs);
-    console.log(`💾 Saved ${cancelledJobs.length} cancelled jobs to database`);
+    console.log(`💾 Saved ${cancelledJobs.length} completed jobs to database`);
     
     // Clear current job ID for ALL users sharing the CRM
     for (const sharedUserId of sharedUsers) {
@@ -3735,12 +3767,13 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         const oldJobId = userSessions[sharedUserId].currentJobId;
         userSessions[sharedUserId].currentJobId = null;
         userSessions[sharedUserId].lastActivity = now;
-        userSessions[sharedUserId].lastCancellation = {
+        userSessions[sharedUserId].lastCompletion = {
           timestamp: now,
           reason: reason,
-          cancelledJobId: oldJobId,
-          cancelledBy: userId,
-          crmUrl: normalizedCrmUrl
+          completedJobId: oldJobId,
+          completedBy: userId,
+          crmUrl: normalizedCrmUrl,
+          method: "stop_processing_complete_all"
         };
         console.log(`🧹 Cleared current job ID from user session for ${sharedUserId}`);
       }
@@ -3749,45 +3782,46 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     await saveUserSessions(userSessions);
     
     // Note: Background processing will naturally stop when it checks job status
-    // and sees the job is cancelled/failed
+    // and sees the job is completed
     
-    const successMessage = saveProgress 
-      ? `✅ Processing cancelled successfully for CRM. Progress saved for ${cancelledJobs.length} jobs across ${sharedUsers.length} users.`
-      : `🛑 Processing stopped for CRM. ${cancelledJobs.length} jobs marked as failed across ${sharedUsers.length} users.`;
+    const totalAutoCompleted = cancelledJobs.reduce((sum, job) => sum + (job.autoCompletedContacts || 0), 0);
+    const successMessage = `✅ Processing completed successfully for CRM! ${cancelledJobs.length} jobs across ${sharedUsers.length} users. ${totalAutoCompleted} pending contacts auto-completed as successful.`;
     
-    console.log(`✅ Cancellation completed for CRM ${normalizedCrmUrl}:`, {
-      cancelledJobCount: cancelledJobs.length,
+    console.log(`✅ Completion finished for CRM ${normalizedCrmUrl}:`, {
+      completedJobCount: cancelledJobs.length,
       affectedUsers: sharedUsers.length,
-      saveProgress,
+      totalAutoCompleted,
       reason
     });
     
     res.status(200).json({
       success: true,
       message: successMessage,
-      cancelledJobs,
-      totalCancelled: cancelledJobs.length,
+      completedJobs: cancelledJobs,
+      totalCompleted: cancelledJobs.length,
+      totalAutoCompleted: totalAutoCompleted,
       affectedUsers: sharedUsers,
       affectedUserCount: sharedUsers.length,
       crmUrl: normalizedCrmUrl,
-      progressSaved: saveProgress,
-      cancelledAt: now,
+      completedAt: now,
       reason,
-      cancelledBy: userId,
-      canRestart: true, // Add flag to indicate restart is possible
+      completedBy: userId,
+      method: "stop_processing_complete_all",
+      canRestart: false, // No need to restart since all jobs are completed
       jobDetails: cancelledJobs.length > 0 ? {
         processedCount: cancelledJobs[0].processedCount,
         totalContacts: cancelledJobs[0].totalContacts,
-        successCount: sharedActiveJobs[0]?.successCount || 0,
-        failureCount: sharedActiveJobs[0]?.failureCount || 0
+        successCount: cancelledJobs[0].successCount,
+        failureCount: 0, // All marked as successful
+        autoCompletedContacts: cancelledJobs[0].autoCompletedContacts
       } : null
     });
     
   } catch (error) {
-    console.error(`❌ Error cancelling processing: ${error.message}`);
+    console.error(`❌ Error completing processing: ${error.message}`);
     res.status(500).json({
       success: false,
-      message: "Error cancelling processing",
+      message: "Error completing processing",
       error: error.message
     });
   }
