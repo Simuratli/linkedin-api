@@ -3762,9 +3762,10 @@ app.post("/complete-processing/:userId", async (req, res) => {
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
-      
+      // Mark cooldown as overridden to prevent unwanted restart
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
       jobs[job.jobId] = job;
-      
       completedJobs.push({
         jobId: job.jobId,
         status: job.status,
@@ -3772,8 +3773,7 @@ app.post("/complete-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
     }
     
     await saveJobs(jobs);
