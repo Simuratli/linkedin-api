@@ -1,13 +1,13 @@
 async function createDataverse(url, token, request, method) {
 
   function cleanToken(token) {
-  try {
-    return token.includes('"') ? JSON.parse(token) : token;
-  } catch (e) {
-    console.warn('Token parse error, using as-is:', e);
-    return token;
+    try {
+      return token.includes('"') ? JSON.parse(token) : token;
+    } catch (e) {
+      console.warn('Token parse error, using as-is:', e);
+      return token;
+    }
   }
-}
 
   const headers = {
     Authorization: `Bearer ${cleanToken(token)}`,
@@ -83,20 +83,29 @@ async function createDataverse(url, token, request, method) {
 }
 
 async function getDataverse(url, token) {
+  // Use the same cleanToken function as createDataverse
+  function cleanToken(token) {
+    try {
+      return token.includes('"') ? JSON.parse(token) : token;
+    } catch (e) {
+      console.warn('Token parse error, using as-is:', e);
+      return token;
+    }
+  }
+
   const headers = {
-    Authorization: `Bearer ${token.includes('"') ? JSON.parse(token) : token}`,
+    Authorization: `Bearer ${cleanToken(token)}`,
     Accept: "application/json",
     "OData-MaxVersion": "4.0",
     "OData-Version": "4.0",
   };
 
-
   const options = {
     method: "GET",
     headers: headers,
   };
-    console.log(`urloepte`,url,options);
   
+  console.log(`urloepte`, url, options);
 
   try {
     const response = await fetch(url, options);
@@ -166,14 +175,24 @@ async function getDataverse(url, token) {
   }
 }
 
-
 async function getAccessTokenRequest(clientId, tenantId, crmUrl, verifier, type, token) {
   try {
     const grantType = type === "refresh" ? "refresh_token" : "authorization_code";
     const tokenParam = type === "refresh" ? "refresh_token" : "code";
-    const cleanToken = token.includes('"') ? JSON.parse(token) : token;
     
-    const body = `client_id=${clientId}&scope=${crmUrl}/.default&grant_type=${grantType}&${tokenParam}=${cleanToken}&redirect_uri=http://localhost:5678&code_verifier=${verifier}`;
+    // Use the same cleanToken function
+    function cleanToken(token) {
+      try {
+        return token.includes('"') ? JSON.parse(token) : token;
+      } catch (e) {
+        console.warn('Token parse error, using as-is:', e);
+        return token;
+      }
+    }
+    
+    const cleanedToken = cleanToken(token);
+    
+    const body = `client_id=${clientId}&scope=${crmUrl}/.default&grant_type=${grantType}&${tokenParam}=${cleanedToken}&redirect_uri=http://localhost:5678&code_verifier=${verifier}`;
     
     const response = await fetch(
       `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
