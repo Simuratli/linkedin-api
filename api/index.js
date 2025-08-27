@@ -1168,180 +1168,194 @@ const processJobInBackground = async (jobId) => {
         `🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId} (${currentPatternName} pattern)`
       );
 
-      // Her işlem için detaylı log kayıtları tutacak şekilde yapıyı değiştiriyorum
-      const batchPromises = batch.map(async (contact) => {
-        try {
-          // **CRITICAL FIX** - Check if job has been cancelled/completed before processing each contact
-          const latestJobs = await loadJobs();
-          const latestJob = latestJobs[jobId];
-          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
-            console.log(`🛑 Job ${jobId} cancelled/completed during contact processing. Skipping contact ${contact.contactId}`);
-            console.log(`📊 Job status: ${latestJob?.status || 'NOT_FOUND'} | Contact: ${contact.contactId}`);
-            throw new Error(`STOP_PROCESSING - Job ${latestJob?.status || 'NOT_FOUND'}`);
-          }
+      try {
+        // **IMPROVED** Process each contact with proper error handling
+        console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
+        
+        // Process contacts one by one to avoid Promise.allSettled issues
+        for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
+          const contact = batch[contactIndex];
           
-          console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
-          contact.status = "processing";
-
-          // Get fresh user session for each contact
-          const currentUserSessions = await loadUserSessions();
-          const currentUserSession = currentUserSessions[job.userId];
-
-          if (!currentUserSession) {
-            console.error(`❌ Kullanıcı ${job.userId} için oturum bulunamadı`);
-            throw new Error("User session not found");
-          }
-
-          const match = contact.linkedinUrl.match(/\/in\/([^\/]+)/);
-          const profileId = match ? match[1] : null;
-
-          if (!profileId) {
-            console.error(`❌ Geçersiz LinkedIn URL formatı: ${contact.linkedinUrl}`);
-            throw new Error(`Invalid LinkedIn URL format`);
-          }
-
-          console.log(`🔍 LinkedIn profil ID'si alındı: ${profileId}`);
-          const customCookies = {
-            li_at: currentUserSession.li_at,
-            jsession: currentUserSession.jsessionid,
-          };
-          
-          if (!currentUserSession.li_at || !currentUserSession.jsessionid) {
-            console.error(`❌ LinkedIn oturum bilgileri eksik`);
-          }
-
-          // Handle Dataverse unauthorized errors
-          const handleDataverseError = async (error) => {
-            if (error.message.includes("401") || error.message.includes("Unauthorized")) {
-              console.log("🔒 Dataverse session expired, pausing job...");
-              job.status = "paused";
-              job.pauseReason = "dataverse_session_invalid";
-              job.pausedAt = new Date().toISOString();
-              job.lastError = {
-                type: "AUTH_ERROR",
-                message: "Dataverse authentication required. Please re-authenticate through the extension.",
-                timestamp: new Date().toISOString()
-              };
-              await saveJobs({ ...(await loadJobs()), [jobId]: job });
-              throw new Error("DATAVERSE_AUTH_REQUIRED");
-            }
-            throw error;
-          };
-
-          // Add error handling for Dataverse calls
           try {
-            const profileData = await fetchLinkedInProfile(profileId, customCookies);
-            
-            if (profileData.error && (profileData.error.includes("unauthorized") || profileData.error.includes("not found"))) {
-              console.log("🔒 LinkedIn session expired, pausing job...");
-              job.status = "paused";
-              job.pauseReason = "linkedin_session_invalid";
-              job.pausedAt = new Date().toISOString();
-              job.lastError = {
-                type: "AUTH_ERROR",
-                message: "LinkedIn authentication required. Please re-authenticate through the extension.",
-                timestamp: new Date().toISOString()
-              };
-              await saveJobs({ ...(await loadJobs()), [jobId]: job });
-              throw new Error("LINKEDIN_AUTH_REQUIRED");
-            }
-
-            // Wrap Dataverse calls in try-catch
-            try {
-              const convertedProfile = await transformToCreateUserRequest(
-                profileData,
-                `${currentUserSession.crmUrl}/api/data/v9.2`,
-                currentUserSession.accessToken
-              );
-
-              const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
-
-              // Create refreshData object from currentUserSession
-              const refreshData = currentUserSession.refreshToken ? {
-                refreshToken: currentUserSession.refreshToken,
-                clientId: currentUserSession.clientId,
-                tenantId: currentUserSession.tenantId,
-                crmUrl: currentUserSession.crmUrl,
-                verifier: currentUserSession.verifier,
-                userId: job.userId
-              } : null;
-
-              await callDataverseWithRefresh(
-                updateUrl,
-                currentUserSession.accessToken,
-                "PATCH",
-                convertedProfile,
-                refreshData
-              ).catch(handleDataverseError);
-
-            } catch (dataverseError) {
-              await handleDataverseError(dataverseError);
-            }
-
-            contact.status = "completed";
-            contact.humanPattern = profileData.humanPattern || currentPatternName;
-            job.successCount++;
-            processedInSession++;
-
-            // Update job count and synchronize with daily stats
-            job.processedCount = job.successCount + job.failureCount;
-            await synchronizeJobWithDailyStats(job.userId, job);
-
-            // Update pattern-specific stats
-            if (!job.dailyStats) {
-              job.dailyStats = {
-                startDate: getTodayKey(),
-                processedToday: 0,
-                patternBreakdown: {}
-              };
-            }
-            
-            if (!job.dailyStats.patternBreakdown) {
-              job.dailyStats.patternBreakdown = {};
-            }
-            
-            if (!job.dailyStats.patternBreakdown[currentPatternName]) {
-              job.dailyStats.patternBreakdown[currentPatternName] = 0;
-            }
-            
-            job.dailyStats.patternBreakdown[currentPatternName]++;
-
-            // Update CRM-based daily stats (shared across users)
-            const userSessionForStats = await (async () => {
-              const sessions = await loadUserSessions();
-              return sessions[job.userId];
-            })();
-            
-            if (userSessionForStats?.crmUrl) {
-              await updateUserDailyStats(job.userId, userSessionForStats.crmUrl);
-            } else {
-              await updateUserDailyStats(job.userId); // Fallback to user-based
-            }
-
-            console.log(
-              `✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`
-            );
-          } catch (error) {
-            if (error.message === "LINKEDIN_AUTH_REQUIRED" || error.message === "DATAVERSE_AUTH_REQUIRED") {
-              // Stop processing and wait for user re-authentication
-              console.log("⏸️ Processing paused - waiting for user authentication");
+            // **CRITICAL FIX** - Check if job has been cancelled/completed before processing each contact
+            const latestJobs = await loadJobs();
+            const latestJob = latestJobs[jobId];
+            if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
+              console.log(`🛑 Job ${jobId} cancelled/completed during contact processing. Stopping batch processing.`);
               return;
             }
-            console.error(
-              `❌ Error processing contact ${contact.contactId}:`,
-              error.message
-            );
+            
+            console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
+            contact.status = "processing";
 
+            // Get fresh user session for each contact
+            const currentUserSessions = await loadUserSessions();
+            const currentUserSession = currentUserSessions[job.userId];
+
+            if (!currentUserSession) {
+              console.error(`❌ Kullanıcı ${job.userId} için oturum bulunamadı`);
+              throw new Error("User session not found");
+            }
+
+            const match = contact.linkedinUrl.match(/\/in\/([^\/]+)/);
+            const profileId = match ? match[1] : null;
+
+            if (!profileId) {
+              console.error(`❌ Geçersiz LinkedIn URL formatı: ${contact.linkedinUrl}`);
+              throw new Error(`Invalid LinkedIn URL format`);
+            }
+
+            console.log(`🔍 LinkedIn profil ID'si alındı: ${profileId}`);
+            const customCookies = {
+              li_at: currentUserSession.li_at,
+              jsession: currentUserSession.jsessionid,
+            };
+            
+            if (!currentUserSession.li_at || !currentUserSession.jsessionid) {
+              console.error(`❌ LinkedIn oturum bilgileri eksik`);
+              throw new Error("LinkedIn session information missing");
+            }
+
+            // Handle Dataverse unauthorized errors
+            const handleDataverseError = async (error) => {
+              if (error.message.includes("401") || error.message.includes("Unauthorized")) {
+                console.log("🔒 Dataverse session expired, pausing job...");
+                job.status = "paused";
+                job.pauseReason = "dataverse_session_invalid";
+                job.pausedAt = new Date().toISOString();
+                job.lastError = {
+                  type: "AUTH_ERROR",
+                  message: "Dataverse authentication required. Please re-authenticate through the extension.",
+                  timestamp: new Date().toISOString()
+                };
+                await saveJobs({ ...(await loadJobs()), [jobId]: job });
+                throw new Error("DATAVERSE_AUTH_REQUIRED");
+              }
+              throw error;
+            };
+
+            // Add error handling for Dataverse calls
+            try {
+              const profileData = await fetchLinkedInProfile(profileId, customCookies);
+              
+              if (profileData.error && (profileData.error.includes("unauthorized") || profileData.error.includes("not found"))) {
+                console.log("🔒 LinkedIn session expired, pausing job...");
+                job.status = "paused";
+                job.pauseReason = "linkedin_session_invalid";
+                job.pausedAt = new Date().toISOString();
+                job.lastError = {
+                  type: "AUTH_ERROR",
+                  message: "LinkedIn authentication required. Please re-authenticate through the extension.",
+                  timestamp: new Date().toISOString()
+                };
+                await saveJobs({ ...(await loadJobs()), [jobId]: job });
+                throw new Error("LINKEDIN_AUTH_REQUIRED");
+              }
+
+              // Wrap Dataverse calls in try-catch
+              try {
+                const convertedProfile = await transformToCreateUserRequest(
+                  profileData,
+                  `${currentUserSession.crmUrl}/api/data/v9.2`,
+                  currentUserSession.accessToken
+                );
+
+                const updateUrl = `${currentUserSession.crmUrl}/api/data/v9.2/contacts(${contact.contactId})`;
+
+                // Create refreshData object from currentUserSession
+                const refreshData = currentUserSession.refreshToken ? {
+                  refreshToken: currentUserSession.refreshToken,
+                  clientId: currentUserSession.clientId,
+                  tenantId: currentUserSession.tenantId,
+                  crmUrl: currentUserSession.crmUrl,
+                  verifier: currentUserSession.verifier,
+                  userId: job.userId
+                } : null;
+
+                await callDataverseWithRefresh(
+                  updateUrl,
+                  currentUserSession.accessToken,
+                  "PATCH",
+                  convertedProfile,
+                  refreshData
+                ).catch(handleDataverseError);
+
+              } catch (dataverseError) {
+                await handleDataverseError(dataverseError);
+              }
+
+              contact.status = "completed";
+              contact.processedAt = new Date().toISOString();
+              contact.humanPattern = profileData.humanPattern || currentPatternName;
+              job.successCount++;
+              processedInSession++;
+
+              // Update job count and synchronize with daily stats
+              job.processedCount = job.successCount + job.failureCount;
+              await synchronizeJobWithDailyStats(job.userId, job);
+
+              // Update pattern-specific stats
+              if (!job.dailyStats) {
+                job.dailyStats = {
+                  startDate: getTodayKey(),
+                  processedToday: 0,
+                  patternBreakdown: {}
+                };
+              }
+              
+              if (!job.dailyStats.patternBreakdown) {
+                job.dailyStats.patternBreakdown = {};
+              }
+              
+              if (!job.dailyStats.patternBreakdown[currentPatternName]) {
+                job.dailyStats.patternBreakdown[currentPatternName] = 0;
+              }
+              
+              job.dailyStats.patternBreakdown[currentPatternName]++;
+
+              // Update CRM-based daily stats (shared across users)
+              const userSessionForStats = await (async () => {
+                const sessions = await loadUserSessions();
+                return sessions[job.userId];
+              })();
+              
+              if (userSessionForStats?.crmUrl) {
+                await updateUserDailyStats(job.userId, userSessionForStats.crmUrl);
+              } else {
+                await updateUserDailyStats(job.userId); // Fallback to user-based
+              }
+
+              console.log(
+                `✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`
+              );
+            } catch (error) {
+              if (error.message === "LINKEDIN_AUTH_REQUIRED" || error.message === "DATAVERSE_AUTH_REQUIRED") {
+                // Stop processing and wait for user re-authentication
+                console.log("⏸️ Processing paused - waiting for user authentication");
+                return;
+              }
+              throw error; // Re-throw to be caught by outer catch
+            }
+          } catch (error) {
+            console.error(`❌ Error processing contact ${contact.contactId}:`, error.message);
+
+            // **CRITICAL FIX** - Always mark contact as failed, never leave in processing state
             contact.status = "failed";
             contact.error = error.message;
+            contact.processedAt = new Date().toISOString();
             contact.humanPattern = currentPatternName;
             job.failureCount++;
+            
+            if (!job.errors) job.errors = [];
             job.errors.push({
               contactId: contact.contactId,
               error: error.message,
               timestamp: new Date().toISOString(),
               humanPattern: currentPatternName,
             });
+
+            // Update processed count even for failed contacts
+            job.processedCount = job.successCount + job.failureCount;
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
               console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
@@ -1357,26 +1371,13 @@ const processJobInBackground = async (jobId) => {
               console.log(`💡 Job ${jobId} will resume when user reconnects with fresh tokens`);
               return; // Stop processing, wait for frontend
             }
-          }
-        } catch (error) {
-          console.error(`❌ Batch processing error:`, error.message);
-          if (error.message.includes("AUTH_REQUIRED")) {
-            throw error;
+
+            if (error.message.includes("AUTH_REQUIRED")) {
+              console.log(`⏸️ Authentication required, stopping processing`);
+              return;
+            }
           }
         }
-      });
-
-      try {
-        // Promise.allSettled yerine her bir promisi tek tek izleme için değiştiriyorum
-        console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
-        const results = await Promise.allSettled(batchPromises);
-        
-        // Sonuçları kontrol et
-        results.forEach((result, index) => {
-          if (result.status === 'rejected') {
-            console.error(`❌ Batch promise ${index} başarısız oldu:`, result.reason);
-          }
-        });
         
         job.processedCount = job.successCount + job.failureCount;
         console.log(`📊 Güncel işlem durumu: ${job.processedCount}/${job.totalContacts} (${job.successCount} başarılı, ${job.failureCount} başarısız)`);
