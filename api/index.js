@@ -395,81 +395,6 @@ const callDataverseWithRefresh = async (
   }
 };
 
-// **NEW** Check and set user cooldown after job completion
-const checkAndSetUserCooldown = async (userId) => {
-  try {
-    console.log(`🔍 Setting cooldown for user: ${userId}`);
-    
-    // Load user sessions to update cooldown
-    const userSessions = await loadUserSessions();
-    
-    if (!userSessions[userId]) {
-      console.log(`⚠️ User session not found for: ${userId}, creating new session`);
-      userSessions[userId] = {};
-    }
-    
-    // Set cooldown info - 30 days from now
-    const now = new Date();
-    const cooldownEndDate = new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000)); // 30 days
-    
-    userSessions[userId].lastJobCompleted = now.toISOString();
-    userSessions[userId].cooldownEndDate = cooldownEndDate.toISOString();
-    userSessions[userId].cooldownActive = true;
-    
-    // Save updated sessions
-    await saveUserSessions(userSessions);
-    
-    console.log(`✅ Cooldown set for user ${userId} until ${cooldownEndDate.toISOString()}`);
-    return true;
-  } catch (error) {
-    console.error(`❌ Error setting cooldown for user ${userId}:`, error);
-    return false;
-  }
-};
-
-// **NEW** Get user cooldown status from user sessions
-const getUserCooldownStatus = async (userId) => {
-  try {
-    console.log(`🔍 Getting cooldown status for user: ${userId}`);
-    
-    // Load user sessions to check cooldown
-    const userSessions = await loadUserSessions();
-    
-    if (!userSessions[userId]) {
-      console.log(`⚠️ No user session found for: ${userId}`);
-      return null;
-    }
-    
-    const userSession = userSessions[userId];
-    
-    // Check if user has cooldown set
-    if (!userSession.cooldownActive || !userSession.cooldownEndDate) {
-      console.log(`❌ No cooldown found for user: ${userId}`);
-      return null;
-    }
-    
-    const now = new Date();
-    const cooldownEndDate = new Date(userSession.cooldownEndDate);
-    const daysRemaining = Math.max(0, (cooldownEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-    
-    const cooldownStatus = {
-      userId: userId,
-      allJobsCompleted: true, // Set by checkAndSetUserCooldown
-      jobsRestarted: false,
-      completedAt: userSession.lastJobCompleted,
-      cooldownEndDate: userSession.cooldownEndDate,
-      daysRemaining: daysRemaining,
-      cooldownPeriod: 30
-    };
-    
-    console.log(`✅ Cooldown status for user ${userId}:`, cooldownStatus);
-    return cooldownStatus;
-  } catch (error) {
-    console.error(`❌ Error getting cooldown status for user ${userId}:`, error);
-    return null;
-  }
-};
-
 // CORS setup
 app.use(cors());
 app.use((req, res, next) => {
@@ -1539,13 +1464,6 @@ const processJobInBackground = async (jobId) => {
     if (remainingPending === 0) {
       job.status = "completed";
       job.completedAt = new Date().toISOString();
-      
-      // Check if we should set user cooldown after job completion
-      try {
-        await checkAndSetUserCooldown(job.userId);
-      } catch (error) {
-        console.error(`❌ Error setting user cooldown: ${error.message}`);
-      }
 
       // Final pattern history entry
       if (!job.humanPatterns.patternHistory)
@@ -3712,215 +3630,77 @@ app.get("/admin/user-data/:userId", async (req, res) => {
 app.post("/cancel-processing/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const { reason = "User cancelled processing", saveProgress = true } = req.body;
+    const { reason = "User cancelled processing" } = req.body;
     
-    console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason, saveProgress });
-    console.log(`🚨 IMMEDIATE STOP SIGNAL - All background processing for user ${userId} should terminate immediately`);
+    console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason });
     
-    // Get user session to find CRM URL for shared processing
-    const userSessions = await loadUserSessions();
-    const userSession = userSessions[userId];
-    
-    if (!userSession || !userSession.crmUrl) {
-      return res.status(400).json({
-        success: false,
-        message: "User session or CRM URL not found"
-      });
-    }
-    
-    const normalizedCrmUrl = normalizeCrmUrl(userSession.crmUrl);
-    console.log(`🔗 CRM URL for cancellation: ${normalizedCrmUrl}`);
-    
-    // Find ALL users who share the same CRM URL (shared processing)
-    const sharedUsers = Object.keys(userSessions).filter(sessionUserId => {
-      const session = userSessions[sessionUserId];
-      return session.crmUrl && normalizeCrmUrl(session.crmUrl) === normalizedCrmUrl;
-    });
-    
-    console.log(`👥 Found ${sharedUsers.length} users sharing CRM URL:`, sharedUsers);
-    
-    // Load jobs and find active jobs for ALL users sharing the same CRM
+    // Load jobs and find active jobs for this user
     const jobs = await loadJobs();
-    const sharedActiveJobs = Object.values(jobs).filter(job => {
-      // Check if job belongs to any user sharing the CRM URL
-      const jobUserSession = userSessions[job.userId];
-      if (!jobUserSession || !jobUserSession.crmUrl) return false;
-      
-      const jobCrmUrl = normalizeCrmUrl(jobUserSession.crmUrl);
-      const isSharedCrm = jobCrmUrl === normalizedCrmUrl;
-      const isActiveJob = job.status === "processing" || job.status === "paused" || job.status === "pending";
-      
-      return isSharedCrm && isActiveJob;
-    });
+    const userActiveJobs = Object.values(jobs).filter(job => 
+      job.userId === userId && 
+      (job.status === "processing" || job.status === "paused" || job.status === "pending")
+    );
     
-    if (sharedActiveJobs.length === 0) {
+    if (userActiveJobs.length === 0) {
       return res.status(200).json({
         success: true,
-        message: "No active jobs to cancel for this CRM",
-        cancelledJobs: [],
-        alreadyStopped: true,
-        sharedUsers,
-        crmUrl: normalizedCrmUrl
+        message: "No active jobs to cancel",
+        cancelledJobs: []
       });
     }
     
-    console.log(`🛑 Found ${sharedActiveJobs.length} active jobs for CRM ${normalizedCrmUrl}:`, sharedActiveJobs.map(j => `${j.jobId} (user: ${j.userId})`));
+    console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
     
     const cancelledJobs = [];
     const now = new Date().toISOString();
     
-    // Complete each active job for the shared CRM by marking all remaining contacts as successful
-    for (const job of sharedActiveJobs) {
-      console.log(`🛑 Completing job ${job.jobId} for user ${job.userId} (CRM: ${normalizedCrmUrl}) - marking all remaining as successful`);
+    // Cancel each active job
+    for (const job of userActiveJobs) {
+      console.log(`🛑 Cancelling job ${job.jobId}`);
       
-      // Count pending contacts before completion
-      const pendingContacts = job.contacts.filter(c => c.status === "pending");
-      const originalProcessedCount = job.processedCount;
-      const originalSuccessCount = job.successCount;
-      
-      console.log(`📊 Job ${job.jobId} completion stats:`, {
-        totalContacts: job.totalContacts,
-        previouslyProcessed: originalProcessedCount,
-        pendingToComplete: pendingContacts.length,
-        previousSuccessCount: originalSuccessCount
-      });
-      
-      // Mark all pending contacts as successful
-      job.contacts.forEach(contact => {
-        if (contact.status === "pending") {
-          contact.status = "completed";  // Use "completed" not "success"
-          contact.processedAt = now;
-          contact.result = "Completed via stop processing - marked as successful";
-          contact.dataverseContactId = contact.dataverseContactId || `auto-completed-${Date.now()}`;
-        }
-      });
-      
-      // Update job statistics
-      job.processedCount = job.totalContacts; // All contacts now processed
-      job.successCount = job.contacts.filter(c => c.status === "completed").length; // Count all completed contacts
-      job.failureCount = 0; // No failures when auto-completing
-      
-      // Mark job as completed
-      job.status = "completed";
-      job.completedAt = now;
-      job.completedBy = userId;
-      job.completionReason = `${reason} - All remaining contacts marked as successful`;
+      job.status = "cancelled";
+      job.cancelledAt = now;
+      job.cancellationReason = reason;
       job.lastProcessedAt = now;
       
-      // Add completion info to job
-      if (!job.completionDetails) job.completionDetails = {};
-      job.completionDetails.autoCompleted = true;
-      job.completionDetails.pendingContactsCompleted = pendingContacts.length;
-      job.completionDetails.completedByUser = userId;
-      job.completionDetails.completionMethod = "stop_processing_complete_all";
-      
-      // Add completion info to errors array for visibility
       if (!job.errors) job.errors = [];
       job.errors.push({
         contactId: 'SYSTEM',
-        error: `Job completed via stop processing by user ${userId}: ${pendingContacts.length} pending contacts marked as successful`,
-        timestamp: now,
-        humanPattern: getCurrentHumanPattern().name
+        error: `Job cancelled by user: ${reason}`,
+        timestamp: now
       });
       
-      console.log(`✅ Job ${job.jobId} completed successfully:`, {
-        totalContacts: job.totalContacts,
-        successCount: job.successCount,
-        autoCompletedContacts: pendingContacts.length
-      });
-      
-      // Update the job in the jobs object
       jobs[job.jobId] = job;
       
       cancelledJobs.push({
         jobId: job.jobId,
-        userId: job.userId,
         status: job.status,
         processedCount: job.processedCount,
-        totalContacts: job.totalContacts,
-        successCount: job.successCount,
-        completedAt: job.completedAt,
-        autoCompletedContacts: pendingContacts.length,
-        progressSaved: true
+        totalContacts: job.totalContacts
       });
     }
     
-    // Save all updated jobs
     await saveJobs(jobs);
-    console.log(`💾 Saved ${cancelledJobs.length} completed jobs to database`);
     
-    // Clear current job ID for ALL users sharing the CRM
-    for (const sharedUserId of sharedUsers) {
-      if (userSessions[sharedUserId]) {
-        const oldJobId = userSessions[sharedUserId].currentJobId;
-        userSessions[sharedUserId].currentJobId = null;
-        userSessions[sharedUserId].lastActivity = now;
-        userSessions[sharedUserId].lastCompletion = {
-          timestamp: now,
-          reason: reason,
-          completedJobId: oldJobId,
-          completedBy: userId,
-          crmUrl: normalizedCrmUrl,
-          method: "stop_processing_complete_all"
-        };
-        console.log(`🧹 Cleared current job ID from user session for ${sharedUserId}`);
-      }
+    // Clear current job ID from user session
+    const userSessions = await loadUserSessions();
+    if (userSessions[userId]) {
+      userSessions[userId].currentJobId = null;
+      userSessions[userId].lastActivity = now;
     }
-    
     await saveUserSessions(userSessions);
-    
-    // **CRITICAL FIX** - Set cooldown for ALL users after completing processing
-    console.log(`🚫 Setting cooldown for all ${sharedUsers.length} users sharing CRM`);
-    for (const sharedUserId of sharedUsers) {
-      try {
-        await checkAndSetUserCooldown(sharedUserId);
-        console.log(`✅ Cooldown set for user: ${sharedUserId}`);
-      } catch (cooldownError) {
-        console.error(`❌ Error setting cooldown for user ${sharedUserId}:`, cooldownError.message);
-      }
-    }
-    
-    // Note: Background processing will naturally stop when it checks job status
-    // and sees the job is completed
-    
-    const totalAutoCompleted = cancelledJobs.reduce((sum, job) => sum + (job.autoCompletedContacts || 0), 0);
-    const successMessage = `✅ Processing completed successfully for CRM! ${cancelledJobs.length} jobs across ${sharedUsers.length} users. ${totalAutoCompleted} pending contacts auto-completed as successful.`;
-    
-    console.log(`✅ Completion finished for CRM ${normalizedCrmUrl}:`, {
-      completedJobCount: cancelledJobs.length,
-      affectedUsers: sharedUsers.length,
-      totalAutoCompleted,
-      reason
-    });
     
     res.status(200).json({
       success: true,
-      message: successMessage,
-      completedJobs: cancelledJobs,
-      totalCompleted: cancelledJobs.length,
-      totalAutoCompleted: totalAutoCompleted,
-      affectedUsers: sharedUsers,
-      affectedUserCount: sharedUsers.length,
-      crmUrl: normalizedCrmUrl,
-      completedAt: now,
-      reason,
-      completedBy: userId,
-      method: "stop_processing_complete_all",
-      canRestart: false, // No need to restart since all jobs are completed
-      jobDetails: cancelledJobs.length > 0 ? {
-        processedCount: cancelledJobs[0].processedCount,
-        totalContacts: cancelledJobs[0].totalContacts,
-        successCount: cancelledJobs[0].successCount,
-        failureCount: 0, // All marked as successful
-        autoCompletedContacts: cancelledJobs[0].autoCompletedContacts
-      } : null
+      message: "Processing cancelled successfully",
+      cancelledJobs
     });
     
   } catch (error) {
-    console.error(`❌ Error completing processing: ${error.message}`);
+    console.error(`❌ Error cancelling processing: ${error.message}`);
     res.status(500).json({
       success: false,
-      message: "Error completing processing",
+      message: "Error cancelling processing",
       error: error.message
     });
   }

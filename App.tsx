@@ -648,7 +648,7 @@ function App() {
   // **UPDATED** Handle stopping/completing processing - marks all remaining as successful
   const handleStopProcessing = async () => {
     const userId = getUserId();
-    console.log("🛑 Attempting to complete processing for user:", userId);
+    console.log("🛑 Attempting to cancel processing for user:", userId);
     
     try {
       const response = await fetch(`${API_BASE_URL}/cancel-processing/${encodeURIComponent(userId)}`, {
@@ -657,160 +657,51 @@ function App() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          reason: 'User manual completion from extension - mark all as successful',
-          saveProgress: true // Complete all remaining contacts as successful
+          reason: 'User cancelled processing from extension'
         })
       });
       
       const result = await response.json();
       
       if (result.success) {
-        console.log("✅ Processing completed successfully:", result.message);
+        console.log("✅ Processing cancelled successfully:", result.message);
         
-        // **IMMEDIATE CLEANUP** - Clear everything immediately
+        // Clear job status
         setJobStatus(null);
         
         if (jobMonitorInterval.current) {
           window.clearInterval(jobMonitorInterval.current);
           jobMonitorInterval.current = null;
-          console.log("🧹 Cleared monitoring during processing completion");
+          console.log("🧹 Cleared monitoring after cancellation");
         }
         
-        // **FORCE SERVER COOLDOWN CHECK** - Wait for server to set cooldown, then check
-        setTimeout(async () => {
-          console.log("🔄 Checking if server set cooldown after completion...");
-          const isInCooldown = await checkCooldownStatus(userId);
-          
-          if (isInCooldown) {
-            console.log("✅ Server cooldown confirmed");
-          } else {
-            console.log("⚠️ Server cooldown not found, setting frontend cooldown");
-            // **FALLBACK** - Set frontend cooldown if server didn't set it
-            setCooldownInfo({
-              active: true,
-              daysLeft: 30,
-              lastCompleted: new Date().toISOString()
-            });
-            
-            chrome.runtime.sendMessage({
-              type: "PROCESS_STATUS",
-              data: {
-                status: "cooldown_active",
-                message: "🚫 30 days cooldown period started. Use override cooldown to restart processing.",
-                cooldownInfo: {
-                  active: true,
-                  daysLeft: 30,
-                  lastCompleted: new Date().toISOString()
-                },
-                canRestart: false,
-              },
-            });
-          }
-        }, 2000); // Wait 2 seconds for server to process
-        
-        return true;
-      } else {
-        console.error("❌ Processing completion failed:", result.message);
         chrome.runtime.sendMessage({
           type: "PROCESS_STATUS",
           data: {
-            status: "error",
-            message: `❌ Failed to complete processing: ${result.message}`,
-          },
-        });
-        return false;
-      }
-    } catch (error) {
-      console.error("❌ Error during processing completion:", error);
-      chrome.runtime.sendMessage({
-        type: "PROCESS_STATUS",
-        data: {
-          status: "error",
-          message: `❌ Error completing processing: ${error.message}`,
-        },
-      });
-      return false;
-    }
-  };
-
-  // **NEW** Handle restarting after cancellation
-  const handleRestartAfterCancel = async (resetContacts = true) => {
-    const userId = getUserId();
-    console.log("🔄 Attempting to restart after cancellation for user:", userId);
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/restart-after-cancel/${encodeURIComponent(userId)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          reason: 'User manual restart from extension after cancellation',
-          resetContacts: resetContacts
-        })
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        console.log("✅ Processing restarted successfully:", result.message);
-        
-        // Clear any previous job status and monitoring
-        setJobStatus(null);
-        
-        if (jobMonitorInterval.current) {
-          window.clearInterval(jobMonitorInterval.current);
-          jobMonitorInterval.current = null;
-          console.log("🧹 Cleared monitoring during restart");
-        }
-        
-        // Set new job status
-        const newJobStatus: JobStatus = {
-          jobId: result.newJob.jobId,
-          status: "processing",
-          totalContacts: result.newJob.totalContacts,
-          processedCount: result.newJob.processedCount,
-          successCount: result.newJob.successCount,
-          failureCount: 0,
-          createdAt: new Date().toISOString(),
-        };
-        
-        setJobStatus(newJobStatus);
-        
-        // Send restart message
-        chrome.runtime.sendMessage({
-          type: "PROCESS_STATUS",
-          data: {
-            status: "restarted",
-            message: result.message,
-            progress: {
-              total: result.newJob.totalContacts,
-              processed: result.newJob.processedCount,
-              success: result.newJob.successCount,
-              failed: 0,
-            },
+            status: "ready",
+            message: "✅ Processing cancelled successfully. Ready to start new processing.",
           },
         });
         
         return true;
       } else {
-        console.error("❌ Processing restart failed:", result.message);
+        console.error("❌ Processing cancellation failed:", result.message);
         chrome.runtime.sendMessage({
           type: "PROCESS_STATUS",
           data: {
             status: "error",
-            message: `❌ Failed to restart processing: ${result.message}`,
+            message: `❌ Failed to cancel processing: ${result.message}`,
           },
         });
         return false;
       }
     } catch (error) {
-      console.error("❌ Error during processing restart:", error);
+      console.error("❌ Error during cancellation:", error);
       chrome.runtime.sendMessage({
         type: "PROCESS_STATUS",
         data: {
           status: "error",
-          message: `❌ Error restarting processing: ${error.message}`,
+          message: `❌ Error cancelling processing: ${error.message}`,
         },
       });
       return false;
@@ -1455,7 +1346,6 @@ function App() {
                 authError={authError}
                 onOverrideCooldown={handleOverrideCooldown}
                 onStopProcessing={handleStopProcessing}
-                onRestartAfterCancel={handleRestartAfterCancel}
               />
               <span
                 onClick={() => {
