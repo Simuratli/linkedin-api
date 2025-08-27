@@ -2993,6 +2993,7 @@ app.post("/restart-processing/:userId", async (req, res) => {
             updateType: 'CRM_REFRESH'
           });
           
+
           if (contactsWithLinkedIn.length > 0) {
             // Update job with fresh contacts
             currentJob.contacts = contactsWithLinkedIn;
@@ -3003,7 +3004,6 @@ app.post("/restart-processing/:userId", async (req, res) => {
             console.log(`⚠️ No valid LinkedIn URLs found in ${totalFromCRM} CRM contacts, keeping existing contacts`);
             
             // Reset existing contacts to pending
-            console.log(currentJob,'currentJob if not exist')
             if (currentJob.contacts) {
               currentJob.contacts.forEach(contact => {
                 contact.status = 'pending';
@@ -3019,8 +3019,9 @@ app.post("/restart-processing/:userId", async (req, res) => {
           
         } else {
           console.log(`⚠️ No contacts returned from CRM API for user ${userId}, keeping existing contacts`);
-          
+          console.log(currentJob,'currentjhob')
           // Reset existing contacts to pending
+            currentJob.status = 'processing'; 
           if (currentJob.contacts) {
             currentJob.contacts.forEach(contact => {
               contact.status = 'pending';
