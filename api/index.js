@@ -1014,6 +1014,15 @@ const processJobInBackground = async (jobId) => {
       job.processedInSession = processedInSession;
       await saveJobs({ ...(await loadJobs()), [jobId]: job });
       
+      // **CRITICAL FIX** - Check if job has been cancelled before continuing
+      const latestJobs = await loadJobs();
+      const latestJob = latestJobs[jobId];
+      if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed") {
+        console.log(`🛑 Job ${jobId} has been cancelled/failed. Stopping background processing.`);
+        console.log(`Current status: ${latestJob?.status || 'NOT_FOUND'}`);
+        return; // Exit the processing loop immediately
+      }
+      
       // Check if pattern has changed
       const newPattern = getCurrentHumanPattern();
       if (newPattern.name !== currentPatternName) {
@@ -1155,6 +1164,14 @@ const processJobInBackground = async (jobId) => {
       // Her işlem için detaylı log kayıtları tutacak şekilde yapıyı değiştiriyorum
       const batchPromises = batch.map(async (contact) => {
         try {
+          // **CRITICAL FIX** - Check if job has been cancelled before processing each contact
+          const latestJobs = await loadJobs();
+          const latestJob = latestJobs[jobId];
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed") {
+            console.log(`🛑 Job ${jobId} cancelled during contact processing. Skipping contact ${contact.contactId}`);
+            throw new Error(`Job cancelled - status: ${latestJob?.status || 'NOT_FOUND'}`);
+          }
+          
           console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
           contact.status = "processing";
 
