@@ -3021,17 +3021,19 @@ app.post("/restart-processing/:userId", async (req, res) => {
           console.log(`⚠️ No contacts returned from CRM API for user ${userId}, keeping existing contacts`);
           console.log(currentJob,'currentjhob')
           // Reset existing contacts to pending
-            currentJob.status = 'processing'; 
-            currentJob.successCount = 0; 
-            currentJob.totalContacts = 0; 
-            currentJob.processedCount = 0; 
-            currentJob.currentBatchIndex = 0; 
+            
           if (currentJob.contacts) {
             currentJob.contacts.forEach(contact => {
               contact.status = 'pending';
               contact.error = null;
             });
             currentJob.totalContacts = currentJob.contacts.length;
+            currentJob.status = 'processing'; 
+            currentJob.successCount = 0; 
+            currentJob.totalContacts = 0; 
+            currentJob.processedCount = 0; 
+            currentJob.currentBatchIndex = 0; 
+            currentJob.cooldownOverridden = false; 
           } else {
             currentJob.contacts = [];
             currentJob.totalContacts = 0;

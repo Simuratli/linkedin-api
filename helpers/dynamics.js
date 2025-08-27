@@ -90,16 +90,16 @@ async function getDataverse(url, token) {
     "OData-Version": "4.0",
   };
 
-  console.log(headers,'headers getDataverse')
 
   const options = {
     method: "GET",
     headers: headers,
   };
+    console.log(`urloepte`,url,options);
+  
 
   try {
     const response = await fetch(url, options);
-    console.log(`Response status inside dynamics: ${response.status} ${response.statusText}`);
     if (!response.ok) {
       let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
       
