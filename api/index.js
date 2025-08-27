@@ -395,6 +395,38 @@ const callDataverseWithRefresh = async (
   }
 };
 
+// **NEW** Check and set user cooldown after job completion
+const checkAndSetUserCooldown = async (userId) => {
+  try {
+    console.log(`🔍 Setting cooldown for user: ${userId}`);
+    
+    // Load user sessions to update cooldown
+    const userSessions = await loadUserSessions();
+    
+    if (!userSessions[userId]) {
+      console.log(`⚠️ User session not found for: ${userId}, creating new session`);
+      userSessions[userId] = {};
+    }
+    
+    // Set cooldown info - 30 days from now
+    const now = new Date();
+    const cooldownEndDate = new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000)); // 30 days
+    
+    userSessions[userId].lastJobCompleted = now.toISOString();
+    userSessions[userId].cooldownEndDate = cooldownEndDate.toISOString();
+    userSessions[userId].cooldownActive = true;
+    
+    // Save updated sessions
+    await saveUserSessions(userSessions);
+    
+    console.log(`✅ Cooldown set for user ${userId} until ${cooldownEndDate.toISOString()}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Error setting cooldown for user ${userId}:`, error);
+    return false;
+  }
+};
+
 // CORS setup
 app.use(cors());
 app.use((req, res, next) => {
