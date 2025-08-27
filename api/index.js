@@ -3022,6 +3022,10 @@ app.post("/restart-processing/:userId", async (req, res) => {
           console.log(currentJob,'currentjhob')
           // Reset existing contacts to pending
             currentJob.status = 'processing'; 
+            currentJob.successCount = 0; 
+            currentJob.totalContacts = 0; 
+            currentJob.processedCount = 0; 
+            currentJob.currentBatchIndex = 0; 
           if (currentJob.contacts) {
             currentJob.contacts.forEach(contact => {
               contact.status = 'pending';

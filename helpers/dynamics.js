@@ -90,6 +90,8 @@ async function getDataverse(url, token) {
     "OData-Version": "4.0",
   };
 
+  console.log(headers,'headers getDataverse')
+
   const options = {
     method: "GET",
     headers: headers,
