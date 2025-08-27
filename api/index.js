@@ -456,6 +456,22 @@ app.post("/start-processing", async (req, res) => {
     const allJobs = await loadJobs();
     const now = new Date();
 
+
+    // Check for cooldownOverridden on last completed job
+    const userJobsArr = Object.values(allJobs).filter(job => job.userId === userId);
+    const completedJobsArr = userJobsArr.filter(job => job.status === "completed" && job.completedAt)
+      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+    const lastCompletedJob = completedJobsArr.length > 0 ? completedJobsArr[0] : null;
+    if (lastCompletedJob && lastCompletedJob.cooldownOverridden) {
+      return res.status(403).json({
+        success: false,
+        message: "You cannot start a new job. Cooldown is overridden for this user. Please wait 1 month or contact admin.",
+        cooldownOverridden: true,
+        overriddenAt: lastCompletedJob.overriddenAt,
+        jobId: lastCompletedJob.jobId
+      });
+    }
+
     // First check if there's any existing incomplete job
     let currentIncompleteJob = null;
     for (const job of Object.values(allJobs)) {
@@ -3655,46 +3671,65 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     const cancelledJobs = [];
     const now = new Date().toISOString();
     
-    // Cancel each active job
+    // Complete each active job
     for (const job of userActiveJobs) {
-      console.log(`🛑 Cancelling job ${job.jobId}`);
-      
-      job.status = "cancelled";
-      job.cancelledAt = now;
-      job.cancellationReason = reason;
+      console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
+      // Mark all remaining pending/processing contacts as completed
+      let newlyCompletedCount = 0;
+      if (job.contacts) {
+        job.contacts.forEach(contact => {
+          if (contact.status === "pending" || contact.status === "processing") {
+            contact.status = "completed";
+            contact.completedAt = now;
+            contact.error = null;
+            newlyCompletedCount++;
+          }
+        });
+      }
+      // Update job counts
+      job.successCount = (job.successCount || 0) + newlyCompletedCount;
+      job.processedCount = job.successCount + (job.failureCount || 0);
+      // Mark job as completed
+      job.status = "completed";
+      job.completedAt = now;
+      job.completionReason = reason;
+      job.manualCompletion = true;
       job.lastProcessedAt = now;
-      
-      if (!job.errors) job.errors = [];
-      job.errors.push({
-        contactId: 'SYSTEM',
-        error: `Job cancelled by user: ${reason}`,
-        timestamp: now
-      });
-      
+      // Mark cooldown as overridden to prevent unwanted restart
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
       jobs[job.jobId] = job;
-      
       cancelledJobs.push({
         jobId: job.jobId,
         status: job.status,
         processedCount: job.processedCount,
-        totalContacts: job.totalContacts
+        totalContacts: job.totalContacts,
+        newlyCompletedCount
       });
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
     }
-    
     await saveJobs(jobs);
-    
-    // Clear current job ID from user session
+
+    // Clear current job ID from user session and set cooldownOverridden
     const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
+      userSessions[userId].cooldownOverridden = true;
+      userSessions[userId].overriddenAt = now;
     }
     await saveUserSessions(userSessions);
-    
+
     res.status(200).json({
       success: true,
-      message: "Processing cancelled successfully",
-      cancelledJobs
+      message: "Processing completed successfully. All remaining contacts marked as successful.",
+      completedJobs: cancelledJobs,
+      debugInfo: {
+        jobsCompleted: cancelledJobs.length,
+        cooldownOverridden: true,
+        userSessionUpdated: !!userSessions[userId],
+        nextStep: "Reload the extension to see updated status"
+      }
     });
     
   } catch (error) {
@@ -3783,13 +3818,22 @@ app.post("/complete-processing/:userId", async (req, res) => {
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
+      // **CRITICAL FIX**: Also mark cooldown as overridden in user session
+      userSessions[userId].cooldownOverridden = true;
+      userSessions[userId].overriddenAt = now;
     }
     await saveUserSessions(userSessions);
     
     res.status(200).json({
       success: true,
       message: "Processing completed successfully. All remaining contacts marked as successful.",
-      completedJobs
+      completedJobs,
+      debugInfo: {
+        jobsCompleted: completedJobs.length,
+        cooldownOverridden: true,
+        userSessionUpdated: !!userSessions[userId],
+        nextStep: "Reload the extension to see updated status"
+      }
     });
     
   } catch (error) {
