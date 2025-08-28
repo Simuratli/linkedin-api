@@ -1067,6 +1067,11 @@ const processJobInBackground = async (jobId) => {
       if (freshJob.status === "cancelled") {
         console.log(`🛑 Job ${jobId} cancelled via API call. Terminating background processing.`);
         return;
+    }
+
+    if (freshJob.status === "paused") {
+       console.log(`⏸️ Job ${jobId} paused via API call. Terminating background processing.`);
+       return;
       }
       
       if (freshJob.status === "failed") {
@@ -1239,8 +1244,14 @@ const processJobInBackground = async (jobId) => {
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
           
+
           if (!latestJob || ["completed", "cancelled", "failed"].includes(latestJob.status)) {
             console.log(`🛑 Job ${jobId} status changed to ${latestJob?.status || 'NOT_FOUND'} during contact processing. Stopping immediately.`);
+            return;
+          }
+
+          if (latestJob.status === "paused") {
+            console.log(`⏸️ Job ${jobId} paused during contact processing. Stopping immediately.`);
             return;
           }
 
@@ -1481,6 +1492,10 @@ const processJobInBackground = async (jobId) => {
             console.log(`🛑 Job ${jobId} completed/cancelled during break. Stopping processing.`);
             return;
           }
+          if (latestJob.status === "paused") {
+            console.log(`⏸️ Job ${jobId} paused during break. Stopping processing.`);
+            return;
+          }
         }
 
         // Wait between batches with human pattern timing (skip for first batch)
@@ -1500,6 +1515,10 @@ const processJobInBackground = async (jobId) => {
           const latestJob = latestJobs[jobId];
           if (!latestJob || ["completed", "cancelled", "failed"].includes(latestJob.status) || latestJob.manualCompletion) {
             console.log(`🛑 Job ${jobId} completed/cancelled during delay. Stopping processing.`);
+            return;
+          }
+          if (latestJob.status === "paused") {
+            console.log(`⏸️ Job ${jobId} paused during delay. Stopping processing.`);
             return;
           }
         }
