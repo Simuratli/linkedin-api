@@ -3822,20 +3822,19 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       for (const job of userActiveJobs) {
         console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
         // Mark all remaining pending/processing contacts as completed
-        let newlyCompletedCount = 0;
         if (job.contacts) {
           job.contacts.forEach(contact => {
             if (contact.status === "pending" || contact.status === "processing") {
               contact.status = "completed";
               contact.completedAt = now;
               contact.error = null;
-              newlyCompletedCount++;
             }
           });
         }
-        // Update job counts
-        job.successCount = (job.successCount || 0) + newlyCompletedCount;
-        job.processedCount = job.successCount + (job.failureCount || 0);
+        // Tüm contact'lara göre sayıları güncelle
+        job.successCount = job.contacts ? job.contacts.filter(c => c.status === "completed").length : 0;
+        job.failureCount = job.contacts ? job.contacts.filter(c => c.status === "failed").length : 0;
+        job.processedCount = job.successCount + job.failureCount;
         // currentBatchIndex'i de tamamlanmış gibi ayarla
         job.currentBatchIndex = job.totalContacts;
         // Mark job as complet
