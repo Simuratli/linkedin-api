@@ -461,8 +461,9 @@ app.post("/start-processing", async (req, res) => {
     const now = new Date();
 
     // Find all jobs for this user and CRM
-    const userJobsArr = Object.values(allJobs).filter(job => job.userId === userId && normalizeCrmUrl(job.crmUrl) === normalizedCrm);
-    const completedJobsArr = userJobsArr.filter(job => job.status === "completed" && job.completedAt)
+    // Find all jobs for this CRM (userId bağımsız)
+    const crmJobsArr = Object.values(allJobs).filter(job => normalizeCrmUrl(job.crmUrl) === normalizedCrm);
+    const completedJobsArr = crmJobsArr.filter(job => job.status === "completed" && job.completedAt)
       .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
     const lastCompletedJob = completedJobsArr.length > 0 ? completedJobsArr[0] : null;
 
@@ -496,8 +497,8 @@ app.post("/start-processing", async (req, res) => {
 
     // First check if there's any existing incomplete job for this CRM and user
     let currentIncompleteJob = null;
-    for (const job of Object.values(allJobs)) {
-      if (job.userId === userId && normalizeCrmUrl(job.crmUrl) === normalizedCrm && job.status !== "completed" && job.status !== "cancelled" && job.contacts && job.processedCount < job.totalContacts) {
+    for (const job of crmJobsArr) {
+      if (job.status !== "completed" && job.status !== "cancelled" && job.contacts && job.processedCount < job.totalContacts) {
         currentIncompleteJob = job;
         break;
       }
