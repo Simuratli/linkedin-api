@@ -979,6 +979,7 @@ const processJobInBackground = async (jobId) => {
     return;
   }
 
+
   if (job.status === "completed") {
     console.log(`⏹️ Job ${jobId} is already completed - terminating background processing`);
     return;
@@ -987,6 +988,14 @@ const processJobInBackground = async (jobId) => {
   if (job.status === "cancelled") {
     console.log(`🛑 Job ${jobId} is cancelled - terminating background processing`);
     return;
+  }
+
+  // --- CRITICAL: Always reset currentBatchIndex to 0 if there are pending contacts ---
+  if (Array.isArray(job.contacts)) {
+    const pendingContacts = job.contacts.filter((c) => c.status === "pending");
+    if (pendingContacts.length > 0) {
+      job.currentBatchIndex = 0;
+    }
   }
 
   const userSession = userSessions[job.userId];
@@ -3679,6 +3688,7 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
   job.restartedAt = new Date().toISOString();
   job.restartCount = (job.restartCount || 0) + 1;
   job.status = "processing";
+  job.currentBatchIndex = 0;
 
   // Clear any pause reasons and force stop/manual flags
   delete job.pauseReason;
