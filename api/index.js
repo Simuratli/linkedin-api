@@ -34,9 +34,6 @@ const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Global map to control background job abortion
-const processingJobs = {};
-
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
 const BURST_LIMIT = 15; // Max profiles in one hour (fallback)
@@ -456,37 +453,16 @@ app.post("/start-processing", async (req, res) => {
     // Enhanced limit checking with CRM-based sharing
     const limitCheck = await checkDailyLimit(userId, crmUrl);
 
-    // Declare normalizedCrm once for the whole endpoint
-    const normalizedCrm = normalizeCrmUrl(crmUrl);
-
     // Load jobs once at the start
     const allJobs = await loadJobs();
     const now = new Date();
 
-    // Find all jobs for this user and CRM
-    const userJobsArr = Object.values(allJobs).filter(job => job.userId === userId && normalizeCrmUrl(job.crmUrl) === normalizedCrm);
+
+    // Check for cooldownOverridden on last completed job
+    const userJobsArr = Object.values(allJobs).filter(job => job.userId === userId);
     const completedJobsArr = userJobsArr.filter(job => job.status === "completed" && job.completedAt)
       .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
     const lastCompletedJob = completedJobsArr.length > 0 ? completedJobsArr[0] : null;
-
-    // If there is a completed job for this CRM and user, and cooldown is NOT overridden, reuse the job and do not create a new one
-    if (lastCompletedJob && !lastCompletedJob.cooldownOverridden && !resume) {
-      // Prevent new job creation, return the existing completed job
-      return res.status(200).json({
-        success: true,
-        message: "Job already completed for this CRM. Cooldown not overridden. Reusing completed job.",
-        jobId: lastCompletedJob.jobId,
-        totalContacts: lastCompletedJob.totalContacts,
-        processedCount: lastCompletedJob.processedCount,
-        status: lastCompletedJob.status,
-        currentPattern: limitCheck.currentPattern,
-        limitInfo: limitCheck,
-        cooldownOverridden: false,
-        completedAt: lastCompletedJob.completedAt
-      });
-    }
-
-    // If cooldown is overridden, block new job creation for 1 month (existing logic)
     if (lastCompletedJob && lastCompletedJob.cooldownOverridden) {
       return res.status(403).json({
         success: false,
@@ -497,10 +473,13 @@ app.post("/start-processing", async (req, res) => {
       });
     }
 
-    // First check if there's any existing incomplete job for this CRM and user
+    // First check if there's any existing incomplete job
     let currentIncompleteJob = null;
     for (const job of Object.values(allJobs)) {
-      if (job.userId === userId && normalizeCrmUrl(job.crmUrl) === normalizedCrm && job.status !== "completed" && job.status !== "cancelled" && job.contacts && job.processedCount < job.totalContacts) {
+      if (job.userId === userId && 
+          job.status !== "completed" && 
+          job.contacts && 
+          job.processedCount < job.totalContacts) {
         currentIncompleteJob = job;
         break;
       }
@@ -623,9 +602,9 @@ app.post("/start-processing", async (req, res) => {
     const userSessions = await loadUserSessions();
     
     // Check for existing CRM-wide job (shared across all users of same CRM)
-  let existingJob = null;
-  let jobId = null;
-  // const normalizedCrm = normalizeCrmUrl(crmUrl); // Already declared above
+    let existingJob = null;
+    let jobId = null;
+    const normalizedCrm = normalizeCrmUrl(crmUrl);
 
     // First, check if there are any incomplete jobs for this CRM (not just user)
     for (const job of Object.values(jobs)) {
@@ -3868,8 +3847,6 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         job.cooldownOverridden = true;
         job.overriddenAt = now;
         jobs[job.jobId] = job;
-        // Set abort flag for this jobId in global map
-        processingJobs[job.jobId] = { aborted: true };
         cancelledJobs.push({
           jobId: job.jobId,
           status: job.status,
