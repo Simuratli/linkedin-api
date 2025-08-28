@@ -1427,8 +1427,10 @@ const processJobInBackground = async (jobId) => {
         await saveJobs(currentJobs);
         console.log(`💾 İşlem durumu kaydedildi`);
 
-        // Human-like behavior: Check for pattern-aware breaks
-        const breakTime = shouldTakeBreak(processedInSession);
+
+        // Human-like behavior: Check for pattern-aware breaks (skip for first batch)
+        let breakTime = shouldTakeBreak(processedInSession);
+        if (batchIndex === 0) breakTime = 0;
         if (breakTime > 0) {
           const breakMinutes = Math.round(breakTime / 1000 / 60);
           console.log(
@@ -1436,7 +1438,6 @@ const processJobInBackground = async (jobId) => {
           );
           await new Promise((resolve) => setTimeout(resolve, breakTime));
           console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
-          
           // **ADDITIONAL STATUS CHECK** - Check if job completed during break
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
@@ -1446,15 +1447,17 @@ const processJobInBackground = async (jobId) => {
           }
         }
 
-        // Wait between batches with human pattern timing
+        // Wait between batches with human pattern timing (skip for first batch)
         if (batchIndex < contactBatches.length - 1) {
-          const waitTime = getHumanPatternDelay();
-          console.log(
-            `⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`
-          );
-          await new Promise((resolve) => setTimeout(resolve, waitTime));
-          console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
-          
+          let waitTime = getHumanPatternDelay();
+          if (batchIndex === 0) waitTime = 0;
+          if (waitTime > 0) {
+            console.log(
+              `⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitTime));
+            console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
+          }
           // **ADDITIONAL STATUS CHECK** - Check if job completed during delay
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
