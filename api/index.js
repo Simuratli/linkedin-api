@@ -3449,11 +3449,25 @@ app.get("/can-override-cooldown/:userId", async (req, res) => {
     const jobs = await loadJobs();
     const userJobs = Object.values(jobs).filter(job => job.userId === userId);
     
+    // Eğer aktif bir job varsa override butonu gösterilmesin
+    const activeJob = userJobs.find(job => 
+      job.status === "processing" || job.status === "pending" || job.status === "paused"
+    );
+    if (activeJob) {
+      return res.status(200).json({
+        success: true,
+        canOverride: false,
+        inCooldown: false,
+        reason: "Active job exists",
+        activeJobId: activeJob.jobId
+      });
+    }
+
     // Find the most recent completed job
     const completedJobs = userJobs
       .filter(job => job.status === "completed" && job.completedAt)
       .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-    
+
     if (completedJobs.length === 0) {
       return res.status(200).json({
         success: true,
@@ -3462,19 +3476,19 @@ app.get("/can-override-cooldown/:userId", async (req, res) => {
         inCooldown: false
       });
     }
-    
+
     const lastCompletedJob = completedJobs[0];
     const completedAt = new Date(lastCompletedJob.completedAt);
     const now = new Date();
     const daysSinceCompletion = Math.floor((now - completedAt) / (1000 * 60 * 60 * 24));
     const daysRemaining = Math.max(0, 30 - daysSinceCompletion);
-    
+
     // Check if already overridden
     const alreadyOverridden = lastCompletedJob.cooldownOverridden;
-    
+
     // Check if in cooldown period
     const inCooldown = daysSinceCompletion < 30 && !alreadyOverridden;
-    
+
     res.status(200).json({
       success: true,
       canOverride: inCooldown,
