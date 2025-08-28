@@ -3758,6 +3758,15 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     }
     await saveUserSessions(userSessions);
 
+    // After jobs are completed, set cooldown if needed
+    try {
+      const { checkAndSetUserCooldown } = require("../helpers/db");
+      await checkAndSetUserCooldown(userId);
+      console.log(`✅ checkAndSetUserCooldown called for user ${userId} after cancel-processing.`);
+    } catch (cooldownError) {
+      console.error(`❌ Error calling checkAndSetUserCooldown: ${cooldownError.message}`);
+    }
+
     res.status(200).json({
       success: true,
       message: "Processing completed successfully. All remaining contacts marked as successful.",
