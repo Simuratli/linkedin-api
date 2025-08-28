@@ -1080,13 +1080,8 @@ const processJobInBackground = async (jobId) => {
       if (freshJob.status === "cancelled") {
         console.log(`🛑 Job ${jobId} cancelled via API call. Terminating background processing.`);
         return;
-    }
-
-    if (freshJob.status === "paused") {
-       console.log(`⏸️ Job ${jobId} paused via API call. Terminating background processing.`);
-       return;
       }
-      
+
       if (freshJob.status === "failed") {
         console.log(`🛑 Job ${jobId} marked as failed. Terminating background processing.`);
         return;
@@ -1100,7 +1095,7 @@ const processJobInBackground = async (jobId) => {
 
       // Update memory job with fresh data but preserve processing state
       job = { ...freshJob };
-      job.currentBatchIndex = batchIndex;
+      // job.currentBatchIndex = batchIndex; // KALDIRILDI: currentBatchIndex sadece job başlatılırken 0 olmalı
       job.currentPatternName = currentPatternName;
       job.processedInSession = processedInSession;
       if (job.status !== "paused") {
