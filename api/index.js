@@ -3836,34 +3836,15 @@ app.post("/cancel-processing/:userId", async (req, res) => {
 
       // Complete each active job with stronger stop signals
       for (const job of userActiveJobs) {
-        console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
-        // Mark all remaining pending/processing contacts as completed
-        if (job.contacts) {
-          job.contacts.forEach(contact => {
-            if (contact.status === "pending" || contact.status === "processing") {
-              contact.status = "completed";
-              contact.completedAt = now;
-              contact.error = null;
-            }
-          });
-        }
-        // Tüm contact'lara göre sayıları güncelle
-        job.successCount = job.contacts ? job.contacts.filter(c => c.status === "completed").length : 0;
-        job.failureCount = job.contacts ? job.contacts.filter(c => c.status === "failed").length : 0;
-        job.processedCount = job.successCount + job.failureCount;
-        // currentBatchIndex'i de tamamlanmış gibi ayarla
-        job.currentBatchIndex = job.totalContacts;
-        // 🔥 CRITICAL: Strong stop signals for background loop
-        job.status = "completed";
-        job.completedAt = now;
-        job.completionReason = reason;
-        job.manualCompletion = true;
+        console.log(`⏸️ Pausing job ${job.jobId} (via cancel-processing)`);
+        // Do NOT mark contacts as completed, just pause the job
+        job.status = "paused";
+        job.pauseReason = reason || "User cancelled processing";
+        job.pausedAt = now;
+        job.manualPause = true;
         job.forceStop = true; // Additional flag for background loop
         job.forceStopTime = now;
         job.lastProcessedAt = now;
-        // Mark cooldown as overridden to prevent unwanted restart
-        job.cooldownOverridden = true;
-        job.overriddenAt = now;
         jobs[job.jobId] = job;
         cancelledJobs.push({
           jobId: job.jobId,
@@ -3871,7 +3852,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
           processedCount: job.processedCount,
           totalContacts: job.totalContacts
         });
-        console.log(`✅ Job ${job.jobId} completed with strong stop signals: all contacts marked as successful, cooldown overridden, force stop enabled`);
+        console.log(`⏸️ Job ${job.jobId} paused with strong stop signals: force stop enabled`);
       }
       
       // 🔥 IMPORTANT: Save jobs TWICE to ensure persistence
