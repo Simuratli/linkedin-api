@@ -453,13 +453,14 @@ app.post("/start-processing", async (req, res) => {
     // Enhanced limit checking with CRM-based sharing
     const limitCheck = await checkDailyLimit(userId, crmUrl);
 
+    // Declare normalizedCrm once for the whole endpoint
+    const normalizedCrm = normalizeCrmUrl(crmUrl);
 
     // Load jobs once at the start
     const allJobs = await loadJobs();
     const now = new Date();
 
     // Find all jobs for this user and CRM
-  // const normalizedCrm = normalizeCrmUrl(crmUrl); // Already declared above
     const userJobsArr = Object.values(allJobs).filter(job => job.userId === userId && normalizeCrmUrl(job.crmUrl) === normalizedCrm);
     const completedJobsArr = userJobsArr.filter(job => job.status === "completed" && job.completedAt)
       .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
