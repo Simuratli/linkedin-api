@@ -3856,15 +3856,38 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
     }
 
+    // --- CLEAR HOURLY/DAILY LIMITS ---
+    try {
+      const fileLock = require('./helpers/fileLock');
+      // Clear daily_stats.json
+      const dailyStatsPath = './data/daily_stats.json';
+      const dailyStats = await fileLock.readJsonFile(dailyStatsPath);
+      if (dailyStats[userId]) {
+        delete dailyStats[userId];
+        await fileLock.writeJsonFile(dailyStatsPath, dailyStats);
+        console.log(`🧹 Cleared daily_stats for user ${userId}`);
+      }
+      // Clear daily_rate_limits.json
+      const rateLimitsPath = './data/daily_rate_limits.json';
+      const rateLimits = await fileLock.readJsonFile(rateLimitsPath);
+      if (rateLimits[userId]) {
+        delete rateLimits[userId];
+        await fileLock.writeJsonFile(rateLimitsPath, rateLimits);
+        console.log(`🧹 Cleared daily_rate_limits for user ${userId}`);
+      }
+    } catch (limitError) {
+      console.log(`⚠️ Could not clear limits for user ${userId}: ${limitError.message}`);
+    }
+
     res.status(200).json({
       success: true,
-      message: "Processing completed successfully. All remaining contacts marked as successful.",
+      message: "Processing completed successfully. All remaining contacts marked as successful. Limits cleared.",
       completedJobs: cancelledJobs,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
         cooldownOverridden: true,
         userSessionUpdated: !!userSessions[userId],
-        nextStep: "Reload the extension to see updated status"
+        nextStep: "Reload the extension to see updated status and limits"
       }
     });
     
