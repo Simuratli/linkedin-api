@@ -3851,10 +3851,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
           jobId: job.jobId,
           status: job.status,
           processedCount: job.processedCount,
-          totalContacts: job.totalContacts,
-          newlyCompletedCount
+          totalContacts: job.totalContacts
         });
-        console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden, currentBatchIndex set to totalContacts`);
+        console.log(`✅ Job ${job.jobId} completed: all contacts marked as successful, cooldown overridden, currentBatchIndex set to totalContacts`);
       }
       await saveJobs(jobs);
 
