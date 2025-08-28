@@ -1049,6 +1049,11 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
+      // PAUSE KONTROLÜ: batch başında
+      if (freshJob.status === "paused") {
+        console.log(`⏸️ Job ${jobId} paused at batch start. Exiting loop.`);
+        return;
+      }
 
       // 🔥 CRITICAL: Fresh load job from disk at start of every batch
       const freshJobs = await loadJobs();
@@ -1240,6 +1245,11 @@ const processJobInBackground = async (jobId) => {
         console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
         
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
+          // PAUSE KONTROLÜ: contact başında
+          if (latestJob.status === "paused") {
+            console.log(`⏸️ Job ${jobId} paused at contact start. Exiting loop.`);
+            return;
+          }
 
           // 🔥 CRITICAL: Fresh load before each contact processing
           const latestJobs = await loadJobs();
@@ -1263,10 +1273,16 @@ const processJobInBackground = async (jobId) => {
 
           // Update memory job with latest data
           Object.assign(job, latestJob);
-          
+
+          // PAUSE KONTROLÜ: kayıttan hemen önce
+          if (job.status === "paused") {
+            console.log(`⏸️ Job ${jobId} paused before contact save. Exiting loop.`);
+            return;
+          }
+
           const contact = batch[contactIndex];
 
-          // Mark contact as processing and save immediately
+          // Mark contact as processing ve kaydet
           contact.status = "processing";
           const jobsToSave = await loadJobs();
           jobsToSave[jobId] = job;
