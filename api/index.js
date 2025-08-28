@@ -1210,14 +1210,25 @@ const processJobInBackground = async (jobId) => {
         
         // Process contacts one by one to avoid Promise.allSettled issues
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
-        // Her contact'tan önce job'un güncel halini tekrar kontrol et
+
+        // Her contact'tan önce job'un güncel halini tekrar kontrol et ve memory'deki job'u güncelle
         const jobsLatestContact = await loadJobs();
         const jobLatestContact = jobsLatestContact[jobId];
         if (!jobLatestContact || ["completed", "cancelled", "failed"].includes(jobLatestContact.status)) {
           console.log(`🛑 Job ${jobId} cancelled/completed/failed (contact başı kontrol). Stopping processing loop.`);
           return;
         }
+        Object.assign(job, jobLatestContact); // Memory'deki job'u güncelle
         const contact = batch[contactIndex];
+
+        // --- DB'ye kaydetmeden hemen önce tekrar kontrol et ---
+        const jobsBeforeSave = await loadJobs();
+        const jobBeforeSave = jobsBeforeSave[jobId];
+        if (!jobBeforeSave || ["completed", "cancelled", "failed"].includes(jobBeforeSave.status)) {
+          console.log(`🛑 Job ${jobId} cancelled/completed/failed (DB save öncesi kontrol). Stopping processing loop.`);
+          return;
+        }
+        Object.assign(job, jobBeforeSave);
 
         // --- YENİ: Contact işlenmeye BAŞLARKEN status'u processing olarak DB'ye kaydet ---
         contact.status = "processing";
