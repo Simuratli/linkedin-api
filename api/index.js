@@ -453,38 +453,16 @@ app.post("/start-processing", async (req, res) => {
     // Enhanced limit checking with CRM-based sharing
     const limitCheck = await checkDailyLimit(userId, crmUrl);
 
-    // Declare normalizedCrm once for the whole endpoint
-    const normalizedCrm = normalizeCrmUrl(crmUrl);
-
     // Load jobs once at the start
     const allJobs = await loadJobs();
     const now = new Date();
 
-    // Find all jobs for this user and CRM
-    // Find all jobs for this CRM (userId bağımsız)
-    const crmJobsArr = Object.values(allJobs).filter(job => normalizeCrmUrl(job.crmUrl) === normalizedCrm);
-    const completedJobsArr = crmJobsArr.filter(job => job.status === "completed" && job.completedAt)
+
+    // Check for cooldownOverridden on last completed job
+    const userJobsArr = Object.values(allJobs).filter(job => job.userId === userId);
+    const completedJobsArr = userJobsArr.filter(job => job.status === "completed" && job.completedAt)
       .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
     const lastCompletedJob = completedJobsArr.length > 0 ? completedJobsArr[0] : null;
-
-    // If there is a completed job for this CRM and user, and cooldown is NOT overridden, reuse the job and do not create a new one
-    if (lastCompletedJob && !lastCompletedJob.cooldownOverridden && !resume) {
-      // Prevent new job creation, return the existing completed job
-      return res.status(200).json({
-        success: true,
-        message: "Job already completed for this CRM. Cooldown not overridden. Reusing completed job.",
-        jobId: lastCompletedJob.jobId,
-        totalContacts: lastCompletedJob.totalContacts,
-        processedCount: lastCompletedJob.processedCount,
-        status: lastCompletedJob.status,
-        currentPattern: limitCheck.currentPattern,
-        limitInfo: limitCheck,
-        cooldownOverridden: false,
-        completedAt: lastCompletedJob.completedAt
-      });
-    }
-
-    // If cooldown is overridden, block new job creation for 1 month (existing logic)
     if (lastCompletedJob && lastCompletedJob.cooldownOverridden) {
       return res.status(403).json({
         success: false,
@@ -495,10 +473,13 @@ app.post("/start-processing", async (req, res) => {
       });
     }
 
-    // First check if there's any existing incomplete job for this CRM and user
+    // First check if there's any existing incomplete job
     let currentIncompleteJob = null;
-    for (const job of crmJobsArr) {
-      if (job.status !== "completed" && job.status !== "cancelled" && job.contacts && job.processedCount < job.totalContacts) {
+    for (const job of Object.values(allJobs)) {
+      if (job.userId === userId && 
+          job.status !== "completed" && 
+          job.contacts && 
+          job.processedCount < job.totalContacts) {
         currentIncompleteJob = job;
         break;
       }
@@ -621,9 +602,9 @@ app.post("/start-processing", async (req, res) => {
     const userSessions = await loadUserSessions();
     
     // Check for existing CRM-wide job (shared across all users of same CRM)
-  let existingJob = null;
-  let jobId = null;
-  // const normalizedCrm = normalizeCrmUrl(crmUrl); // Already declared above
+    let existingJob = null;
+    let jobId = null;
+    const normalizedCrm = normalizeCrmUrl(crmUrl);
 
     // First, check if there are any incomplete jobs for this CRM (not just user)
     for (const job of Object.values(jobs)) {
@@ -965,20 +946,19 @@ app.post("/start-processing", async (req, res) => {
   }
 });
 
-// Enhanced background processing with human patterns and cancel protection
+// Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
   console.log(`🔄 Starting background processing for job: ${jobId}`);
   console.log(`🕐 Process start time: ${new Date().toISOString()}`);
   
   const jobs = await loadJobs();
   const userSessions = await loadUserSessions();
-  let job = jobs[jobId]; // Use 'let' instead of 'const' for reassignment
+  const job = jobs[jobId];
 
   if (!job) {
     console.error(`❌ No job found with ID ${jobId}`);
     return;
   }
-
 
   if (job.status === "completed") {
     console.log(`⏹️ Job ${jobId} is already completed - terminating background processing`);
@@ -988,14 +968,6 @@ const processJobInBackground = async (jobId) => {
   if (job.status === "cancelled") {
     console.log(`🛑 Job ${jobId} is cancelled - terminating background processing`);
     return;
-  }
-
-  // --- CRITICAL: Always reset currentBatchIndex to 0 if there are pending contacts ---
-  if (Array.isArray(job.contacts)) {
-    const pendingContacts = job.contacts.filter((c) => c.status === "pending");
-    if (pendingContacts.length > 0) {
-      job.currentBatchIndex = 0;
-    }
   }
 
   const userSession = userSessions[job.userId];
@@ -1025,21 +997,22 @@ const processJobInBackground = async (jobId) => {
   });
 
   try {
-    // Only set to processing if not paused
-    if (job.status !== "paused") {
-      job.status = "processing";
-      job.lastProcessedAt = new Date().toISOString();
-      job.lastProcessedTime = new Date();
-      // Initialize batch index if not exists
-      if (!job.currentBatchIndex) {
-        job.currentBatchIndex = 0;
-      }
-      // Make sure timestamps are properly set
-      if (!job.createdAt) {
-        job.createdAt = job.startTime || new Date().toISOString();
-      }
-      await saveJobs({ ...jobs, [jobId]: job });
+    // Update job status to processing
+    job.status = "processing";
+    job.lastProcessedAt = new Date().toISOString();
+    job.lastProcessedTime = new Date();
+    
+    // Initialize batch index if not exists
+    if (!job.currentBatchIndex) {
+      job.currentBatchIndex = 0;
     }
+    
+    // Make sure timestamps are properly set
+    if (!job.createdAt) {
+      job.createdAt = job.startTime || new Date().toISOString();
+    }
+    
+    await saveJobs({ ...jobs, [jobId]: job });
 
     const BATCH_SIZE = 1;
     let processedInSession = job.processedInSession || 0;
@@ -1058,53 +1031,22 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
-      // 🔥 CRITICAL: Fresh load job from disk at start of every batch
-      const freshJobs = await loadJobs();
-      const freshJob = freshJobs[jobId];
-      // PAUSE KONTROLÜ: batch başında (freshJob tanımlandıktan sonra)
-      if (freshJob.status === "paused") {
-        console.log(`⏸️ Job ${jobId} paused at batch start. Exiting loop.`);
-        return;
+  // Save progress after each batch (currentBatchIndex bir sonraki batch için güncellenir)
+  job.currentBatchIndex = batchIndex + 1;
+  job.currentPatternName = currentPatternName;
+  job.processedInSession = processedInSession;
+  await saveJobs({ ...(await loadJobs()), [jobId]: job });
+      
+      // **CRITICAL FIX** - Check if job has been cancelled/completed before continuing
+      const latestJobs = await loadJobs();
+      const latestJob = latestJobs[jobId];
+      if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
+        console.log(`🛑 Job ${jobId} has been cancelled/failed/completed. Stopping background processing immediately.`);
+        console.log(`Current status: ${latestJob?.status || 'NOT_FOUND'}`);
+        console.log(`🧹 Terminating all processing for job ${jobId}`);
+        return; // Exit the processing loop immediately
       }
       
-      if (!freshJob) {
-        console.log(`🛑 Job ${jobId} not found in fresh load. Terminating background processing.`);
-        return;
-      }
-      
-      if (freshJob.status === "completed") {
-        console.log(`🛑 Job ${jobId} completed via API call. Terminating background processing.`);
-        return;
-      }
-      
-      if (freshJob.status === "cancelled") {
-        console.log(`🛑 Job ${jobId} cancelled via API call. Terminating background processing.`);
-        return;
-      }
-
-      if (freshJob.status === "failed") {
-        console.log(`🛑 Job ${jobId} marked as failed. Terminating background processing.`);
-        return;
-      }
-
-      // Check for manual completion or force stop flags
-      if (freshJob.manualCompletion || freshJob.forceStop) {
-        console.log(`🛑 Job ${jobId} has manual completion or force stop flag. Terminating background processing.`);
-        return;
-      }
-
-      // Update memory job with fresh data but preserve processing state
-      job = { ...freshJob };
-      // job.currentBatchIndex = batchIndex; // KALDIRILDI: currentBatchIndex sadece job başlatılırken 0 olmalı
-      job.currentPatternName = currentPatternName;
-      job.processedInSession = processedInSession;
-      if (job.status !== "paused") {
-        job.status = "processing";
-        job.lastProcessedAt = new Date().toISOString();
-        // Save the updated state
-        await saveJobs({ ...freshJobs, [jobId]: job });
-      }
-
       // Check if pattern has changed
       const newPattern = getCurrentHumanPattern();
       if (newPattern.name !== currentPatternName) {
@@ -1244,55 +1186,24 @@ const processJobInBackground = async (jobId) => {
       );
 
       try {
-        // Process contacts one by one to avoid Promise.allSettled issues
+        // **IMPROVED** Process each contact with proper error handling
         console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
         
+        // Process contacts one by one to avoid Promise.allSettled issues
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
-          // PAUSE KONTROLÜ: contact başında
-          if (latestJob.status === "paused") {
-            console.log(`⏸️ Job ${jobId} paused at contact start. Exiting loop.`);
-            return;
-          }
-
-          // 🔥 CRITICAL: Fresh load before each contact processing
-          const latestJobs = await loadJobs();
-          const latestJob = latestJobs[jobId];
-          
-
-          if (!latestJob || ["completed", "cancelled", "failed"].includes(latestJob.status)) {
-            console.log(`🛑 Job ${jobId} status changed to ${latestJob?.status || 'NOT_FOUND'} during contact processing. Stopping immediately.`);
-            return;
-          }
-
-          if (latestJob.status === "paused") {
-            console.log(`⏸️ Job ${jobId} paused during contact processing. Stopping immediately.`);
-            return;
-          }
-
-          if (latestJob.manualCompletion || latestJob.forceStop) {
-            console.log(`🛑 Job ${jobId} has manual completion or force stop flag during contact processing. Stopping immediately.`);
-            return;
-          }
-
-          // Update memory job with latest data
-          Object.assign(job, latestJob);
-
-          // PAUSE KONTROLÜ: kayıttan hemen önce
-          if (job.status === "paused") {
-            console.log(`⏸️ Job ${jobId} paused before contact save. Exiting loop.`);
-            return;
-          }
-
           const contact = batch[contactIndex];
-
-          // Mark contact as processing ve kaydet
-          contact.status = "processing";
-          const jobsToSave = await loadJobs();
-          jobsToSave[jobId] = job;
-          await saveJobs(jobsToSave);
-
+          
           try {
+            // **CRITICAL FIX** - Check if job has been cancelled/completed before processing each contact
+            const latestJobs = await loadJobs();
+            const latestJob = latestJobs[jobId];
+            if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
+              console.log(`🛑 Job ${jobId} cancelled/completed during contact processing. Stopping batch processing.`);
+              return;
+            }
+            
             console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
+            contact.status = "processing";
 
             // Get fresh user session for each contact
             const currentUserSessions = await loadUserSessions();
@@ -1445,7 +1356,7 @@ const processJobInBackground = async (jobId) => {
           } catch (error) {
             console.error(`❌ Error processing contact ${contact.contactId}:`, error.message);
 
-            // Always mark contact as failed, never leave in processing state
+            // **CRITICAL FIX** - Always mark contact as failed, never leave in processing state
             contact.status = "failed";
             contact.error = error.message;
             contact.processedAt = new Date().toISOString();
@@ -1494,9 +1405,8 @@ const processJobInBackground = async (jobId) => {
         await saveJobs(currentJobs);
         console.log(`💾 İşlem durumu kaydedildi`);
 
-        // Human-like behavior: Check for pattern-aware breaks (skip for first batch)
-        let breakTime = shouldTakeBreak(processedInSession);
-        if (batchIndex === 0) breakTime = 0;
+        // Human-like behavior: Check for pattern-aware breaks
+        const breakTime = shouldTakeBreak(processedInSession);
         if (breakTime > 0) {
           const breakMinutes = Math.round(breakTime / 1000 / 60);
           console.log(
@@ -1505,40 +1415,29 @@ const processJobInBackground = async (jobId) => {
           await new Promise((resolve) => setTimeout(resolve, breakTime));
           console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
           
-          // Fresh check after break
+          // **ADDITIONAL STATUS CHECK** - Check if job completed during break
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
-          if (!latestJob || ["completed", "cancelled", "failed"].includes(latestJob.status) || latestJob.manualCompletion) {
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
             console.log(`🛑 Job ${jobId} completed/cancelled during break. Stopping processing.`);
-            return;
-          }
-          if (latestJob.status === "paused") {
-            console.log(`⏸️ Job ${jobId} paused during break. Stopping processing.`);
             return;
           }
         }
 
-        // Wait between batches with human pattern timing (skip for first batch)
+        // Wait between batches with human pattern timing
         if (batchIndex < contactBatches.length - 1) {
-          let waitTime = getHumanPatternDelay();
-          if (batchIndex === 0) waitTime = 0;
-          if (waitTime > 0) {
-            console.log(
-              `⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`
-            );
-            await new Promise((resolve) => setTimeout(resolve, waitTime));
-            console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
-          }
+          const waitTime = getHumanPatternDelay();
+          console.log(
+            `⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+          console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
           
-          // Fresh check after delay
+          // **ADDITIONAL STATUS CHECK** - Check if job completed during delay
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
-          if (!latestJob || ["completed", "cancelled", "failed"].includes(latestJob.status) || latestJob.manualCompletion) {
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
             console.log(`🛑 Job ${jobId} completed/cancelled during delay. Stopping processing.`);
-            return;
-          }
-          if (latestJob.status === "paused") {
-            console.log(`⏸️ Job ${jobId} paused during delay. Stopping processing.`);
             return;
           }
         }
@@ -1581,9 +1480,9 @@ const processJobInBackground = async (jobId) => {
     });
     
     if (remainingPending === 0) {
-  job.status = "completed";
-  job.completedAt = new Date().toISOString();
-  job.currentBatchIndex = 0; // İş bittiğinde sıfırla
+      job.status = "completed";
+      job.completedAt = new Date().toISOString();
+      job.currentBatchIndex = 0; // İş bittiğinde sıfırla
 
       // Final pattern history entry
       if (!job.humanPatterns.patternHistory)
@@ -1611,13 +1510,12 @@ const processJobInBackground = async (jobId) => {
       });
       
       // Mark job as stalled and set it up for auto-restart
-      if (job.status !== "paused") {
-        job.status = "processing"; // Keep as processing but mark stall time
-        job.lastProcessedAt = new Date().toISOString();
-        job.stalledAt = new Date().toISOString();
-        job.stalledReason = `${remainingPending} contacts remain pending after background processing completed`;
-        console.log(`🔄 Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
-      }
+      job.status = "processing"; // Keep as processing but mark stall time
+      job.lastProcessedAt = new Date().toISOString();
+      job.stalledAt = new Date().toISOString();
+      job.stalledReason = `${remainingPending} contacts remain pending after background processing completed`;
+      
+      console.log(`🔄 Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
     }
 
     // Final save
@@ -3678,20 +3576,16 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
       console.log(`✅ Created placeholder user session for ${job.userId}`);
     }
     
-  // Reset job state
-  job.lastProcessedAt = new Date().toISOString();
-  job.restartedAt = new Date().toISOString();
-  job.restartCount = (job.restartCount || 0) + 1;
-  job.status = "processing";
-  job.currentBatchIndex = 0;
-
-  // Clear any pause reasons and force stop/manual flags
-  delete job.pauseReason;
-  delete job.pausedAt;
-  delete job.lastError;
-  delete job.forceStop;
-  delete job.manualPause;
-  delete job.forceStopTime;
+    // Reset job state
+    job.lastProcessedAt = new Date().toISOString();
+    job.restartedAt = new Date().toISOString();
+    job.restartCount = (job.restartCount || 0) + 1;
+    job.status = "processing";
+    
+    // Clear any pause reasons
+    delete job.pauseReason;
+    delete job.pausedAt;
+    delete job.lastError;
     
     // Save job
     await saveJobs(jobs);
@@ -3852,162 +3746,104 @@ app.get("/admin/user-data/:userId", async (req, res) => {
   }
 });
 
-// Enhanced Cancel Processing API with stronger signaling
+// Cancel all processing for a user - STOP button functionality
 app.post("/cancel-processing/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason = "User cancelled processing" } = req.body;
-
+    
     console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason });
-
-    // --- Main cancel logic as a function for reuse ---
-    const cancelProcessingLogic = async () => {
-      // Load jobs and find active jobs for this user
-      const jobs = await loadJobs();
-      const userActiveJobs = Object.values(jobs).filter(job =>
-        job.userId === userId &&
-        (job.status === "processing" || job.status === "paused" || job.status === "pending")
-      );
-
-      if (userActiveJobs.length === 0) {
-        return { alreadyCompleted: true, cancelledJobs: [] };
-      }
-
-      console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
-
-      const cancelledJobs = [];
-      const now = new Date().toISOString();
-
-      // Complete each active job with stronger stop signals
-      for (const job of userActiveJobs) {
-        console.log(`⏸️ Pausing job ${job.jobId} (via cancel-processing)`);
-        // Do NOT mark contacts as completed, just pause the job
-        job.status = "paused";
-        job.pauseReason = reason || "User cancelled processing";
-        job.pausedAt = now;
-        job.manualPause = true;
-        job.forceStop = true; // Additional flag for background loop
-        job.forceStopTime = now;
-        job.lastProcessedAt = now;
-        jobs[job.jobId] = job;
-        cancelledJobs.push({
-          jobId: job.jobId,
-          status: job.status,
-          processedCount: job.processedCount,
-          totalContacts: job.totalContacts
-        });
-        console.log(`⏸️ Job ${job.jobId} paused with strong stop signals: force stop enabled`);
-      }
-      
-      // 🔥 IMPORTANT: Save jobs TWICE to ensure persistence
-      await saveJobs(jobs);
-      console.log(`💾 First save completed for ${userActiveJobs.length} jobs`);
-      
-      // Second save after 100ms to ensure write completion
-      await new Promise(resolve => setTimeout(resolve, 100));
-      await saveJobs(jobs);
-      console.log(`💾 Second save completed to ensure persistence`);
-
-      // Clear current job ID from user session and set cooldownOverridden
-      const userSessions = await loadUserSessions();
-      if (userSessions[userId]) {
-        userSessions[userId].currentJobId = null;
-        userSessions[userId].lastActivity = now;
-        userSessions[userId].cooldownOverridden = true;
-        userSessions[userId].overriddenAt = now;
-      }
-      await saveUserSessions(userSessions);
-
-      // Cancelled jobları completed yaptıktan sonra cooldown kaydını oluştur
-      try {
-        const { checkAndSetUserCooldown } = require("../helpers/db");
-        await checkAndSetUserCooldown(userId);
-        console.log(`✅ checkAndSetUserCooldown çağrıldı: ${userId}`);
-      } catch (cooldownError) {
-        console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
-      }
-
-      // --- CLEAR HOURLY/DAILY LIMITS ---
-      try {
-        const fileLock = require('./helpers/fileLock');
-        // Clear daily_stats.json
-        const dailyStatsPath = './data/daily_stats.json';
-        const dailyStats = await fileLock.readJsonFile(dailyStatsPath);
-        if (dailyStats[userId]) {
-          delete dailyStats[userId];
-          await fileLock.writeJsonFile(dailyStatsPath, dailyStats);
-          console.log(`🧹 Cleared daily_stats for user ${userId}`);
-        }
-        // Clear daily_rate_limits.json
-        const rateLimitsPath = './data/daily_rate_limits.json';
-        const rateLimits = await fileLock.readJsonFile(rateLimitsPath);
-        if (rateLimits[userId]) {
-          delete rateLimits[userId];
-          await fileLock.writeJsonFile(rateLimitsPath, rateLimits);
-          console.log(`🧹 Cleared daily_rate_limits for user ${userId}`);
-        }
-      } catch (limitError) {
-        console.log(`⚠️ Could not clear limits for user ${userId}: ${limitError.message}`);
-      }
-
-      return { alreadyCompleted: false, cancelledJobs };
-    };
-
-    // --- First run of cancel logic ---
-    const result = await cancelProcessingLogic();
-
-    // --- Enhanced double check with multiple attempts ---
-    const performDoubleCheck = async (attempt = 1, maxAttempts = 3) => {
-      await new Promise(resolve => setTimeout(resolve, 1500)); // Wait 1.5 seconds
-      
-      const jobs = await loadJobs();
-      const stillActive = Object.values(jobs).some(job =>
-        job.userId === userId &&
-        (job.status === "processing" || job.status === "paused" || job.status === "pending") &&
-        !job.manualCompletion &&
-        !job.forceStop
-      );
-      
-      if (stillActive && attempt < maxAttempts) {
-        console.log(`⏰ Double check attempt ${attempt}: Found still active jobs for user ${userId}, re-running cancel logic.`);
-        await cancelProcessingLogic();
-        // Recursive call for additional checks
-        return performDoubleCheck(attempt + 1, maxAttempts);
-      } else if (stillActive && attempt >= maxAttempts) {
-        console.log(`⚠️ WARNING: Still found active jobs for user ${userId} after ${maxAttempts} attempts. This may require manual intervention.`);
-      } else {
-        console.log(`✅ Double check attempt ${attempt}: No active jobs for user ${userId}.`);
-      }
-    };
-
-    // Start double check process (non-blocking)
-    performDoubleCheck().catch(err => {
-      console.error(`❌ Double check process failed: ${err.message}`);
-    });
-
-    // --- Respond to client immediately ---
-    if (result.alreadyCompleted) {
+    
+    // Load jobs and find active jobs for this user
+    const jobs = await loadJobs();
+    const userActiveJobs = Object.values(jobs).filter(job => 
+      job.userId === userId && 
+      (job.status === "processing" || job.status === "paused" || job.status === "pending")
+    );
+    
+    if (userActiveJobs.length === 0) {
       return res.status(200).json({
         success: true,
         message: "No active jobs to cancel",
         cancelledJobs: []
       });
     }
+    
+    console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
+    
+    const cancelledJobs = [];
+    const now = new Date().toISOString();
+    
+    // Complete each active job
+    for (const job of userActiveJobs) {
+      console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
+      // Mark all remaining pending/processing contacts as completed
+      let newlyCompletedCount = 0;
+      if (job.contacts) {
+        job.contacts.forEach(contact => {
+          if (contact.status === "pending" || contact.status === "processing") {
+            contact.status = "completed";
+            contact.completedAt = now;
+            contact.error = null;
+            newlyCompletedCount++;
+          }
+        });
+      }
+      // Update job counts
+      job.successCount = (job.successCount || 0) + newlyCompletedCount;
+      job.processedCount = job.successCount + (job.failureCount || 0);
+      // Mark job as complet
+      job.status = "completed";
+      job.completedAt = now;
+      job.completionReason = reason;
+      job.manualCompletion = true;
+      job.lastProcessedAt = now;
+      // Mark cooldown as overridden to prevent unwanted restart
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
+      jobs[job.jobId] = job;
+      cancelledJobs.push({
+        jobId: job.jobId,
+        status: job.status,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts,
+        newlyCompletedCount
+      });
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
+    }
+    await saveJobs(jobs);
+
+    // Clear current job ID from user session and set cooldownOverridden
+    const userSessions = await loadUserSessions();
+    if (userSessions[userId]) {
+      userSessions[userId].currentJobId = null;
+      userSessions[userId].lastActivity = now;
+      userSessions[userId].cooldownOverridden = true;
+      userSessions[userId].overriddenAt = now;
+    }
+    await saveUserSessions(userSessions);
+
+    // Cancelled jobları completed yaptıktan sonra cooldown kaydını oluştur
+    try {
+      const { checkAndSetUserCooldown } = require("../helpers/db");
+      await checkAndSetUserCooldown(userId);
+      console.log(`✅ checkAndSetUserCooldown çağrıldı: ${userId}`);
+    } catch (cooldownError) {
+      console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
+    }
 
     res.status(200).json({
       success: true,
-      message: "Processing completed successfully. All remaining contacts marked as successful. Limits cleared.",
-      completedJobs: result.cancelledJobs,
+      message: "Processing completed successfully. All remaining contacts marked as successful.",
+      completedJobs: cancelledJobs,
       debugInfo: {
-        jobsCompleted: result.cancelledJobs.length,
+        jobsCompleted: cancelledJobs.length,
         cooldownOverridden: true,
-        userSessionUpdated: true,
-        forceStopEnabled: true,
-        multipleChecksEnabled: true,
-        nextStep: "Reload the extension to see updated status and limits"
+        userSessionUpdated: !!userSessions[userId],
+        nextStep: "Reload the extension to see updated status"
       }
     });
-
+    
   } catch (error) {
     console.error(`❌ Error cancelling processing: ${error.message}`);
     res.status(500).json({
@@ -4017,6 +3853,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     });
   }
 });
+
 
 // Initialize data directory, MongoDB and start server
 (async () => {
