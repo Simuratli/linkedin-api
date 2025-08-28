@@ -3128,23 +3128,54 @@ app.post("/restart-processing/:userId", async (req, res) => {
       }
     }
     
-    // Save the current job changes
+    // Mevcut job'ı tamamen sıfırla ve yeniden başlat
+    currentJob.currentBatchIndex = 0;
+    currentJob.cooldownOverridden = false;
+    currentJob.successCount = 0;
+    currentJob.processedCount = 0;
+    currentJob.failureCount = 0;
+    currentJob.status = 'processing';
+    currentJob.lastProcessedAt = null;
+    currentJob.completedAt = null;
+    currentJob.overriddenAt = null;
+    currentJob.overrideReason = null;
+    if (currentJob.contacts && currentJob.contacts.length > 0) {
+      currentJob.contacts.forEach(contact => {
+        contact.status = 'pending';
+        contact.error = null;
+        contact.completedAt = null;
+      });
+    }
+    // Pattern breakdown ve dailyStats da sıfırlansın
+    if (currentJob.dailyStats && currentJob.dailyStats.patternBreakdown) {
+      Object.keys(currentJob.dailyStats.patternBreakdown).forEach(key => {
+        currentJob.dailyStats.patternBreakdown[key] = 0;
+      });
+      currentJob.dailyStats.processedToday = 0;
+    }
     jobs[currentJob.jobId] = currentJob;
     await saveJobs(jobs);
-    
+
+    // User session'da currentJobId'yi güncelle
+    if (userSession) {
+      userSession.currentJobId = currentJob.jobId;
+      await saveUserSessions(userSessions);
+      console.log(`✅ User session currentJobId güncellendi: ${currentJob.jobId}`);
+    }
+
     if (markedJobs > 0) {
       console.log(`✅ Marked ${markedJobs} completed jobs as overridden to prevent reload restart`);
     }
-    
-    console.log(`✅ Override completed for user ${userId} - staying in ready state`);
+
+    console.log(`✅ Job resetlendi ve yeniden başlatıldı: ${currentJob.jobId}`);
     console.log(`📊 Final job state: ${currentJob.totalContacts} total contacts, ${currentJob.contacts ? currentJob.contacts.length : 0} contacts in array`);
-    
+
     res.status(200).json({
       success: true,
-      message: "Cooldown overridden successfully! You can now start new processing.",
+      message: "Job resetlendi ve yeniden başlatıldı.",
       restarted: true,
-      processingStarted: false, // Don't auto-start
-      readyForNewJob: true,
+      processingStarted: true,
+      readyForNewJob: false,
       jobStatus: {
         totalContacts: currentJob.totalContacts,
         contactsInArray: currentJob.contacts ? currentJob.contacts.length : 0,
@@ -3758,13 +3789,13 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     }
     await saveUserSessions(userSessions);
 
-    // After jobs are completed, set cooldown if needed
+    // Cancelled jobları completed yaptıktan sonra cooldown kaydını oluştur
     try {
       const { checkAndSetUserCooldown } = require("../helpers/db");
       await checkAndSetUserCooldown(userId);
-      console.log(`✅ checkAndSetUserCooldown called for user ${userId} after cancel-processing.`);
+      console.log(`✅ checkAndSetUserCooldown çağrıldı: ${userId}`);
     } catch (cooldownError) {
-      console.error(`❌ Error calling checkAndSetUserCooldown: ${cooldownError.message}`);
+      console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
     }
 
     res.status(200).json({
