@@ -2342,16 +2342,36 @@ app.get("/health", async (req, res) => {
 app.get("/user-cooldown/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    // Aktif iş var mı kontrol et
+    const activeJob = await Job.findOne({ userId, status: { $in: ["processing", "pending"] } });
+    if (activeJob) {
+      return res.status(200).json({
+        success: true,
+        cooldownStatus: {
+          userId,
+          hasCooldown: false,
+          completedAt: null,
+          cooldownEndDate: null,
+          daysRemaining: 0,
+          cooldownPeriod: 30
+        }
+      });
+    }
     const cooldownStatus = await getUserCooldownStatus(userId);
-    
     if (!cooldownStatus) {
       return res.status(200).json({
         success: true,
-        hasCooldown: false,
+        cooldownStatus: {
+          userId,
+          hasCooldown: false,
+          completedAt: null,
+          cooldownEndDate: null,
+          daysRemaining: 0,
+          cooldownPeriod: 30
+        },
         message: "No cooldown found for this user"
       });
     }
-    
     const formattedStatus = {
       userId: cooldownStatus.userId,
       hasCooldown: cooldownStatus.allJobsCompleted && !cooldownStatus.jobsRestarted,
@@ -2360,7 +2380,6 @@ app.get("/user-cooldown/:userId", async (req, res) => {
       daysRemaining: cooldownStatus.daysRemaining || 0,
       cooldownPeriod: cooldownStatus.cooldownPeriod || 30
     };
-    
     res.status(200).json({
       success: true,
       cooldownStatus: formattedStatus
