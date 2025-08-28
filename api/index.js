@@ -34,6 +34,9 @@ const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Global map to control background job abortion
+const processingJobs = {};
+
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
 const BURST_LIMIT = 15; // Max profiles in one hour (fallback)
@@ -3865,6 +3868,8 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         job.cooldownOverridden = true;
         job.overriddenAt = now;
         jobs[job.jobId] = job;
+        // Set abort flag for this jobId in global map
+        processingJobs[job.jobId] = { aborted: true };
         cancelledJobs.push({
           jobId: job.jobId,
           status: job.status,
@@ -3996,6 +4001,18 @@ app.post("/cancel-processing/:userId", async (req, res) => {
 // Initialize data directory, MongoDB and start server
 (async () => {
   try {
+    // Set up abort flag for this jobId if not present
+    if (!processingJobs[jobId]) processingJobs[jobId] = { aborted: false };
+      // Check abort flag at start of every batch
+      if (processingJobs[jobId]?.aborted) {
+        console.log(`🛑 [ABORT] Job ${jobId} aborted by cancel-processing. Exiting background loop immediately.`);
+        return;
+      }
+          // Check abort flag at start of every contact
+          if (processingJobs[jobId]?.aborted) {
+            console.log(`🛑 [ABORT] Job ${jobId} aborted by cancel-processing (contact loop). Exiting immediately.`);
+            return;
+          }
     // First ensure data directory exists (legacy)
     await ensureDataDir();
     console.log("✅ Data directory initialization complete");
