@@ -1031,6 +1031,7 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
+
       // Her batch'in başında job'un güncel halini tekrar kontrol et
       const jobsLatest = await loadJobs();
       const jobLatest = jobsLatest[jobId];
@@ -1038,7 +1039,15 @@ const processJobInBackground = async (jobId) => {
         console.log(`🛑 Job ${jobId} cancelled/completed/failed (batch başı kontrol). Stopping processing loop.`);
         return;
       }
-      // Save progress after each batch (currentBatchIndex bir sonraki batch için güncellenir)
+
+      // --- YENİ: Her batch/contact BAŞLAMADAN ÖNCE state'i kaydet ---
+      jobLatest.currentBatchIndex = batchIndex;
+      jobLatest.currentPatternName = currentPatternName;
+      jobLatest.processedInSession = processedInSession;
+      jobLatest.status = "processing";
+      jobLatest.lastProcessedAt = new Date().toISOString();
+      await saveJobs({ ...jobsLatest, [jobId]: jobLatest });
+
       // Her kayıttan önce job'un güncel halini tekrar çekip status kontrolü yap
       const jobsLatestSave = await loadJobs();
       const jobLatestSave = jobsLatestSave[jobId];
@@ -1046,11 +1055,6 @@ const processJobInBackground = async (jobId) => {
         console.log(`🛑 Job ${jobId} cancelled/completed/failed (saveJobs öncesi kontrol). Stopping processing loop.`);
         return;
       }
-      // Sadece güncel job objesini güncelle
-      jobLatestSave.currentBatchIndex = batchIndex + 1;
-      jobLatestSave.currentPatternName = currentPatternName;
-      jobLatestSave.processedInSession = processedInSession;
-      await saveJobs({ ...jobsLatestSave, [jobId]: jobLatestSave });
       
       // **CRITICAL FIX** - Check if job has been cancelled/completed before continuing
       const latestJobs = await loadJobs();
