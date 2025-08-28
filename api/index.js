@@ -4001,18 +4001,6 @@ app.post("/cancel-processing/:userId", async (req, res) => {
 // Initialize data directory, MongoDB and start server
 (async () => {
   try {
-    // Set up abort flag for this jobId if not present
-    if (!processingJobs[jobId]) processingJobs[jobId] = { aborted: false };
-      // Check abort flag at start of every batch
-      if (processingJobs[jobId]?.aborted) {
-        console.log(`🛑 [ABORT] Job ${jobId} aborted by cancel-processing. Exiting background loop immediately.`);
-        return;
-      }
-          // Check abort flag at start of every contact
-          if (processingJobs[jobId]?.aborted) {
-            console.log(`🛑 [ABORT] Job ${jobId} aborted by cancel-processing (contact loop). Exiting immediately.`);
-            return;
-          }
     // First ensure data directory exists (legacy)
     await ensureDataDir();
     console.log("✅ Data directory initialization complete");
