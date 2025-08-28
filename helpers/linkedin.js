@@ -30,7 +30,7 @@ const HUMAN_PATTERNS = {
     time: "12-1 PM (Weekdays)",
     pause: true,
     hourStart: 12,
-    hourEnd: 13,
+    hourEnd: 12,
     weekdayOnly: true,
   },
   afternoonWork: {
@@ -59,7 +59,7 @@ const HUMAN_PATTERNS = {
     time: "9 PM-8 AM (All days)",
     pause: true,
     hourStart: 22,
-    hourEnd: 22,
+    hourEnd: 8,
   },
   weekendBurst: {
     time: "9 AM-12 PM (Weekends)",
