@@ -946,8 +946,15 @@ app.post("/start-processing", async (req, res) => {
   }
 });
 
+// Her jobId için sadece bir process çalışsın
+const processingJobs = {};
 // Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
+  if (processingJobs[jobId]) {
+    console.log(`⚠️ processJobInBackground already running for jobId: ${jobId}, skipping duplicate.`);
+    return;
+  }
+  processingJobs[jobId] = true;
   console.log(`🔄 Starting background processing for job: ${jobId}`);
   console.log(`🕐 Process start time: ${new Date().toISOString()}`);
   
@@ -1590,6 +1597,11 @@ const processJobInBackground = async (jobId) => {
     const errorJobs = await loadJobs();
     errorJobs[jobId] = job;
     await saveJobs(errorJobs);
+  }
+  finally {
+    // Cleanup: iş bittiğinde veya hata olduğunda flag'i kaldır
+    delete processingJobs[jobId];
+    console.log(`🧹 processingJobs cleanup for jobId: ${jobId}`);
   }
 };
 
