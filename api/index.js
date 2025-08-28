@@ -1031,11 +1031,11 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
-      // Save progress after each batch
-      job.currentBatchIndex = batchIndex;
-      job.currentPatternName = currentPatternName;
-      job.processedInSession = processedInSession;
-      await saveJobs({ ...(await loadJobs()), [jobId]: job });
+  // Save progress after each batch (currentBatchIndex bir sonraki batch için güncellenir)
+  job.currentBatchIndex = batchIndex + 1;
+  job.currentPatternName = currentPatternName;
+  job.processedInSession = processedInSession;
+  await saveJobs({ ...(await loadJobs()), [jobId]: job });
       
       // **CRITICAL FIX** - Check if job has been cancelled/completed before continuing
       const latestJobs = await loadJobs();
@@ -1482,6 +1482,7 @@ const processJobInBackground = async (jobId) => {
     if (remainingPending === 0) {
       job.status = "completed";
       job.completedAt = new Date().toISOString();
+      job.currentBatchIndex = 0; // İş bittiğinde sıfırla
 
       // Final pattern history entry
       if (!job.humanPatterns.patternHistory)
