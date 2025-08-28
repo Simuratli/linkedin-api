@@ -1217,9 +1217,15 @@ const processJobInBackground = async (jobId) => {
           console.log(`🛑 Job ${jobId} cancelled/completed/failed (contact başı kontrol). Stopping processing loop.`);
           return;
         }
-          const contact = batch[contactIndex];
-          
-          try {
+        const contact = batch[contactIndex];
+
+        // --- YENİ: Contact işlenmeye BAŞLARKEN status'u processing olarak DB'ye kaydet ---
+        contact.status = "processing";
+        const jobsToSave = await loadJobs();
+        jobsToSave[jobId] = job;
+        await saveJobs(jobsToSave);
+
+        try {
             // **CRITICAL FIX** - Check if job has been cancelled/completed before processing each contact
             const latestJobs = await loadJobs();
             const latestJob = latestJobs[jobId];
@@ -3780,124 +3786,154 @@ app.post("/cancel-processing/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason = "User cancelled processing" } = req.body;
-    
+
     console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason });
-    
-    // Load jobs and find active jobs for this user
-    const jobs = await loadJobs();
-    const userActiveJobs = Object.values(jobs).filter(job => 
-      job.userId === userId && 
-      (job.status === "processing" || job.status === "paused" || job.status === "pending")
-    );
-    
-    if (userActiveJobs.length === 0) {
+
+    // --- Main cancel logic as a function for reuse ---
+    const cancelProcessingLogic = async () => {
+      // Load jobs and find active jobs for this user
+      const jobs = await loadJobs();
+      const userActiveJobs = Object.values(jobs).filter(job =>
+        job.userId === userId &&
+        (job.status === "processing" || job.status === "paused" || job.status === "pending")
+      );
+
+      if (userActiveJobs.length === 0) {
+        return { alreadyCompleted: true, cancelledJobs: [] };
+      }
+
+      console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
+
+      const cancelledJobs = [];
+      const now = new Date().toISOString();
+
+      // Complete each active job
+      for (const job of userActiveJobs) {
+        console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
+        // Mark all remaining pending/processing contacts as completed
+        let newlyCompletedCount = 0;
+        if (job.contacts) {
+          job.contacts.forEach(contact => {
+            if (contact.status === "pending" || contact.status === "processing") {
+              contact.status = "completed";
+              contact.completedAt = now;
+              contact.error = null;
+              newlyCompletedCount++;
+            }
+          });
+        }
+        // Update job counts
+        job.successCount = (job.successCount || 0) + newlyCompletedCount;
+        job.processedCount = job.successCount + (job.failureCount || 0);
+        // currentBatchIndex'i de tamamlanmış gibi ayarla
+        job.currentBatchIndex = job.totalContacts;
+        // Mark job as complet
+        job.status = "completed";
+        job.completedAt = now;
+        job.completionReason = reason;
+        job.manualCompletion = true;
+        job.lastProcessedAt = now;
+        // Mark cooldown as overridden to prevent unwanted restart
+        job.cooldownOverridden = true;
+        job.overriddenAt = now;
+        jobs[job.jobId] = job;
+        cancelledJobs.push({
+          jobId: job.jobId,
+          status: job.status,
+          processedCount: job.processedCount,
+          totalContacts: job.totalContacts,
+          newlyCompletedCount
+        });
+        console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden, currentBatchIndex set to totalContacts`);
+      }
+      await saveJobs(jobs);
+
+      // Clear current job ID from user session and set cooldownOverridden
+      const userSessions = await loadUserSessions();
+      if (userSessions[userId]) {
+        userSessions[userId].currentJobId = null;
+        userSessions[userId].lastActivity = now;
+        userSessions[userId].cooldownOverridden = true;
+        userSessions[userId].overriddenAt = now;
+      }
+      await saveUserSessions(userSessions);
+
+      // Cancelled jobları completed yaptıktan sonra cooldown kaydını oluştur
+      try {
+        const { checkAndSetUserCooldown } = require("../helpers/db");
+        await checkAndSetUserCooldown(userId);
+        console.log(`✅ checkAndSetUserCooldown çağrıldı: ${userId}`);
+      } catch (cooldownError) {
+        console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
+      }
+
+      // --- CLEAR HOURLY/DAILY LIMITS ---
+      try {
+        const fileLock = require('./helpers/fileLock');
+        // Clear daily_stats.json
+        const dailyStatsPath = './data/daily_stats.json';
+        const dailyStats = await fileLock.readJsonFile(dailyStatsPath);
+        if (dailyStats[userId]) {
+          delete dailyStats[userId];
+          await fileLock.writeJsonFile(dailyStatsPath, dailyStats);
+          console.log(`🧹 Cleared daily_stats for user ${userId}`);
+        }
+        // Clear daily_rate_limits.json
+        const rateLimitsPath = './data/daily_rate_limits.json';
+        const rateLimits = await fileLock.readJsonFile(rateLimitsPath);
+        if (rateLimits[userId]) {
+          delete rateLimits[userId];
+          await fileLock.writeJsonFile(rateLimitsPath, rateLimits);
+          console.log(`🧹 Cleared daily_rate_limits for user ${userId}`);
+        }
+      } catch (limitError) {
+        console.log(`⚠️ Could not clear limits for user ${userId}: ${limitError.message}`);
+      }
+
+      return { alreadyCompleted: false, cancelledJobs };
+    };
+
+    // --- First run of cancel logic ---
+    const result = await cancelProcessingLogic();
+
+    // --- Double check after 1500ms ---
+    setTimeout(async () => {
+      // Check if any jobs for this user are still not completed
+      const jobs = await loadJobs();
+      const stillActive = Object.values(jobs).some(job =>
+        job.userId === userId &&
+        (job.status === "processing" || job.status === "paused" || job.status === "pending")
+      );
+      if (stillActive) {
+        console.log(`⏰ Double check: Found still active jobs for user ${userId} after 1500ms, re-running cancel logic.`);
+        await cancelProcessingLogic();
+      } else {
+        console.log(`✅ Double check: No active jobs for user ${userId} after 1500ms.`);
+      }
+    }, 1500);
+
+    // --- Respond to client immediately ---
+    if (result.alreadyCompleted) {
       return res.status(200).json({
         success: true,
         message: "No active jobs to cancel",
         cancelledJobs: []
       });
     }
-    
-    console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
-    
-    const cancelledJobs = [];
-    const now = new Date().toISOString();
-    
-    // Complete each active job
-    for (const job of userActiveJobs) {
-      console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
-      // Mark all remaining pending/processing contacts as completed
-      let newlyCompletedCount = 0;
-      if (job.contacts) {
-        job.contacts.forEach(contact => {
-          if (contact.status === "pending" || contact.status === "processing") {
-            contact.status = "completed";
-            contact.completedAt = now;
-            contact.error = null;
-            newlyCompletedCount++;
-          }
-        });
-      }
-      // Update job counts
-      job.successCount = (job.successCount || 0) + newlyCompletedCount;
-      job.processedCount = job.successCount + (job.failureCount || 0);
-      // currentBatchIndex'i de tamamlanmış gibi ayarla
-      job.currentBatchIndex = job.totalContacts;
-      // Mark job as complet
-      job.status = "completed";
-      job.completedAt = now;
-      job.completionReason = reason;
-      job.manualCompletion = true;
-      job.lastProcessedAt = now;
-      // Mark cooldown as overridden to prevent unwanted restart
-      job.cooldownOverridden = true;
-      job.overriddenAt = now;
-      jobs[job.jobId] = job;
-      cancelledJobs.push({
-        jobId: job.jobId,
-        status: job.status,
-        processedCount: job.processedCount,
-        totalContacts: job.totalContacts,
-        newlyCompletedCount
-      });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden, currentBatchIndex set to totalContacts`);
-    }
-    await saveJobs(jobs);
-
-    // Clear current job ID from user session and set cooldownOverridden
-    const userSessions = await loadUserSessions();
-    if (userSessions[userId]) {
-      userSessions[userId].currentJobId = null;
-      userSessions[userId].lastActivity = now;
-      userSessions[userId].cooldownOverridden = true;
-      userSessions[userId].overriddenAt = now;
-    }
-    await saveUserSessions(userSessions);
-
-    // Cancelled jobları completed yaptıktan sonra cooldown kaydını oluştur
-    try {
-      const { checkAndSetUserCooldown } = require("../helpers/db");
-      await checkAndSetUserCooldown(userId);
-      console.log(`✅ checkAndSetUserCooldown çağrıldı: ${userId}`);
-    } catch (cooldownError) {
-      console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
-    }
-
-    // --- CLEAR HOURLY/DAILY LIMITS ---
-    try {
-      const fileLock = require('./helpers/fileLock');
-      // Clear daily_stats.json
-      const dailyStatsPath = './data/daily_stats.json';
-      const dailyStats = await fileLock.readJsonFile(dailyStatsPath);
-      if (dailyStats[userId]) {
-        delete dailyStats[userId];
-        await fileLock.writeJsonFile(dailyStatsPath, dailyStats);
-        console.log(`🧹 Cleared daily_stats for user ${userId}`);
-      }
-      // Clear daily_rate_limits.json
-      const rateLimitsPath = './data/daily_rate_limits.json';
-      const rateLimits = await fileLock.readJsonFile(rateLimitsPath);
-      if (rateLimits[userId]) {
-        delete rateLimits[userId];
-        await fileLock.writeJsonFile(rateLimitsPath, rateLimits);
-        console.log(`🧹 Cleared daily_rate_limits for user ${userId}`);
-      }
-    } catch (limitError) {
-      console.log(`⚠️ Could not clear limits for user ${userId}: ${limitError.message}`);
-    }
 
     res.status(200).json({
       success: true,
       message: "Processing completed successfully. All remaining contacts marked as successful. Limits cleared.",
-      completedJobs: cancelledJobs,
+      completedJobs: result.cancelledJobs,
       debugInfo: {
-        jobsCompleted: cancelledJobs.length,
+        jobsCompleted: result.cancelledJobs.length,
         cooldownOverridden: true,
-        userSessionUpdated: !!userSessions[userId],
-        nextStep: "Reload the extension to see updated status and limits"
+        userSessionUpdated: true,
+        nextStep: "Reload the extension to see updated status and limits",
+        doubleCheck: true
       }
     });
-    
+
   } catch (error) {
     console.error(`❌ Error cancelling processing: ${error.message}`);
     res.status(500).json({
