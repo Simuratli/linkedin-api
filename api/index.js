@@ -1038,11 +1038,19 @@ const processJobInBackground = async (jobId) => {
         console.log(`🛑 Job ${jobId} cancelled/completed/failed (batch başı kontrol). Stopping processing loop.`);
         return;
       }
-  // Save progress after each batch (currentBatchIndex bir sonraki batch için güncellenir)
-  job.currentBatchIndex = batchIndex + 1;
-  job.currentPatternName = currentPatternName;
-  job.processedInSession = processedInSession;
-  await saveJobs({ ...(await loadJobs()), [jobId]: job });
+      // Save progress after each batch (currentBatchIndex bir sonraki batch için güncellenir)
+      // Her kayıttan önce job'un güncel halini tekrar çekip status kontrolü yap
+      const jobsLatestSave = await loadJobs();
+      const jobLatestSave = jobsLatestSave[jobId];
+      if (!jobLatestSave || ["completed", "cancelled", "failed"].includes(jobLatestSave.status)) {
+        console.log(`🛑 Job ${jobId} cancelled/completed/failed (saveJobs öncesi kontrol). Stopping processing loop.`);
+        return;
+      }
+      // Sadece güncel job objesini güncelle
+      jobLatestSave.currentBatchIndex = batchIndex + 1;
+      jobLatestSave.currentPatternName = currentPatternName;
+      jobLatestSave.processedInSession = processedInSession;
+      await saveJobs({ ...jobsLatestSave, [jobId]: jobLatestSave });
       
       // **CRITICAL FIX** - Check if job has been cancelled/completed before continuing
       const latestJobs = await loadJobs();
