@@ -3527,20 +3527,26 @@ app.post("/admin/cleanup-user/:userId", async (req, res) => {
 });
 
 
+// Cancel all processing for a user - STOP button functionality
 app.post("/cancel-processing/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason = "User cancelled processing" } = req.body;
         
-    console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason });
+    console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { 
+      reason, 
+      timestamp: new Date().toISOString(),
+      requestBody: req.body 
+    });
         
-    // Load jobs and find active jobs for this user
-    const jobs = await loadJobs();
-    const userActiveJobs = Object.values(jobs).filter(job => 
-      job.userId === userId &&
-      (job.status === "processing" || job.status === "paused" || job.status === "pending")
-    );
-        
+    // Load jobs using MongoDB query directly
+    const userActiveJobs = await Job.find({
+      userId: userId,
+      status: { $in: ["processing", "paused", "pending"] }
+    });
+    
+    console.log(`📊 Found ${userActiveJobs.length} active jobs for user ${userId}`);
+    
     if (userActiveJobs.length === 0) {
       return res.status(200).json({
         success: true,
@@ -3549,99 +3555,128 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       });
     }
         
-    console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
-        
     const cancelledJobs = [];
-    const now = new Date().toISOString();
+    const now = new Date();
         
-    // Complete each active job
+    // Process each active job using MongoDB operations
     for (const job of userActiveJobs) {
       console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
       
-      // Mark all remaining pending/processing contacts as completed
+      // Count contacts that need to be marked as completed
       let newlyCompletedCount = 0;
       if (job.contacts) {
         job.contacts.forEach(contact => {
           if (contact.status === "pending" || contact.status === "processing") {
-            contact.status = "completed";
-            contact.completedAt = now;
-            contact.error = null;
             newlyCompletedCount++;
           }
         });
       }
       
-      // Update job counts
-      job.successCount = (job.successCount || 0) + newlyCompletedCount;
-      job.processedCount = job.successCount + (job.failureCount || 0);
+      // Update job using MongoDB updateOne - this ensures schema compliance
+      const updateResult = await Job.updateOne(
+        { jobId: job.jobId },
+        {
+          $set: {
+            status: "completed",
+            completedAt: now,
+            lastProcessedAt: now,
+            successCount: (job.successCount || 0) + newlyCompletedCount,
+            processedCount: (job.successCount || 0) + newlyCompletedCount + (job.failureCount || 0),
+            "contacts.$[elem].status": "completed",
+            "contacts.$[elem].completedAt": now,
+            "contacts.$[elem].error": null
+          }
+        },
+        {
+          arrayFilters: [
+            { "elem.status": { $in: ["pending", "processing"] } }
+          ]
+        }
+      );
       
-      // Mark job as completed
-      job.status = "completed";
-      job.completedAt = now;
-      job.completionReason = reason;
-      job.manualCompletion = true;
-      job.lastProcessedAt = now;
+      console.log(`📝 MongoDB update result for job ${job.jobId}:`, {
+        matchedCount: updateResult.matchedCount,
+        modifiedCount: updateResult.modifiedCount,
+        acknowledged: updateResult.acknowledged
+      });
       
-      // REMOVED: Don't set cooldownOverridden here - let normal cooldown logic handle it
-      // job.cooldownOverridden = true;
-      // job.overriddenAt = now;
-      
-      jobs[job.jobId] = job;
+      if (updateResult.modifiedCount === 0) {
+        console.error(`❌ WARNING: Job ${job.jobId} was not updated in MongoDB`);
+      }
       
       cancelledJobs.push({
         jobId: job.jobId,
-        status: job.status,
-        processedCount: job.processedCount,
+        status: "completed",
+        processedCount: (job.successCount || 0) + newlyCompletedCount + (job.failureCount || 0),
         totalContacts: job.totalContacts,
-        newlyCompletedCount
+        newlyCompletedCount,
+        mongoUpdateResult: {
+          matched: updateResult.matchedCount,
+          modified: updateResult.modifiedCount
+        }
       });
       
       console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful`);
     }
     
-    // Save jobs first
-    await saveJobs(jobs);
+    // Update user session using MongoDB
+    console.log(`👤 Updating user session for ${userId}`);
+    const sessionUpdateResult = await UserSession.updateOne(
+      { userId: userId },
+      {
+        $set: {
+          currentJobId: null,
+          lastActivity: now
+        }
+      },
+      { upsert: true }
+    );
     
-    // Clear current job ID from user session
-    const userSessions = await loadUserSessions();
-    if (userSessions[userId]) {
-      userSessions[userId].currentJobId = null;
-      userSessions[userId].lastActivity = now;
-      // REMOVED: Don't override cooldown in session either
-      // userSessions[userId].cooldownOverridden = true;
-      // userSessions[userId].overriddenAt = now;
-    }
-    await saveUserSessions(userSessions);
+    console.log(`👤 Session update result:`, {
+      matched: sessionUpdateResult.matchedCount,
+      modified: sessionUpdateResult.modifiedCount,
+      upserted: sessionUpdateResult.upsertedCount
+    });
     
-    // Wait a moment for data to be properly saved
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Verify that jobs were actually updated by re-querying
+    const verificationJobs = await Job.find({
+      jobId: { $in: cancelledJobs.map(job => job.jobId) }
+    });
     
-    // Check if this should trigger a cooldown
-    const cooldownStatus = await getUserCooldownStatus(userId);
-    const shouldHaveCooldown = cooldownStatus && cooldownStatus.allJobsCompleted;
+    const verificationResults = verificationJobs.map(job => ({
+      jobId: job.jobId,
+      status: job.status,
+      completedAt: job.completedAt,
+      processedCount: job.processedCount
+    }));
+    
+    console.log(`🔍 Verification results:`, verificationResults);
+    
+    // Check if cooldown should be triggered
+    const cooldownTriggered = await checkAndSetUserCooldown(userId);
     
     res.status(200).json({
       success: true,
       message: "Processing completed successfully. All remaining contacts marked as successful.",
       completedJobs: cancelledJobs,
-      cooldownTriggered: shouldHaveCooldown,
+      cooldownTriggered: cooldownTriggered,
+      verification: verificationResults,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
-        userSessionUpdated: !!userSessions[userId],
-        cooldownStatus: cooldownStatus ? {
-          allJobsCompleted: cooldownStatus.allJobsCompleted,
-          hasCooldown: cooldownStatus.allJobsCompleted && !cooldownStatus.jobsRestarted
-        } : null,
-        nextStep: "Reload the extension to see updated status"
+        sessionUpdated: sessionUpdateResult.modifiedCount > 0 || sessionUpdateResult.upsertedCount > 0,
+        mongoOperationSuccess: cancelledJobs.every(job => job.mongoUpdateResult.modified > 0),
+        nextStep: "Jobs updated directly in MongoDB - should reflect immediately"
       }
     });
       
   } catch (error) {
     console.error(`❌ Error cancelling processing: ${error.message}`);
+    console.error(`❌ Full error:`, error);
     res.status(500).json({
       success: false,
       message: "Error cancelling processing",
-      error: error.message
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
