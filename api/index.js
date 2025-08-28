@@ -1049,15 +1049,14 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
-      // PAUSE KONTROLÜ: batch başında
+      // 🔥 CRITICAL: Fresh load job from disk at start of every batch
+      const freshJobs = await loadJobs();
+      const freshJob = freshJobs[jobId];
+      // PAUSE KONTROLÜ: batch başında (freshJob tanımlandıktan sonra)
       if (freshJob.status === "paused") {
         console.log(`⏸️ Job ${jobId} paused at batch start. Exiting loop.`);
         return;
       }
-
-      // 🔥 CRITICAL: Fresh load job from disk at start of every batch
-      const freshJobs = await loadJobs();
-      const freshJob = freshJobs[jobId];
       
       if (!freshJob) {
         console.log(`🛑 Job ${jobId} not found in fresh load. Terminating background processing.`);
