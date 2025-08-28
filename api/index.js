@@ -1031,6 +1031,13 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
+      // Her batch'in başında job'un güncel halini tekrar kontrol et
+      const jobsLatest = await loadJobs();
+      const jobLatest = jobsLatest[jobId];
+      if (!jobLatest || ["completed", "cancelled", "failed"].includes(jobLatest.status)) {
+        console.log(`🛑 Job ${jobId} cancelled/completed/failed (batch başı kontrol). Stopping processing loop.`);
+        return;
+      }
   // Save progress after each batch (currentBatchIndex bir sonraki batch için güncellenir)
   job.currentBatchIndex = batchIndex + 1;
   job.currentPatternName = currentPatternName;
@@ -1191,6 +1198,13 @@ const processJobInBackground = async (jobId) => {
         
         // Process contacts one by one to avoid Promise.allSettled issues
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
+        // Her contact'tan önce job'un güncel halini tekrar kontrol et
+        const jobsLatestContact = await loadJobs();
+        const jobLatestContact = jobsLatestContact[jobId];
+        if (!jobLatestContact || ["completed", "cancelled", "failed"].includes(jobLatestContact.status)) {
+          console.log(`🛑 Job ${jobId} cancelled/completed/failed (contact başı kontrol). Stopping processing loop.`);
+          return;
+        }
           const contact = batch[contactIndex];
           
           try {
