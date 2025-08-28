@@ -1015,22 +1015,21 @@ const processJobInBackground = async (jobId) => {
   });
 
   try {
-    // Update job status to processing
-    job.status = "processing";
-    job.lastProcessedAt = new Date().toISOString();
-    job.lastProcessedTime = new Date();
-    
-    // Initialize batch index if not exists
-    if (!job.currentBatchIndex) {
-      job.currentBatchIndex = 0;
+    // Only set to processing if not paused
+    if (job.status !== "paused") {
+      job.status = "processing";
+      job.lastProcessedAt = new Date().toISOString();
+      job.lastProcessedTime = new Date();
+      // Initialize batch index if not exists
+      if (!job.currentBatchIndex) {
+        job.currentBatchIndex = 0;
+      }
+      // Make sure timestamps are properly set
+      if (!job.createdAt) {
+        job.createdAt = job.startTime || new Date().toISOString();
+      }
+      await saveJobs({ ...jobs, [jobId]: job });
     }
-    
-    // Make sure timestamps are properly set
-    if (!job.createdAt) {
-      job.createdAt = job.startTime || new Date().toISOString();
-    }
-    
-    await saveJobs({ ...jobs, [jobId]: job });
 
     const BATCH_SIZE = 1;
     let processedInSession = job.processedInSession || 0;
@@ -1090,11 +1089,12 @@ const processJobInBackground = async (jobId) => {
       job.currentBatchIndex = batchIndex;
       job.currentPatternName = currentPatternName;
       job.processedInSession = processedInSession;
-      job.status = "processing";
-      job.lastProcessedAt = new Date().toISOString();
-      
-      // Save the updated state
-      await saveJobs({ ...freshJobs, [jobId]: job });
+      if (job.status !== "paused") {
+        job.status = "processing";
+        job.lastProcessedAt = new Date().toISOString();
+        // Save the updated state
+        await saveJobs({ ...freshJobs, [jobId]: job });
+      }
 
       // Check if pattern has changed
       const newPattern = getCurrentHumanPattern();
@@ -1561,9 +1561,9 @@ const processJobInBackground = async (jobId) => {
     });
     
     if (remainingPending === 0) {
-      job.status = "completed";
-      job.completedAt = new Date().toISOString();
-      job.currentBatchIndex = 0; // İş bittiğinde sıfırla
+  job.status = "completed";
+  job.completedAt = new Date().toISOString();
+  job.currentBatchIndex = 0; // İş bittiğinde sıfırla
 
       // Final pattern history entry
       if (!job.humanPatterns.patternHistory)
@@ -1591,12 +1591,13 @@ const processJobInBackground = async (jobId) => {
       });
       
       // Mark job as stalled and set it up for auto-restart
-      job.status = "processing"; // Keep as processing but mark stall time
-      job.lastProcessedAt = new Date().toISOString();
-      job.stalledAt = new Date().toISOString();
-      job.stalledReason = `${remainingPending} contacts remain pending after background processing completed`;
-      
-      console.log(`🔄 Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
+      if (job.status !== "paused") {
+        job.status = "processing"; // Keep as processing but mark stall time
+        job.lastProcessedAt = new Date().toISOString();
+        job.stalledAt = new Date().toISOString();
+        job.stalledReason = `${remainingPending} contacts remain pending after background processing completed`;
+        console.log(`🔄 Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
+      }
     }
 
     // Final save
