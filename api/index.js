@@ -1,22 +1,14 @@
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
-const fs = require("fs/promises");
 const fetch = require("node-fetch");
-const mongoose = require("mongoose");
 const {
   loadJobs, 
   saveJobs, 
   loadUserSessions, 
   saveUserSessions,
   initializeDB,
-  Job,
-  UserSession,
-  DailyStats,
   loadDailyStats,
-  saveDailyStats,
   updateDailyStats,
-  cleanOldDailyStats,
   getUserCooldownStatus
 } = require("../helpers/db");
 const { transformToCreateUserRequest } = require("../helpers/transform");
@@ -1868,82 +1860,6 @@ app.get("/user-job/:userId", async (req, res) => {
   }
 });
 
-// Debug endpoint to check job memory and session persistence
-app.get("/debug-job-memory/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    const userSessions = await loadUserSessions();
-    const jobs = await loadJobs();
-    const userSession = userSessions[userId];
-    
-    const debugInfo = {
-      userId,
-      timestamp: new Date().toISOString(),
-      userSession: {
-        exists: !!userSession,
-        currentJobId: userSession?.currentJobId || null,
-        lastActivity: userSession?.lastActivity || null,
-        sessionKeys: userSession ? Object.keys(userSession) : [],
-      },
-      allUserSessions: {
-        totalUsers: Object.keys(userSessions).length,
-        userIds: Object.keys(userSessions),
-      },
-      jobs: {
-        totalJobs: Object.keys(jobs).length,
-        allJobIds: Object.keys(jobs),
-        userJobs: Object.values(jobs).filter(job => job.userId === userId).map(job => ({
-          jobId: job.jobId,
-          status: job.status,
-          createdAt: job.createdAt,
-          processedCount: job.processedCount,
-          totalContacts: job.totalContacts
-        }))
-      },
-      jobForCurrentSession: null
-    };
-    
-    if (userSession?.currentJobId) {
-      const currentJob = jobs[userSession.currentJobId];
-      if (currentJob) {
-        const jobAge = currentJob.createdAt ? 
-          Math.floor((Date.now() - new Date(currentJob.createdAt).getTime()) / (1000 * 60 * 60 * 24)) : 
-          'unknown';
-          
-        debugInfo.jobForCurrentSession = {
-          jobId: currentJob.jobId,
-          status: currentJob.status,
-          ageInDays: jobAge,
-          processedCount: currentJob.processedCount,
-          totalContacts: currentJob.totalContacts,
-          createdAt: currentJob.createdAt,
-          lastProcessedAt: currentJob.lastProcessedAt,
-          canResume: currentJob.status === "paused" || currentJob.status === "processing"
-        };
-      } else {
-        debugInfo.jobForCurrentSession = {
-          error: `Job ${userSession.currentJobId} not found in jobs collection`
-        };
-      }
-    }
-    
-    console.log("🔍 Debug job memory for user:", userId, debugInfo);
-    
-    res.status(200).json({
-      success: true,
-      debug: debugInfo
-    });
-    
-  } catch (error) {
-    console.error("Error in debug-job-memory endpoint:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  }
-});
 
 // Enhanced daily limits endpoint with pattern info
 app.get("/daily-limits/:userId", async (req, res) => {
@@ -2274,33 +2190,7 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
-// Test route with pattern info
-app.get("/simuratli", async (req, res) => {
-  const profileId = "simuratli";
-  const currentPattern = getCurrentHumanPattern();
 
-  console.log(`🧪 Test route called during ${currentPattern.name} pattern`);
-
-  try {
-    const data = await fetchLinkedInProfile(profileId);
-    console.log("🔍 Fetched Data:", data);
-
-    res.json({
-      profileData: data,
-      currentPattern: currentPattern.name,
-      patternInfo: currentPattern,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("❌ Test route error:", error);
-    res.status(500).json({
-      error: error.message,
-      currentPattern: currentPattern.name,
-      patternInfo: currentPattern,
-      timestamp: new Date().toISOString(),
-    });
-  }
-});
 
 // Health check endpoint
 app.get("/health", async (req, res) => {
@@ -2342,7 +2232,13 @@ app.get("/health", async (req, res) => {
 app.get("/user-cooldown/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    
+    // Add small delay to ensure data is properly loaded
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
     const cooldownStatus = await getUserCooldownStatus(userId);
+    
+    console.log(`🔍 Cooldown check for user ${userId}:`, cooldownStatus);
     
     if (!cooldownStatus) {
       return res.status(200).json({
@@ -2352,13 +2248,17 @@ app.get("/user-cooldown/:userId", async (req, res) => {
       });
     }
     
+    const hasCooldown = cooldownStatus.allJobsCompleted && !cooldownStatus.jobsRestarted;
+    
     const formattedStatus = {
       userId: cooldownStatus.userId,
-      hasCooldown: cooldownStatus.allJobsCompleted && !cooldownStatus.jobsRestarted,
+      hasCooldown: hasCooldown,
       completedAt: cooldownStatus.completedAt ? new Date(cooldownStatus.completedAt).toISOString() : null,
       cooldownEndDate: cooldownStatus.cooldownEndDate ? new Date(cooldownStatus.cooldownEndDate).toISOString() : null,
       daysRemaining: cooldownStatus.daysRemaining || 0,
-      cooldownPeriod: cooldownStatus.cooldownPeriod || 30
+      cooldownPeriod: cooldownStatus.cooldownPeriod || 30,
+      allJobsCompleted: cooldownStatus.allJobsCompleted,
+      jobsRestarted: cooldownStatus.jobsRestarted
     };
     
     res.status(200).json({
@@ -3626,87 +3526,21 @@ app.post("/admin/cleanup-user/:userId", async (req, res) => {
   }
 });
 
-// Get user data overview (for debugging)
-app.get("/admin/user-data/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    // Get jobs
-    const jobs = await loadJobs();
-    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
-    
-    // Get sessions
-    const userSessions = await loadUserSessions();
-    const userSession = userSessions[userId];
-    
-    // Get completed jobs info
-    const completedJobs = userJobs
-      .filter(job => job.status === "completed" && job.completedAt)
-      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-    
-    const lastCompletedJob = completedJobs.length > 0 ? completedJobs[0] : null;
-    
-    let cooldownInfo = { active: false };
-    if (lastCompletedJob) {
-      const completedAt = new Date(lastCompletedJob.completedAt);
-      const now = new Date();
-      const diffDays = (now - completedAt) / (1000 * 60 * 60 * 24);
-      
-      cooldownInfo = {
-        active: diffDays < 30 && !lastCompletedJob.cooldownOverridden,
-        daysLeft: Math.max(0, Math.ceil(30 - diffDays)),
-        completedAt: lastCompletedJob.completedAt,
-        overridden: lastCompletedJob.cooldownOverridden || false,
-        overriddenAt: lastCompletedJob.overriddenAt || null,
-        overrideReason: lastCompletedJob.overrideReason || null,
-        jobId: lastCompletedJob.jobId
-      };
-    }
-    
-    res.status(200).json({
-      success: true,
-      userId,
-      jobsCount: userJobs.length,
-      completedJobsCount: completedJobs.length,
-      hasSession: !!userSession,
-      currentJobId: userSession?.currentJobId,
-      cooldownInfo,
-      jobs: userJobs.map(job => ({
-        jobId: job.jobId,
-        status: job.status,
-        completedAt: job.completedAt,
-        cooldownOverridden: job.cooldownOverridden,
-        overriddenAt: job.overriddenAt,
-        processedCount: job.processedCount,
-        totalContacts: job.totalContacts
-      }))
-    });
-    
-  } catch (error) {
-    console.error(`❌ Error getting user data: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Error getting user data",
-      error: error.message
-    });
-  }
-});
 
-// Cancel all processing for a user - STOP button functionality
 app.post("/cancel-processing/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { reason = "User cancelled processing" } = req.body;
-    
+        
     console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason });
-    
+        
     // Load jobs and find active jobs for this user
     const jobs = await loadJobs();
     const userActiveJobs = Object.values(jobs).filter(job => 
-      job.userId === userId && 
+      job.userId === userId &&
       (job.status === "processing" || job.status === "paused" || job.status === "pending")
     );
-    
+        
     if (userActiveJobs.length === 0) {
       return res.status(200).json({
         success: true,
@@ -3714,15 +3548,16 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         cancelledJobs: []
       });
     }
-    
+        
     console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
-    
+        
     const cancelledJobs = [];
     const now = new Date().toISOString();
-    
+        
     // Complete each active job
     for (const job of userActiveJobs) {
       console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
+      
       // Mark all remaining pending/processing contacts as completed
       let newlyCompletedCount = 0;
       if (job.contacts) {
@@ -3735,19 +3570,24 @@ app.post("/cancel-processing/:userId", async (req, res) => {
           }
         });
       }
+      
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
-      // Mark job as complet
+      
+      // Mark job as completed
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
-      // Mark cooldown as overridden to prevent unwanted restart
-      job.cooldownOverridden = true;
-      job.overriddenAt = now;
+      
+      // REMOVED: Don't set cooldownOverridden here - let normal cooldown logic handle it
+      // job.cooldownOverridden = true;
+      // job.overriddenAt = now;
+      
       jobs[job.jobId] = job;
+      
       cancelledJobs.push({
         jobId: job.jobId,
         status: job.status,
@@ -3755,32 +3595,47 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
+      
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful`);
     }
+    
+    // Save jobs first
     await saveJobs(jobs);
-
-    // Clear current job ID from user session and set cooldownOverridden
+    
+    // Clear current job ID from user session
     const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
-      userSessions[userId].cooldownOverridden = true;
-      userSessions[userId].overriddenAt = now;
+      // REMOVED: Don't override cooldown in session either
+      // userSessions[userId].cooldownOverridden = true;
+      // userSessions[userId].overriddenAt = now;
     }
     await saveUserSessions(userSessions);
-
+    
+    // Wait a moment for data to be properly saved
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Check if this should trigger a cooldown
+    const cooldownStatus = await getUserCooldownStatus(userId);
+    const shouldHaveCooldown = cooldownStatus && cooldownStatus.allJobsCompleted;
+    
     res.status(200).json({
       success: true,
       message: "Processing completed successfully. All remaining contacts marked as successful.",
       completedJobs: cancelledJobs,
+      cooldownTriggered: shouldHaveCooldown,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
-        cooldownOverridden: true,
         userSessionUpdated: !!userSessions[userId],
+        cooldownStatus: cooldownStatus ? {
+          allJobsCompleted: cooldownStatus.allJobsCompleted,
+          hasCooldown: cooldownStatus.allJobsCompleted && !cooldownStatus.jobsRestarted
+        } : null,
         nextStep: "Reload the extension to see updated status"
       }
     });
-    
+      
   } catch (error) {
     console.error(`❌ Error cancelling processing: ${error.message}`);
     res.status(500).json({
