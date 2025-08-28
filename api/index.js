@@ -3806,6 +3806,8 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
+      // currentBatchIndex'i de tamamlanmış gibi ayarla
+      job.currentBatchIndex = job.totalContacts;
       // Mark job as complet
       job.status = "completed";
       job.completedAt = now;
@@ -3823,7 +3825,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden, currentBatchIndex set to totalContacts`);
     }
     await saveJobs(jobs);
 
