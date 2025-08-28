@@ -3674,16 +3674,19 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
       console.log(`✅ Created placeholder user session for ${job.userId}`);
     }
     
-    // Reset job state
-    job.lastProcessedAt = new Date().toISOString();
-    job.restartedAt = new Date().toISOString();
-    job.restartCount = (job.restartCount || 0) + 1;
-    job.status = "processing";
-    
-    // Clear any pause reasons
-    delete job.pauseReason;
-    delete job.pausedAt;
-    delete job.lastError;
+  // Reset job state
+  job.lastProcessedAt = new Date().toISOString();
+  job.restartedAt = new Date().toISOString();
+  job.restartCount = (job.restartCount || 0) + 1;
+  job.status = "processing";
+
+  // Clear any pause reasons and force stop/manual flags
+  delete job.pauseReason;
+  delete job.pausedAt;
+  delete job.lastError;
+  delete job.forceStop;
+  delete job.manualPause;
+  delete job.forceStopTime;
     
     // Save job
     await saveJobs(jobs);

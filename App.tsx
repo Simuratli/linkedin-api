@@ -111,6 +111,8 @@ function App() {
     active: boolean;
     daysLeft?: number;
     lastCompleted?: string;
+    needsOverride?: boolean;
+    overrideReason?: string;
   } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
@@ -568,6 +570,20 @@ function App() {
             lastCompleted: cooldownData.completedAt
           });
 
+          // Show info message in UI (all contacts updated)
+          chrome.runtime.sendMessage({
+            type: "PROCESS_STATUS",
+            data: {
+              status: "cooldown_active",
+              message: `🚫 Cooldown Period Active\nAll contacts updated.\nDays Remaining:\n${Math.max(0, Math.ceil(daysLeft))} days\nLast Completed:\n${new Date(cooldownData.completedAt).toLocaleString()}\nAll contacts have been processed. Please wait for the cooldown period to end before starting a new processing job.`,
+              cooldownInfo: {
+                active: true,
+                daysLeft: Math.max(0, Math.ceil(daysLeft)),
+                lastCompleted: cooldownData.completedAt
+              }
+            },
+          });
+
           return true; // User is in cooldown
         } else {
           console.log("✅ No cooldown active for user:", userId);
@@ -585,74 +601,141 @@ function App() {
   };
 
   // Handle cooldown override
-  const handleOverrideCooldown = async () => {
-    const userId = getUserId();
-    console.log("🔓 Attempting to override cooldown for user:", userId);
+const handleOverrideCooldown = async () => {
+  const userId = getUserId();
+  console.log("🔓 Attempting to override cooldown for user:", userId);
+  
+  try {
+    const response = await fetch(`${API_BASE_URL}/restart-processing/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        reason: 'User manual restart from extension'
+      })
+    });
     
-    try {
-      const response = await fetch(`${API_BASE_URL}/restart-processing/${encodeURIComponent(userId)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
+    const result = await response.json();
+    
+    if (result.success) {
+      console.log("✅ Processing restart successful:", result.message);
+      
+      // Clear cooldown state immediately
+      setCooldownInfo(null);
+      setJobStatus(null);
+      localStorage.removeItem("lastJobRun");
+      
+      // **CLEAR MONITORING ON OVERRIDE**
+      if (jobMonitorInterval.current) {
+        window.clearInterval(jobMonitorInterval.current);
+        jobMonitorInterval.current = null;
+        console.log("🧹 Cleared monitoring during cooldown override");
+      }
+      
+      // Send success message
+      chrome.runtime.sendMessage({
+        type: "PROCESS_STATUS",
+        data: {
+          status: "ready",
+          message: "✅ Cooldown overridden! You can now start processing contacts again.",
         },
-        body: JSON.stringify({
-          reason: 'User manual restart from extension'
-        })
       });
       
-      const result = await response.json();
+      // **NEW: Check for existing jobs after override**
+      console.log("🔍 Checking for existing jobs after cooldown override...");
       
-      if (result.success) {
-        console.log("✅ Processing restart successful:", result.message);
+      try {
+        const jobCheckResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+        console.log("🔍 Post-override job check status:", jobCheckResponse.status);
         
-        // Clear cooldown state immediately
-        setCooldownInfo(null);
-        setJobStatus(null);
-        localStorage.removeItem("lastJobRun");
-        
-        // **CLEAR MONITORING ON OVERRIDE**
-        if (jobMonitorInterval.current) {
-          window.clearInterval(jobMonitorInterval.current);
-          jobMonitorInterval.current = null;
-          console.log("🧹 Cleared monitoring during cooldown override");
+        if (jobCheckResponse.ok) {
+          const jobResult = await jobCheckResponse.json();
+          console.log("📋 Post-override job result:", jobResult);
+          
+          // Check if there's a job that can be resumed
+          if (jobResult.success && jobResult.canResume && jobResult.job) {
+            console.log("✅ Found resumable job after override:", jobResult.job.jobId);
+            
+            // Set the job status to trigger monitoring
+            setJobStatus(jobResult.job);
+            setDailyLimitInfo(jobResult.job.dailyLimitInfo);
+            
+            const ageInfo = jobResult.job.jobAge?.days > 0 ? ` (${jobResult.job.jobAge.days}d old)` : '';
+            let statusMessage = "";
+            
+            if (jobResult.job.status === "processing") {
+              statusMessage = `🔄 Continuing job${ageInfo}... (${jobResult.job.processedCount}/${jobResult.job.totalContacts})`;
+            } else if (jobResult.job.status === "paused") {
+              statusMessage = `⏸️ Found paused job${ageInfo}. Ready to resume: ${jobResult.job.processedCount}/${jobResult.job.totalContacts}`;
+            } else {
+              statusMessage = `Found ${jobResult.job.status} job${ageInfo}. Progress: ${jobResult.job.processedCount}/${jobResult.job.totalContacts}`;
+            }
+            
+            // Update the message to show job found
+            chrome.runtime.sendMessage({
+              type: "PROCESS_STATUS",
+              data: {
+                status: jobResult.job.status === "processing" ? "continuing" : "can_resume",
+                message: statusMessage,
+                canResume: true,
+                jobData: jobResult.job,
+                dailyLimitInfo: jobResult.job.dailyLimitInfo,
+                humanPattern: jobResult.currentPatternInfo,
+                jobAge: jobResult.job.jobAge,
+              },
+            });
+            
+            console.log("✅ Job status set, monitoring will start via useEffect");
+          } else {
+            console.log("ℹ️ No resumable job found after override, staying in ready state");
+            // Check daily limits for ready state message
+            const limits = await checkDailyLimits(userId);
+            const readyMessage = limits 
+              ? `Ready to process. Today: ${limits.dailyCount}/${limits.dailyLimit} | Current pattern: ${limits.currentPattern} (${limits.patternCount}/${limits.patternLimit || '∞'})`
+              : "Ready to process LinkedIn profiles";
+            
+            chrome.runtime.sendMessage({
+              type: "PROCESS_STATUS",
+              data: {
+                status: "ready",
+                message: readyMessage,
+                dailyLimitInfo: limits,
+              },
+            });
+          }
+        } else {
+          console.log("ℹ️ Job check failed after override, staying in ready state");
         }
-        
-        // Send success message
-        chrome.runtime.sendMessage({
-          type: "PROCESS_STATUS",
-          data: {
-            status: "ready",
-            message: "✅ Cooldown overridden! You can now start processing contacts again.",
-          },
-        });
-        
-        // **DON'T CHECK FOR JOBS** - Just stay in ready state
-        console.log("✅ Override completed - staying in ready state, no job check");
-        
-        return true;
-      } else {
-        console.error("❌ Processing restart failed:", result.message);
-        chrome.runtime.sendMessage({
-          type: "PROCESS_STATUS",
-          data: {
-            status: "error",
-            message: `❌ Failed to restart processing: ${result.message}`,
-          },
-        });
-        return false;
+      } catch (jobCheckError) {
+        console.error("❌ Error checking jobs after override:", jobCheckError);
+        // Don't fail the override, just log the error
       }
-    } catch (error) {
-      console.error("❌ Error during processing restart:", error);
+      
+      return true;
+    } else {
+      console.error("❌ Processing restart failed:", result.message);
       chrome.runtime.sendMessage({
         type: "PROCESS_STATUS",
         data: {
           status: "error",
-          message: `❌ Error restarting processing: ${error.message}`,
+          message: `❌ Failed to restart processing: ${result.message}`,
         },
       });
       return false;
     }
-  };
+  } catch (error) {
+    console.error("❌ Error during processing restart:", error);
+    chrome.runtime.sendMessage({
+      type: "PROCESS_STATUS",
+      data: {
+        status: "error",
+        message: `❌ Error restarting processing: ${error.message}`,
+      },
+    });
+    return false;
+  }
+};
 
   // **UPDATED** Handle stopping/completing processing - marks all remaining as successful
   const handleStopProcessing = async () => {
@@ -660,7 +743,7 @@ function App() {
     console.log("✅ Attempting to complete processing for user:", userId);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/complete-processing/${encodeURIComponent(userId)}`, {
+      const response = await fetch(`${API_BASE_URL}/cancel-processing/${encodeURIComponent(userId)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -758,6 +841,10 @@ function App() {
     if (response.ok) {
       // Success case
       return result;
+    } else if (response.status === 403 && result.cooldownOverridden) {
+      // **NEW** Cooldown overridden case - user needs to see override button
+      console.log("🚫 API returned cooldown overridden:", result);
+      return { ...result, needsOverrideButton: true };
     } else if (response.status === 400 && result.canResume) {
       // Incomplete job case - this is actually expected behavior
       console.log("📋 API returned incomplete job info:", result);
@@ -854,7 +941,24 @@ function App() {
         if (response.ok) {
           const result = await response.json();
           console.log("📋 User job API result:", result);
-          
+
+          // Defensive: always use result.job if present, else try to build from jobStatus string
+          let jobObj = null;
+          if (result.job && typeof result.job === 'object') {
+            jobObj = result.job;
+          } else if (result.jobStatus && typeof result.jobStatus === 'string') {
+            // If only a string status is returned, build a minimal job object
+            jobObj = {
+              jobId: result.jobId || 'unknown',
+              status: result.jobStatus,
+              totalContacts: result.totalContacts || 0,
+              processedCount: result.processedCount || 0,
+              successCount: result.successCount || 0,
+              failureCount: result.failureCount || 0,
+              createdAt: result.createdAt || new Date().toISOString(),
+            };
+          }
+
           // Handle cooldown case from user-job endpoint
           if (result.cooldownActive) {
             setCooldownInfo({
@@ -876,18 +980,18 @@ function App() {
             });
             return;
           }
-          
+
           // Additional check for cooldown even if not explicitly returned
-          if (result.job && result.job.status === "completed") {
+          if (jobObj && jobObj.status === "completed") {
             // **CHECK FOR COOLDOWN OVERRIDE** - If job was override, don't trigger cooldown
-            if (result.job.cooldownOverridden) {
+            if (jobObj.cooldownOverridden) {
               console.log("🔓 Job was cooldown overridden - ignoring completed job and staying ready");
               setJobStatus(null);
               setAuthError(null);
               const readyMessage = limits 
                 ? `Ready to process. Today: ${limits.dailyCount}/${limits.dailyLimit} | Current pattern: ${limits.currentPattern} (${limits.patternCount}/${limits.patternLimit || '∞'})`
                 : "Ready to process LinkedIn profiles";
-              
+
               chrome.runtime.sendMessage({
                 type: "PROCESS_STATUS",
                 data: {
@@ -899,16 +1003,16 @@ function App() {
               });
               return;
             }
-            
-            const completedAt = new Date(result.job.completedAt);
+
+            const completedAt = new Date(jobObj.completedAt);
             const daysSinceCompletion = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60 * 24);
-            
-            if (daysSinceCompletion < 30 && result.job.processedCount >= result.job.totalContacts) {
+
+            if (daysSinceCompletion < 30 && jobObj.processedCount >= jobObj.totalContacts) {
               const daysLeft = Math.ceil(30 - daysSinceCompletion);
               setCooldownInfo({
                 active: true,
                 daysLeft: daysLeft,
-                lastCompleted: result.job.completedAt
+                lastCompleted: jobObj.completedAt
               });
               chrome.runtime.sendMessage({
                 type: "PROCESS_STATUS",
@@ -918,80 +1022,80 @@ function App() {
                   cooldownInfo: {
                     active: true,
                     daysLeft: daysLeft,
-                    lastCompleted: result.job.completedAt
+                    lastCompleted: jobObj.completedAt
                   }
                 },
               });
               return;
             }
           }
-          
-          // **NEW** Handle cancelled job case
-          if (result.job && result.job.status === "cancelled") {
-            setJobStatus(result.job);
+
+          // **NEW** Handle cancelled/failed job case
+          if (jobObj && (jobObj.status === "cancelled" || jobObj.status === "failed")) {
+            setJobStatus(jobObj);
             chrome.runtime.sendMessage({
               type: "PROCESS_STATUS",
               data: {
-                status: "cancelled",
-                message: `🛑 Processing was cancelled. Progress saved: ${result.job.processedCount}/${result.job.totalContacts} contacts. You can restart processing from where you left off.`,
+                status: jobObj.status,
+                message: `🛑 Processing was ${jobObj.status}. Progress saved: ${jobObj.processedCount}/${jobObj.totalContacts} contacts. You can restart processing from where you left off.`,
                 progress: {
-                  total: result.job.totalContacts,
-                  processed: result.job.processedCount,
-                  success: result.job.successCount,
-                  failed: result.job.failureCount,
+                  total: jobObj.totalContacts,
+                  processed: jobObj.processedCount,
+                  success: jobObj.successCount,
+                  failed: jobObj.failureCount,
                 },
                 canRestart: true,
-                jobData: result.job,
+                jobData: jobObj,
               },
             });
             return;
           }
-          
-          if (result.success && result.canResume) {
-            console.log("✅ Setting NEW job status with ID:", result.job.jobId);
-            
-            setJobStatus(result.job);
-            setDailyLimitInfo(result.job.dailyLimitInfo);
+
+          if (result.success && result.canResume && jobObj) {
+            console.log("✅ Setting NEW job status with ID:", jobObj.jobId);
+
+            setJobStatus(jobObj);
+            setDailyLimitInfo(jobObj.dailyLimitInfo);
             setAuthError(null); // Clear auth error on successful job check
-            
+
             let statusMessage = "";
             let canResume = true;
-            const ageInfo = result.job.jobAge?.days > 0 ? ` (${result.job.jobAge.days}d old)` : '';
+            const ageInfo = jobObj.jobAge?.days > 0 ? ` (${jobObj.jobAge.days}d old)` : '';
 
-            if (result.job.status === "processing") {
-              statusMessage = `🔄 Continuing job${ageInfo}... (${result.job.processedCount}/${result.job.totalContacts})`;
+            if (jobObj.status === "processing") {
+              statusMessage = `🔄 Continuing job${ageInfo}... (${jobObj.processedCount}/${jobObj.totalContacts})`;
               // Don't call startJobMonitoring here - let the useEffect handle it
-            } else if (result.job.status === "paused") {
-              if (result.job.pauseReason === "daily_limit_reached") {
+            } else if (jobObj.status === "paused") {
+              if (jobObj.pauseReason === "daily_limit_reached") {
                 statusMessage = `⏸️ Paused${ageInfo} - Daily limit reached. Will resume tomorrow`;
                 canResume = false;
               } 
-              else if (result.job.pauseReason === "pattern_limit_reached") {
-                statusMessage = `⏸️ Paused${ageInfo} - ${result.job.dailyLimitInfo?.currentPattern} pattern limit reached`;
+              else if (jobObj.pauseReason === "pattern_limit_reached") {
+                statusMessage = `⏸️ Paused${ageInfo} - ${jobObj.dailyLimitInfo?.currentPattern} pattern limit reached`;
               }
-              else if (result.job.pauseReason === "pause_period") {
-                const resumeTime = result.job.estimatedResumeTime 
-                  ? new Date(result.job.estimatedResumeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              else if (jobObj.pauseReason === "pause_period") {
+                const resumeTime = jobObj.estimatedResumeTime 
+                  ? new Date(jobObj.estimatedResumeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                   : 'soon';
-                statusMessage = `⏸️ Paused${ageInfo} - Currently in ${result.job.dailyLimitInfo?.currentPattern} period. Resuming ${resumeTime}`;
+                statusMessage = `⏸️ Paused${ageInfo} - Currently in ${jobObj.dailyLimitInfo?.currentPattern} period. Resuming ${resumeTime}`;
               }
               else {
-                statusMessage = `⏸️ Found paused job${ageInfo}. Processed: ${result.job.processedCount}/${result.job.totalContacts}`;
+                statusMessage = `⏸️ Found paused job${ageInfo}. Processed: ${jobObj.processedCount}/${jobObj.totalContacts}`;
               }
             } else {
-              statusMessage = `Found ${result.job.status} job${ageInfo}. Progress: ${result.job.processedCount}/${result.job.totalContacts}`;
+              statusMessage = `Found ${jobObj.status} job${ageInfo}. Progress: ${jobObj.processedCount}/${jobObj.totalContacts}`;
             }
 
             chrome.runtime.sendMessage({
               type: "PROCESS_STATUS",
               data: {
-                status: result.job.status === "processing" ? "continuing" : "can_resume",
+                status: jobObj.status === "processing" ? "continuing" : "can_resume",
                 message: statusMessage,
                 canResume,
-                jobData: result.job,
-                dailyLimitInfo: result.job.dailyLimitInfo,
+                jobData: jobObj,
+                dailyLimitInfo: jobObj.dailyLimitInfo,
                 humanPattern: result.currentPatternInfo,
-                jobAge: result.job.jobAge,
+                jobAge: jobObj.jobAge,
               },
             });
           } else {
@@ -1001,7 +1105,7 @@ function App() {
             const readyMessage = limits 
               ? `Ready to process. Today: ${limits.dailyCount}/${limits.dailyLimit} | Current pattern: ${limits.currentPattern} (${limits.patternCount}/${limits.patternLimit || '∞'})`
               : "Ready to process LinkedIn profiles";
-            
+
             chrome.runtime.sendMessage({
               type: "PROCESS_STATUS",
               data: {
@@ -1188,8 +1292,39 @@ function App() {
         try {
           const result = await callStartProcessingAPI(requestData);
           
-          // Handle cooldown override 403 response
-          if (result.cooldownOverridden === true) {
+          // Handle cooldown override 403 response - show override button
+          if (result.needsOverrideButton || (result.cooldownOverridden && !result.success)) {
+            console.log("🚫 Cooldown overridden - showing override option:", result);
+            
+            // Set cooldown info to show the override button
+            setCooldownInfo({
+              active: true,
+              daysLeft: result.daysLeft || 30, // fallback to 30 days
+              lastCompleted: result.overriddenAt,
+              needsOverride: true, // Special flag for override case
+              overrideReason: result.message
+            });
+            
+            chrome.runtime.sendMessage({
+              type: "PROCESS_STATUS",
+              data: {
+                status: "cooldown_override_needed",
+                message: result.message || "Cooldown is overridden. Please use the override option to continue.",
+                cooldownInfo: {
+                  active: true,
+                  daysLeft: result.daysLeft || 30,
+                  lastCompleted: result.overriddenAt,
+                  needsOverride: true,
+                  overrideReason: result.message
+                },
+                needsOverride: true
+              },
+            });
+            return;
+          }
+          
+          // Handle cooldown override success case (older logic)
+          if (result.cooldownOverridden === true && result.success) {
             // Always persist cooldownOverridden state in localStorage for reloads
             const cooldownOverrideState = {
               jobId: result.jobId,
@@ -1405,4 +1540,4 @@ function App() {
   );
 }
 
-export default App
+export default App;

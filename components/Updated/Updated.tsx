@@ -97,12 +97,15 @@ interface JobStatusPopoverProps {
     active: boolean;
     daysLeft?: number;
     lastCompleted?: string;
+    needsOverride?: boolean;
+    overrideReason?: string;
   } | null;
   authError?: string | null;
   onOverrideCooldown?: () => Promise<boolean>;
   onCleanOverride?: () => Promise<boolean>;
   onStopProcessing?: () => Promise<boolean>;
   onRestartAfterCancel?: (resetContacts?: boolean) => Promise<boolean>;
+  onShowOverrideButton?: () => void;
 }
 
 export function JobStatusPopover({ 
@@ -116,11 +119,66 @@ export function JobStatusPopover({
   onOverrideCooldown,
   onCleanOverride,
   onStopProcessing,
-  onRestartAfterCancel
+  onRestartAfterCancel,
+  onShowOverrideButton
 }: JobStatusPopoverProps) {
   const [visible, setVisible] = useState(false);
   const [showRestartOptions, setShowRestartOptions] = useState(false);
 
+    // FAILED/CANCELLED JOB YENİDEN BAŞLATMA
+    const API_BASE_URL = "https://linkedin-api-basl.onrender.com";
+    const handleRestartJob = async () => {
+      if (!jobStatus) return;
+      const confirmed = window.confirm(
+        "Bu job başarısız oldu veya iptal edildi. Yeniden başlatmak istiyor musunuz?"
+      );
+      if (!confirmed) return;
+      try {
+        const res = await fetch(`${API_BASE_URL}/debug-restart-job/${jobStatus.jobId}`, { method: "POST" });
+        const data = await res.json();
+        if (data.success) {
+          alert("Job yeniden başlatıldı!");
+          // Optionally, reload or update job progress here
+        } else {
+          alert("Başlatılamadı: " + data.message);
+        }
+      } catch (err) {
+        alert("Bir hata oluştu: " + err);
+      }
+    };
+
+    // Always show restart button for failed/cancelled jobs (outside popup)
+    const alwaysVisibleRestartButton = () => {
+      if (!jobStatus) return null;
+      if (jobStatus.status === "failed" || jobStatus.status === "cancelled") {
+        return (
+          <div className="job-controls-section always-visible-restart" style={{ marginBottom: 12 }}>
+            <button
+              className="control-button restart-button"
+              onClick={handleRestartJob}
+              style={{
+                background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                color: "white",
+                border: "1px solid #2563EB",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+                marginRight: 8
+              }}
+            >
+              🔄 Job'u Yeniden Başlat
+            </button>
+            <small style={{ color: "#6B7280", fontSize: "10px", marginTop: "4px", display: "inline-block" }}>
+              Job'u tekrar başlatır ve kaldığı yerden devam eder.
+            </small>
+          </div>
+        );
+      }
+      return null;
+    };
   // Handle timing for showing restart options after cancellation
   useEffect(() => {
     if (jobStatus?.status === "cancelled" && jobStatus.cancelledAt) {
@@ -137,7 +195,6 @@ export function JobStatusPopover({
 
   const handleStopProcessing = async () => {
     if (!onStopProcessing) return;
-    
     const confirmed = window.confirm(
       `Are you sure you want to complete the current processing job?\n\n` +
       `This will:\n` +
@@ -146,11 +203,13 @@ export function JobStatusPopover({
       `• Count all contacts toward your daily processed total\n\n` +
       `Note: This action cannot be undone. All pending contacts will be marked as successful.`
     );
-    
     if (confirmed) {
       const success = await onStopProcessing();
       if (success) {
         console.log("✅ Processing completed successfully with all remaining contacts marked as successful");
+        if (typeof onShowOverrideButton === 'function') {
+          onShowOverrideButton();
+        }
       }
     }
   };
@@ -726,6 +785,7 @@ const renderErrors = () => {
   );
 };
 
+
   const renderJobControls = () => {
     // Show different controls based on job status
     if (!jobStatus) return null;
@@ -884,47 +944,47 @@ const renderErrors = () => {
   }
 
   return (
-    <div
-      className="job-status-wrapper"
-      onMouseEnter={() => setVisible(true)}
-      onMouseLeave={() => setVisible(false)}
-      style={{ position: "relative", display: "inline-block" }}
-    >
-      <span className="update-icon" style={{ cursor: "pointer" }}>
-        <UpdateIcon status={jobStatus?.status === "cancelled" ? "paused" : (jobStatus?.status || "pending")} />
-        {renderStatusBadge()}
-      </span>
+    <div>
+      {alwaysVisibleRestartButton()}
+      <div
+        className="job-status-wrapper"
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        style={{ position: "relative", display: "inline-block" }}
+      >
+        <span className="update-icon" style={{ cursor: "pointer" }}>
+          <UpdateIcon status={jobStatus?.status === "cancelled" ? "paused" : (jobStatus?.status || "pending")} />
+          {renderStatusBadge()}
+        </span>
 
-      {visible && (
-        <div className="popup-box enhanced-popup" style={{ 
-          position: 'absolute',
-          top: '-3px',
-          zIndex: 9999 
-        }}>
-          <div className="popup-header">
-            <h3>LinkedIn Processing Status</h3>
-          </div>
-          
-
-          <div className="popup-content">
-            {renderCooldownInfo()}
-            {renderPatternInfo()}
-            {renderLimitsInfo()}
-            {renderJobProgress()}
-            {renderJobControls()}
-            {renderPatternBreakdown()}
-            {renderPauseReason()}
-            {renderTimestamps()}
-            {renderErrors()}
-          </div>
-
-          {jobStatus && (
-            <div className="popup-footer">
-              <small>Job ID: {jobStatus.jobId}</small>
+        {visible && (
+          <div className="popup-box enhanced-popup" style={{ 
+            position: 'absolute',
+            top: '-3px',
+            zIndex: 9999 
+          }}>
+            <div className="popup-header">
+              <h3>LinkedIn Processing Status</h3>
             </div>
-          )}
-        </div>
-      )}
+            <div className="popup-content">
+              {renderCooldownInfo()}
+              {renderPatternInfo()}
+              {renderLimitsInfo()}
+              {renderJobProgress()}
+              {renderJobControls()}
+              {renderPatternBreakdown()}
+              {renderPauseReason()}
+              {renderTimestamps()}
+              {renderErrors()}
+            </div>
+            {jobStatus && (
+              <div className="popup-footer">
+                <small>Job ID: {jobStatus.jobId}</small>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
