@@ -1103,12 +1103,24 @@ const processJobInBackground = async (jobId) => {
     const contactBatches = chunkArray(pendingContacts, BATCH_SIZE);
 
     // Continue from current batch index
-    const startBatchIndex = job.currentBatchIndex || 0;
+    let startBatchIndex = job.currentBatchIndex || 0;
+    if (startBatchIndex >= contactBatches.length) {
+      console.log(`🟥 [BATCH INDEX FIX] currentBatchIndex (${startBatchIndex}) >= contactBatches.length (${contactBatches.length}), resetting to 0`);
+      startBatchIndex = 0;
+      job.currentBatchIndex = 0;
+      await saveJobs({ ...(await loadJobs()), [jobId]: job });
+    }
 
     console.log(`📊 Processing ${pendingContacts.length} remaining contacts in ${contactBatches.length} batches for job ${jobId}`);
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
+      // KORUMA: currentBatchIndex hiçbir zaman batch sayısından büyük olamaz
+      if (job.currentBatchIndex >= contactBatches.length) {
+        console.log(`🟥 [BATCH INDEX GUARD] currentBatchIndex (${job.currentBatchIndex}) >= contactBatches.length (${contactBatches.length}), sıfırlanıyor.`);
+        job.currentBatchIndex = 0;
+        await saveJobs({ ...(await loadJobs()), [jobId]: job });
+      }
   console.log(`🟦 [BATCH ${batchIndex + 1}] BEGIN`);
       
       // CRITICAL: Check job status at the beginning of EVERY batch
@@ -1267,6 +1279,12 @@ const processJobInBackground = async (jobId) => {
         console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
         
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
+          // KORUMA: currentBatchIndex hiçbir zaman batch sayısından büyük olamaz (contact içinde de kontrol)
+          if (job.currentBatchIndex >= contactBatches.length) {
+            console.log(`🟥 [CONTACT BATCH INDEX GUARD] currentBatchIndex (${job.currentBatchIndex}) >= contactBatches.length (${contactBatches.length}), sıfırlanıyor.`);
+            job.currentBatchIndex = 0;
+            await saveJobs({ ...(await loadJobs()), [jobId]: job });
+          }
           console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] BEGIN`);
           
 
