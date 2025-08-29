@@ -1254,35 +1254,41 @@ const processJobInBackground = async (jobId) => {
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
           
           // CRITICAL: Check job status before EVERY contact
-          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1}`)) return;
-          
+          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before processing)`)) return;
+
           // CRITICAL: Get fresh job and contact data
           jobs = await loadJobs();
           job = jobs[jobId];
-          
+
           // Find the current contact in the fresh data
           const originalContact = batch[contactIndex];
-          const contact = job.contacts.find(c => c.contactId === originalContact.contactId);
-          
+          let contact = job.contacts.find(c => c.contactId === originalContact.contactId);
+
           if (!contact) {
             console.log(`⚠️ Contact ${originalContact.contactId} not found in fresh job data`);
             continue;
           }
-          
+
           // Skip if contact is already processed (due to cancel operation)
-          if (contact.status === "completed") {
-            console.log(`✅ Contact ${contact.contactId} already completed, skipping`);
+          if (["completed", "cancelled", "failed"].includes(contact.status)) {
+            console.log(`✅ Contact ${contact.contactId} already ${contact.status}, skipping`);
             continue;
           }
-          
-          if (contact.status === "failed") {
-            console.log(`❌ Contact ${contact.contactId} already failed, skipping`);
-            continue;
-          }
-          
+
+          // Ekstra güvenlik: contact'ı processing yapmadan hemen önce tekrar job status kontrolü
+          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (right before processing)`)) return;
+
           try {
             console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
             contact.status = "processing";
+            // Hemen sonra tekrar güncel job ve contact'ı kontrol et
+            jobs = await loadJobs();
+            job = jobs[jobId];
+            contact = job.contacts.find(c => c.contactId === originalContact.contactId);
+            if (!contact || ["completed", "cancelled", "failed"].includes(contact.status)) {
+              console.log(`⏹️ Contact ${originalContact.contactId} was externally set to ${contact ? contact.status : "unknown"} after processing started, skipping`);
+              continue;
+            }
 
             // Get fresh user session for each contact
             const currentUserSessions = await loadUserSessions();
