@@ -988,31 +988,28 @@ app.post("/start-processing", async (req, res) => {
 
 // Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
-  console.log(`Starting background processing for job: ${jobId}`);
-  console.log(`Process start time: ${new Date().toISOString()}`);
+  console.log(`🔄 Starting background processing for job: ${jobId}`);
+  console.log(`🕐 Process start time: ${new Date().toISOString()}`);
   
   // Initial job load
   let jobs = await loadJobs();
   let job = jobs[jobId];
 
   if (!job) {
-    console.error(`No job found with ID ${jobId}`);
+    console.error(`❌ No job found with ID ${jobId}`);
     return;
   }
 
   // CRITICAL: Check job status before doing anything
   if (await checkJobStatusAndExit(jobId, "initial check")) return;
 
-  // DEBUG: Log initial job state
-  debugJobState(job, "INITIAL_LOAD");
-
   const userSessions = await loadUserSessions();
   const userSession = userSessions[job.userId];
   
   if (!userSession) {
-    console.error(`No user session found for job ${jobId} (userId: ${job.userId})`);
-    console.log(`Job exists but user session is missing. This usually happens after server restart.`);
-    console.log(`Solution: User needs to reconnect through extension or use debug-restart-job endpoint`);
+    console.error(`❌ No user session found for job ${jobId} (userId: ${job.userId})`);
+    console.log(`🔧 Job exists but user session is missing. This usually happens after server restart.`);
+    console.log(`💡 Solution: User needs to reconnect through extension or use debug-restart-job endpoint`);
     
     // Mark job as paused with specific reason
     job.status = "paused";
@@ -1027,7 +1024,7 @@ const processJobInBackground = async (jobId) => {
     return;
   }
 
-  console.log(`Processing job ${jobId}:`, {
+  console.log(`📊 Processing job ${jobId}:`, {
     status: job.status,
     processed: job.processedCount,
     total: job.totalContacts,
@@ -1041,16 +1038,6 @@ const processJobInBackground = async (jobId) => {
     
     // Check again after reload
     if (await checkJobStatusAndExit(jobId, "after reload")) return;
-    
-    // DEBUG: Log job state after reload
-    debugJobState(job, "AFTER_RELOAD");
-    
-    // FIXED: Clear stalled status when processing resumes
-    if (job.stalledAt) {
-      console.log(`Clearing stalled status from previous processing attempt`);
-      delete job.stalledAt;
-      delete job.stalledReason;
-    }
     
     // Update job status to processing ONLY if it's not completed/cancelled
     if (!["completed", "cancelled", "failed"].includes(job.status)) {
@@ -1070,7 +1057,7 @@ const processJobInBackground = async (jobId) => {
       
       await saveJobs({ ...jobs, [jobId]: job });
     } else {
-      console.log(`Job ${jobId} is already ${job.status}. Exiting background processing.`);
+      console.log(`⏹️ Job ${jobId} is already ${job.status}. Exiting background processing.`);
       return;
     }
 
@@ -1085,103 +1072,31 @@ const processJobInBackground = async (jobId) => {
     // Check if job was cancelled while we were setting up
     if (await checkJobStatusAndExit(jobId, "before processing contacts")) return;
 
-    // DEBUG: Log job state before contact processing
-    debugJobState(job, "BEFORE_CONTACT_PROCESSING");
-
-    // FIXED: More robust contact filtering with detailed logging
-    let pendingContacts = [];
+    // Get pending contacts from FRESH job data
+    const pendingContacts = job.contacts.filter((c) => c.status === "pending");
     
-    if (!job.contacts || !Array.isArray(job.contacts)) {
-      console.error(`Job ${jobId} has invalid or missing contacts array`);
-      console.log(`Contacts value:`, job.contacts);
-      
-      // Try to recover from restart endpoint data
-      if (job.totalContacts > 0) {
-        console.log(`Attempting to recover contacts from CRM...`);
-        // This should trigger the restart endpoint logic
-        job.status = "paused";
-        job.pauseReason = "contacts_array_corrupted";
-        job.lastError = {
-          type: "DATA_ERROR",
-          message: "Contacts array is missing or corrupted. Please restart the job.",
-          timestamp: new Date().toISOString()
-        };
-        await saveJobs({ ...(await loadJobs()), [jobId]: job });
-        return;
-      }
-    } else {
-      // Filter pending contacts with detailed logging
-      pendingContacts = job.contacts.filter((contact, index) => {
-        const isPending = contact.status === "pending";
-        if (isPending) {
-          console.log(`Pending contact ${pendingContacts.length + 1}: ${contact.contactId} - ${contact.linkedinUrl || 'NO_URL'}`);
-        }
-        return isPending;
-      });
-      
-      console.log(`Contact filtering results: ${pendingContacts.length} pending out of ${job.contacts.length} total contacts`);
-    }
-    
-    // FIXED: Better handling of "no pending contacts" scenario
+    // If no pending contacts remain, job is complete
     if (pendingContacts.length === 0) {
-      console.log(`No pending contacts found for job ${jobId}`);
+      console.log(`✅ No pending contacts found. Job ${jobId} appears to be completed.`);
       
-      // Check if this means job is actually complete
-      const completedCount = job.contacts.filter(c => c.status === "completed").length;
-      const failedCount = job.contacts.filter(c => c.status === "failed").length;
-      const totalProcessed = completedCount + failedCount;
-      
-      console.log(`Job completion analysis:`, {
-        totalContacts: job.totalContacts,
-        contactsArrayLength: job.contacts.length,
-        completedCount,
-        failedCount,
-        totalProcessed,
-        shouldBeComplete: totalProcessed >= job.totalContacts
-      });
-      
-      if (totalProcessed >= job.totalContacts) {
-        console.log(`Job ${jobId} is actually completed - all contacts processed`);
-        
-        // Only mark as completed if not already completed by external operation
-        if (job.status === "processing") {
-          job.status = "completed";
-          job.completedAt = new Date().toISOString();
-          job.completionReason = "all_contacts_processed";
-          await saveJobs({ ...(await loadJobs()), [jobId]: job });
-          console.log(`Job ${jobId} marked as completed - all contacts processed`);
-        }
-        return;
-      } else {
-        console.log(`Job ${jobId} has no pending contacts but totalProcessed (${totalProcessed}) < totalContacts (${job.totalContacts})`);
-        console.log(`This indicates a data consistency issue. Marking as paused for manual review.`);
-        
-        job.status = "paused";
-        job.pauseReason = "data_consistency_issue";
-        job.lastError = {
-          type: "DATA_ERROR",
-          message: `No pending contacts found but ${totalProcessed}/${job.totalContacts} processed. Please restart the job.`,
-          timestamp: new Date().toISOString()
-        };
+      // Only mark as completed if not already completed by external operation
+      if (job.status === "processing") {
+        job.status = "completed";
+        job.completedAt = new Date().toISOString();
+        job.completionReason = "no_pending_contacts_found";
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
-        return;
+        console.log(`🎉 Job ${jobId} marked as completed - no pending contacts`);
       }
+      return;
     }
     
     const contactBatches = chunkArray(pendingContacts, BATCH_SIZE);
 
-    // FIXED: Better batch index handling
-    let startBatchIndex = job.currentBatchIndex || 0;
-    
-    // Reset batch index if it's beyond the current batches (can happen after restart)
-    if (startBatchIndex >= contactBatches.length) {
-      console.log(`Resetting batch index from ${startBatchIndex} to 0 (only ${contactBatches.length} batches available)`);
-      startBatchIndex = 0;
-      job.currentBatchIndex = 0;
-    }
+    // Continue from current batch index
+    const startBatchIndex = job.currentBatchIndex || 0;
 
-    console.log(`Processing ${pendingContacts.length} remaining contacts in ${contactBatches.length} batches for job ${jobId}`);
-    console.log(`Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
+    console.log(`📊 Processing ${pendingContacts.length} remaining contacts in ${contactBatches.length} batches for job ${jobId}`);
+    console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
       
@@ -1204,7 +1119,7 @@ const processJobInBackground = async (jobId) => {
       // Check if pattern has changed
       const newPattern = getCurrentHumanPattern();
       if (newPattern.name !== currentPatternName) {
-        console.log(`Pattern changed from ${currentPatternName} to ${newPattern.name}`);
+        console.log(`🔄 Pattern changed from ${currentPatternName} to ${newPattern.name}`);
 
         // Record pattern change
         if (!job.humanPatterns.patternHistory)
@@ -1226,19 +1141,19 @@ const processJobInBackground = async (jobId) => {
       const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
       
       if (!limitCheck.canProcess) {
-        console.log(`Limits reached for user ${job.userId}. Pausing job.`);
-        console.log(`Pattern: ${limitCheck.currentPattern} (${limitCheck.patternCount}/${limitCheck.patternLimit})`);
-        console.log(`Today: ${limitCheck.dailyCount}/${limitCheck.dailyLimit}, This hour: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`);
+        console.log(`🚫 Limits reached for user ${job.userId}. Pausing job.`);
+        console.log(`📊 Pattern: ${limitCheck.currentPattern} (${limitCheck.patternCount}/${limitCheck.patternLimit})`);
+        console.log(`📊 Today: ${limitCheck.dailyCount}/${limitCheck.dailyLimit}, This hour: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`);
 
         let pauseReason = "limit_reached";
         let estimatedResume = limitCheck.estimatedResumeTime;
 
         if (limitCheck.inPause) {
           pauseReason = "pause_period";
-          console.log(`Currently in ${limitCheck.currentPattern} pause period`);
+          console.log(`⏸️ Currently in ${limitCheck.currentPattern} pause period`);
         } else if (limitCheck.patternCount >= limitCheck.patternLimit) {
           pauseReason = "pattern_limit_reached";
-          console.log(`Pattern limit reached for ${limitCheck.currentPattern}`);
+          console.log(`📈 Pattern limit reached for ${limitCheck.currentPattern}`);
         } else if (limitCheck.dailyCount >= limitCheck.dailyLimit) {
           pauseReason = "daily_limit_reached";
         } else if (limitCheck.hourlyCount >= limitCheck.hourlyLimit) {
@@ -1255,7 +1170,7 @@ const processJobInBackground = async (jobId) => {
 
         if (estimatedResume) {
           const resumeTime = new Date(estimatedResume);
-          console.log(`Job will resume at ${resumeTime.toLocaleString()}`);
+          console.log(`⏰ Job will resume at ${resumeTime.toLocaleString()}`);
         }
 
         return;
@@ -1265,12 +1180,12 @@ const processJobInBackground = async (jobId) => {
 
       // Check if user session is still valid - more detailed error checking
       try {
-        console.log(`Kullanıcı oturumu kontrol ediliyor: ${job.userId}`);
+        console.log(`🔍 Kullanıcı oturumu kontrol ediliyor: ${job.userId}`);
         const currentUserSessions = await loadUserSessions();
         const userSessionForValidation = currentUserSessions[job.userId];
 
         if (!userSessionForValidation) {
-          console.error(`Kullanıcı ${job.userId} için oturum bulunamadı`);
+          console.error(`❌ Kullanıcı ${job.userId} için oturum bulunamadı`);
           job.status = "paused";
           job.pauseReason = "session_not_found";
           job.lastError = {
@@ -1283,7 +1198,7 @@ const processJobInBackground = async (jobId) => {
         }
         
         if (!userSessionForValidation.accessToken) {
-          console.error(`Kullanıcı ${job.userId} için Dataverse erişim token'ı yok`);
+          console.error(`❌ Kullanıcı ${job.userId} için Dataverse erişim token'ı yok`);
           job.status = "paused";
           job.pauseReason = "dataverse_session_invalid";
           job.lastError = {
@@ -1296,7 +1211,7 @@ const processJobInBackground = async (jobId) => {
         }
         
         if (!userSessionForValidation.li_at || !userSessionForValidation.jsessionid) {
-          console.error(`Kullanıcı ${job.userId} için LinkedIn oturum bilgisi eksik`);
+          console.error(`❌ Kullanıcı ${job.userId} için LinkedIn oturum bilgisi eksik`);
           job.status = "paused";
           job.pauseReason = "linkedin_session_invalid";
           job.lastError = {
@@ -1308,9 +1223,9 @@ const processJobInBackground = async (jobId) => {
           return;
         }
         
-        console.log(`Kullanıcı oturumu geçerli: ${job.userId}`);
+        console.log(`✅ Kullanıcı oturumu geçerli: ${job.userId}`);
       } catch (sessionError) {
-        console.error(`Oturum kontrolü hatası: ${sessionError.message}`);
+        console.error(`❌ Oturum kontrolü hatası: ${sessionError.message}`);
         job.status = "paused";
         job.pauseReason = "session_check_failed";
         job.lastError = {
@@ -1321,16 +1236,16 @@ const processJobInBackground = async (jobId) => {
         try {
           await saveJobs({ ...(await loadJobs()), [jobId]: job });
         } catch (saveError) {
-          console.error(`İş kaydedilirken hata oluştu: ${saveError.message}`);
+          console.error(`❌ İş kaydedilirken hata oluştu: ${saveError.message}`);
         }
         return;
       }
 
-      console.log(`Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId} (${currentPatternName} pattern)`);
+      console.log(`🔄 Processing batch ${batchIndex + 1} of ${contactBatches.length} for job ${jobId} (${currentPatternName} pattern)`);
 
       try {
         // Process contacts one by one to avoid Promise.allSettled issues
-        console.log(`Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
+        console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
         
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
           
@@ -1346,23 +1261,23 @@ const processJobInBackground = async (jobId) => {
           const contact = job.contacts.find(c => c.contactId === originalContact.contactId);
           
           if (!contact) {
-            console.log(`Contact ${originalContact.contactId} not found in fresh job data`);
+            console.log(`⚠️ Contact ${originalContact.contactId} not found in fresh job data`);
             continue;
           }
           
           // Skip if contact is already processed (due to cancel operation)
           if (contact.status === "completed") {
-            console.log(`Contact ${contact.contactId} already completed, skipping`);
+            console.log(`✅ Contact ${contact.contactId} already completed, skipping`);
             continue;
           }
           
           if (contact.status === "failed") {
-            console.log(`Contact ${contact.contactId} already failed, skipping`);
+            console.log(`❌ Contact ${contact.contactId} already failed, skipping`);
             continue;
           }
           
           try {
-            console.log(`Kişi işlemi başlatılıyor: ${contact.contactId}`);
+            console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
             contact.status = "processing";
 
             // Get fresh user session for each contact
@@ -1370,7 +1285,7 @@ const processJobInBackground = async (jobId) => {
             const currentUserSession = currentUserSessions[job.userId];
 
             if (!currentUserSession) {
-              console.error(`Kullanıcı ${job.userId} için oturum bulunamadı`);
+              console.error(`❌ Kullanıcı ${job.userId} için oturum bulunamadı`);
               throw new Error("User session not found");
             }
 
@@ -1378,25 +1293,25 @@ const processJobInBackground = async (jobId) => {
             const profileId = match ? match[1] : null;
 
             if (!profileId) {
-              console.error(`Geçersiz LinkedIn URL formatı: ${contact.linkedinUrl}`);
+              console.error(`❌ Geçersiz LinkedIn URL formatı: ${contact.linkedinUrl}`);
               throw new Error(`Invalid LinkedIn URL format`);
             }
 
-            console.log(`LinkedIn profil ID'si alındı: ${profileId}`);
+            console.log(`🔍 LinkedIn profil ID'si alındı: ${profileId}`);
             const customCookies = {
               li_at: currentUserSession.li_at,
               jsession: currentUserSession.jsessionid,
             };
             
             if (!currentUserSession.li_at || !currentUserSession.jsessionid) {
-              console.error(`LinkedIn oturum bilgileri eksik`);
+              console.error(`❌ LinkedIn oturum bilgileri eksik`);
               throw new Error("LinkedIn session information missing");
             }
 
             // Handle Dataverse unauthorized errors
             const handleDataverseError = async (error) => {
               if (error.message.includes("401") || error.message.includes("Unauthorized")) {
-                console.log("Dataverse session expired, pausing job...");
+                console.log("🔒 Dataverse session expired, pausing job...");
                 job.status = "paused";
                 job.pauseReason = "dataverse_session_invalid";
                 job.pausedAt = new Date().toISOString();
@@ -1416,7 +1331,7 @@ const processJobInBackground = async (jobId) => {
               const profileData = await fetchLinkedInProfile(profileId, customCookies);
               
               if (profileData.error && (profileData.error.includes("unauthorized") || profileData.error.includes("not found"))) {
-                console.log("LinkedIn session expired, pausing job...");
+                console.log("🔒 LinkedIn session expired, pausing job...");
                 job.status = "paused";
                 job.pauseReason = "linkedin_session_invalid";
                 job.pausedAt = new Date().toISOString();
@@ -1502,17 +1417,17 @@ const processJobInBackground = async (jobId) => {
                 await updateUserDailyStats(job.userId); // Fallback to user-based
               }
 
-              console.log(`Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`);
+              console.log(`✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`);
             } catch (error) {
               if (error.message === "LINKEDIN_AUTH_REQUIRED" || error.message === "DATAVERSE_AUTH_REQUIRED") {
                 // Stop processing and wait for user re-authentication
-                console.log("Processing paused - waiting for user authentication");
+                console.log("⏸️ Processing paused - waiting for user authentication");
                 return;
               }
               throw error; // Re-throw to be caught by outer catch
             }
           } catch (error) {
-            console.error(`Error processing contact ${contact.contactId}:`, error.message);
+            console.error(`❌ Error processing contact ${contact.contactId}:`, error.message);
 
             // CRITICAL FIX - Always mark contact as failed, never leave in processing state
             contact.status = "failed";
@@ -1533,7 +1448,7 @@ const processJobInBackground = async (jobId) => {
             job.processedCount = job.successCount + job.failureCount;
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
-              console.log(`Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
+              console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
               job.status = "paused";
               job.pauseReason = "token_refresh_failed";
               job.pausedAt = new Date().toISOString();
@@ -1543,12 +1458,12 @@ const processJobInBackground = async (jobId) => {
                 timestamp: new Date().toISOString()
               };
               await saveJobs({ ...(await loadJobs()), [jobId]: job });
-              console.log(`Job ${jobId} will resume when user reconnects with fresh tokens`);
+              console.log(`💡 Job ${jobId} will resume when user reconnects with fresh tokens`);
               return; // Stop processing, wait for frontend
             }
 
             if (error.message.includes("AUTH_REQUIRED")) {
-              console.log(`Authentication required, stopping processing`);
+              console.log(`⏸️ Authentication required, stopping processing`);
               return;
             }
           }
@@ -1560,21 +1475,21 @@ const processJobInBackground = async (jobId) => {
         }
         
         job.processedCount = job.successCount + job.failureCount;
-        console.log(`Güncel işlem durumu: ${job.processedCount}/${job.totalContacts} (${job.successCount} başarılı, ${job.failureCount} başarısız)`);
+        console.log(`📊 Güncel işlem durumu: ${job.processedCount}/${job.totalContacts} (${job.successCount} başarılı, ${job.failureCount} başarısız)`);
 
         // Save progress after each batch
         const currentJobs = await loadJobs();
         currentJobs[jobId] = job;
         await saveJobs(currentJobs);
-        console.log(`İşlem durumu kaydedildi`);
+        console.log(`💾 İşlem durumu kaydedildi`);
 
         // Human-like behavior: Check for pattern-aware breaks
         const breakTime = shouldTakeBreak(processedInSession);
         if (breakTime > 0) {
           const breakMinutes = Math.round(breakTime / 1000 / 60);
-          console.log(`Taking a ${breakMinutes} minute break after ${processedInSession} profiles in ${currentPatternName}...`);
+          console.log(`😴 Taking a ${breakMinutes} minute break after ${processedInSession} profiles in ${currentPatternName}...`);
           await new Promise((resolve) => setTimeout(resolve, breakTime));
-          console.log(`Mola tamamlandı, devam ediliyor.`);
+          console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
           
           // CRITICAL: Check if job completed during break
           if (await checkJobStatusAndExit(jobId, "after break")) return;
@@ -1583,30 +1498,30 @@ const processJobInBackground = async (jobId) => {
         // Wait between batches with human pattern timing
         if (batchIndex < contactBatches.length - 1) {
           const waitTime = getHumanPatternDelay();
-          console.log(`Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`);
+          console.log(`⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`);
           await new Promise((resolve) => setTimeout(resolve, waitTime));
-          console.log(`Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
+          console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
           
           // CRITICAL: Check if job completed during delay
           if (await checkJobStatusAndExit(jobId, "after delay")) return;
         }
 
-        console.log(`Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed (${currentPatternName}: ${processedInSession})`);
+        console.log(`📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed (${currentPatternName}: ${processedInSession})`);
 
         // Log pattern breakdown
         if (job.dailyStats.patternBreakdown) {
           const breakdown = Object.entries(job.dailyStats.patternBreakdown)
             .map(([pattern, count]) => `${pattern}: ${count}`)
             .join(", ");
-          console.log(`Pattern breakdown: ${breakdown}`);
+          console.log(`🕒 Pattern breakdown: ${breakdown}`);
         }
       } catch (error) {
         if (error.message.includes("TOKEN_REFRESH_FAILED") || error.message.includes("AUTH_REQUIRED")) {
           break;
         }
         if (error.message.includes("STOP_PROCESSING") || error.message.includes("Job cancelled") || error.message.includes("Job completed")) {
-          console.log(`Stop processing signal received: ${error.message}`);
-          console.log(`Terminating background processing for job ${jobId}`);
+          console.log(`🛑 Stop processing signal received: ${error.message}`);
+          console.log(`🏁 Terminating background processing for job ${jobId}`);
           return; // Exit immediately
         }
       }
@@ -1618,14 +1533,14 @@ const processJobInBackground = async (jobId) => {
     
     // Don't override if job was already completed by cancel operation
     if (job.status === "completed") {
-      console.log(`Job ${jobId} was already completed by external operation (cancel-processing)`);
+      console.log(`✅ Job ${jobId} was already completed by external operation (cancel-processing)`);
       return;
     }
 
     // Mark job as completed if all contacts processed
     const remainingPending = job.contacts.filter((c) => c.status === "pending").length;
     
-    console.log(`Job completion check for ${jobId}:`, {
+    console.log(`📊 Job completion check for ${jobId}:`, {
       remainingPending,
       totalContacts: job.totalContacts,
       processedCount: job.processedCount,
@@ -1649,17 +1564,17 @@ const processJobInBackground = async (jobId) => {
         profilesProcessed: processedInSession,
       });
 
-      console.log(`Job ${jobId} completed by background processing! Final pattern breakdown:`, job.dailyStats.patternBreakdown);
+      console.log(`🎉 Job ${jobId} completed by background processing! Final pattern breakdown:`, job.dailyStats.patternBreakdown);
     } else if (remainingPending > 0) {
       // Check if we've processed all available contacts but some are still pending
       // This can happen if processing was interrupted
-      console.log(`Job ${jobId} has ${remainingPending} pending contacts remaining after background processing`);
-      console.log(`Investigating stuck contacts...`);
+      console.log(`⚠️ Job ${jobId} has ${remainingPending} pending contacts remaining after background processing`);
+      console.log(`🔍 Investigating stuck contacts...`);
       
       // Get the pending contacts and their details
       const pendingContacts = job.contacts.filter(c => c.status === "pending");
       pendingContacts.forEach((contact, index) => {
-        console.log(`Pending contact ${index + 1}: ${contact.contactId} - ${contact.linkedinUrl}`);
+        console.log(`📋 Pending contact ${index + 1}: ${contact.contactId} - ${contact.linkedinUrl}`);
       });
       
       // Mark job as stalled and set it up for auto-restart
@@ -1668,7 +1583,7 @@ const processJobInBackground = async (jobId) => {
       job.stalledAt = new Date().toISOString();
       job.stalledReason = `${remainingPending} contacts remain pending after background processing completed`;
       
-      console.log(`Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
+      console.log(`🔄 Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
     }
 
     // Final save
@@ -1676,9 +1591,9 @@ const processJobInBackground = async (jobId) => {
     finalJobs[jobId] = job;
     await saveJobs(finalJobs);
 
-    console.log(`Job ${jobId} processing completed. Status: ${job.status}`);
+    console.log(`✅ Job ${jobId} processing completed. Status: ${job.status}`);
   } catch (error) {
-    console.error(`Background processing error for job ${jobId}:`, error);
+    console.error(`❌ Background processing error for job ${jobId}:`, error);
     
     // Only mark as failed if not already completed/cancelled
     jobs = await loadJobs();
