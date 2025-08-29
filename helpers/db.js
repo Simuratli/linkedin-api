@@ -158,21 +158,10 @@ const loadJobs = async () => {
 // Save jobs to MongoDB
 const saveJobs = async (jobs) => {
   try {
-    // Filter out ONLY completed jobs to prevent unnecessary saves
-    // Keep cancelled jobs for history and cooldown tracking
-    const jobsToSave = {};
-    let skippedCompleted = 0;
-
-    for (const [jobId, jobData] of Object.entries(jobs)) {
-      if (jobData.status === "completed") {
-        console.log(`⏭️ Skipping save for completed job ${jobId}`);
-        skippedCompleted++;
-      } else {
-        jobsToSave[jobId] = jobData;
-      }
-    }
-
-    const operations = Object.entries(jobsToSave).map(([jobId, jobData]) => ({
+    // Persist all jobs (including completed/cancelled) so that CRM-shared jobs
+    // remain discoverable across server restarts. This avoids creating duplicate
+    // jobs for the same CRM when a previous job already processed all contacts.
+    const operations = Object.entries(jobs).map(([jobId, jobData]) => ({
       updateOne: {
         filter: { jobId },
         update: { $set: jobData },
@@ -182,9 +171,9 @@ const saveJobs = async (jobs) => {
 
     if (operations.length > 0) {
       await Job.bulkWrite(operations);
-      console.log(`💾 Saved ${operations.length} jobs to MongoDB${skippedCompleted > 0 ? ` (${skippedCompleted} completed jobs skipped)` : ''}`);
-    } else if (skippedCompleted > 0) {
-      console.log(`⏭️ All jobs were completed - no save needed (${skippedCompleted} completed)`);
+      console.log(`💾 Saved ${operations.length} jobs to MongoDB`);
+    } else {
+      console.log(`⏭️ No jobs to save`);
     }
   } catch (error) {
     console.error("❌ Error saving jobs to MongoDB:", error?.message);
