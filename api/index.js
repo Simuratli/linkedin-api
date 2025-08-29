@@ -3965,17 +3965,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
   // Set a new cancelToken to break any running background loops
   job.cancelToken = uuidv4();
       console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
-  // Mark all remaining pending/processing contacts as completed
-  // Loop'u kesin durdurmak için isProcessing flag'ini false yap
-  job.isProcessing = false;
-  // Loop başında lock: başka bir loop varsa çık
-  let jobs = await loadJobs();
-  if (job.isProcessing) {
-    console.log(`🛑 [LOCK] Job ${job.jobId} is already being processed. Exiting.`);
-    return;
-  }
-  job.isProcessing = true;
-  await saveJobs({ ...jobs, [job.jobId]: job });
+      // Mark all remaining pending/processing contacts as completed
       let newlyCompletedCount = 0;
       if (job.contacts) {
         job.contacts.forEach(contact => {
@@ -4080,12 +4070,5 @@ app.post("/cancel-processing/:userId", async (req, res) => {
   } catch (error) {
     console.error('❌ Failed to initialize application:', error);
     process.exit(1);
-  }
-  // Loop sonunda lock'u kaldır
-  let jobsEnd = await loadJobs();
-  let jobEnd = jobsEnd[jobId];
-  if (jobEnd) {
-    jobEnd.isProcessing = false;
-    await saveJobs({ ...jobsEnd, [jobId]: jobEnd });
   }
 })();
