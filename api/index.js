@@ -1615,6 +1615,15 @@ const processJobInBackground = async (jobId) => {
         `🎉 Job ${jobId} completed! Final pattern breakdown:`,
         job.dailyStats.patternBreakdown
       );
+
+      // **CRITICAL FIX** - Set user cooldown after job completion
+      try {
+        const { checkAndSetUserCooldown } = require("../helpers/db");
+        await checkAndSetUserCooldown(job.userId);
+        console.log(`✅ Cooldown set for user ${job.userId} after job completion`);
+      } catch (cooldownError) {
+        console.error(`❌ Error setting cooldown for user ${job.userId}:`, cooldownError.message);
+      }
     } else if (remainingPending > 0) {
       // Check if we've processed all available contacts but some are still pending
       // This can happen if processing was interrupted
@@ -3649,6 +3658,70 @@ app.get("/can-override-cooldown/:userId", async (req, res) => {
       message: "Error checking cooldown override status",
       error: error.message
     });
+  }
+});
+
+// Debug endpoint to manually complete a stuck job
+app.post("/debug-complete-job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+
+    if (!job) {
+      return res.status(404).json({ success: false, message: "Job not found" });
+    }
+
+    console.log(`🎯 Manually completing stuck job ${jobId}`);
+
+    // Check if all contacts are actually completed
+    const pendingContacts = job.contacts.filter(c => c.status === "pending").length;
+    const completedContacts = job.contacts.filter(c => c.status === "completed").length;
+
+    console.log(`📊 Job status check: ${completedContacts}/${job.totalContacts} completed, ${pendingContacts} pending`);
+
+    if (pendingContacts === 0 && completedContacts === job.totalContacts) {
+      // Mark job as completed
+      job.status = "completed";
+      job.completedAt = new Date().toISOString();
+      job.currentBatchIndex = 0;
+      job.forceStop = true; // Ensure background processing stops
+
+      // Set cooldown
+      try {
+        const { checkAndSetUserCooldown } = require("../helpers/db");
+        await checkAndSetUserCooldown(job.userId);
+        console.log(`✅ Cooldown set for user ${job.userId}`);
+      } catch (cooldownError) {
+        console.error(`❌ Error setting cooldown:`, cooldownError.message);
+      }
+
+      await saveJobs(jobs);
+
+      res.json({
+        success: true,
+        message: `Job ${jobId} manually marked as completed`,
+        jobStatus: {
+          status: job.status,
+          completedAt: job.completedAt,
+          processedCount: job.processedCount,
+          totalContacts: job.totalContacts
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: `Job ${jobId} still has ${pendingContacts} pending contacts`,
+        debugInfo: {
+          pendingContacts,
+          completedContacts,
+          totalContacts: job.totalContacts
+        }
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error completing job:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
