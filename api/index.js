@@ -464,7 +464,8 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 // Enhanced endpoint with human pattern awareness
 app.post("/start-processing", async (req, res) => {
     // CRM URL bazında global tekil job kontrolü (req.body'den sonra)
-    if (crmUrl) {
+    // CRM URL bazlı job kontrolü: parametreler parse edildikten hemen sonra
+    if (crmUrl && userId) {
       const jobsAll = await loadJobs();
       const userSessionsAll = await loadUserSessions();
       const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
