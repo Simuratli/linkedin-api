@@ -463,6 +463,26 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Enhanced endpoint with human pattern awareness
 app.post("/start-processing", async (req, res) => {
+    // CRM URL bazında global tekil job kontrolü
+    const jobsAll = await loadJobs();
+    const userSessionsAll = await loadUserSessions();
+    const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
+    for (const job of Object.values(jobsAll)) {
+      const jobCrmUrl = userSessionsAll[job.userId]?.crmUrl;
+      if (
+        jobCrmUrl &&
+        normalizeCrmUrl(jobCrmUrl) === normalizedCrmUrl &&
+        ["processing", "pending", "paused"].includes(job.status)
+      ) {
+        return res.status(409).json({
+          success: false,
+          message: `There is already an active job for this CRM URL (${crmUrl}). Please wait for it to complete or cancel it before starting a new one.`,
+          jobId: job.jobId,
+          status: job.status,
+          userId: job.userId
+        });
+      }
+    }
   try {
     const {
       li_at,
