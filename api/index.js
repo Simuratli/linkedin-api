@@ -970,6 +970,12 @@ const processJobInBackground = async (jobId) => {
     return;
   }
 
+  // Check for force stop flag
+  if (job.forceStop) {
+    console.log(`🛑 Job ${jobId} has force stop flag - terminating background processing`);
+    return;
+  }
+
   const userSession = userSessions[job.userId];
   if (!userSession) {
     console.error(`❌ No user session found for job ${jobId} (userId: ${job.userId})`);
@@ -986,6 +992,12 @@ const processJobInBackground = async (jobId) => {
       timestamp: new Date().toISOString()
     };
     await saveJobs({ ...jobs, [jobId]: job });
+    return;
+  }
+
+  // Check for force stop flag
+  if (job.forceStop) {
+    console.log(`🛑 Job ${jobId} has force stop flag - terminating background processing`);
     return;
   }
 
@@ -1040,9 +1052,9 @@ const processJobInBackground = async (jobId) => {
       // **CRITICAL FIX** - Check if job has been cancelled/completed before continuing
       const latestJobs = await loadJobs();
       const latestJob = latestJobs[jobId];
-      if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
-        console.log(`🛑 Job ${jobId} has been cancelled/failed/completed. Stopping background processing immediately.`);
-        console.log(`Current status: ${latestJob?.status || 'NOT_FOUND'}`);
+      if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed" || latestJob.forceStop) {
+        console.log(`🛑 Job ${jobId} has been cancelled/failed/completed or has force stop flag. Stopping background processing immediately.`);
+        console.log(`Current status: ${latestJob?.status || 'NOT_FOUND'}, forceStop: ${latestJob?.forceStop}`);
         console.log(`🧹 Terminating all processing for job ${jobId}`);
         return; // Exit the processing loop immediately
       }
@@ -1197,8 +1209,8 @@ const processJobInBackground = async (jobId) => {
             // **CRITICAL FIX** - Check if job has been cancelled/completed before processing each contact
             const latestJobs = await loadJobs();
             const latestJob = latestJobs[jobId];
-            if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
-              console.log(`🛑 Job ${jobId} cancelled/completed during contact processing. Stopping batch processing.`);
+            if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed" || latestJob.forceStop) {
+              console.log(`🛑 Job ${jobId} cancelled/completed during contact processing or has force stop flag. Stopping batch processing.`);
               return;
             }
             
@@ -1418,8 +1430,8 @@ const processJobInBackground = async (jobId) => {
           // **ADDITIONAL STATUS CHECK** - Check if job completed during break
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
-          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
-            console.log(`🛑 Job ${jobId} completed/cancelled during break. Stopping processing.`);
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed" || latestJob.forceStop) {
+            console.log(`🛑 Job ${jobId} completed/cancelled during break or has force stop flag. Stopping processing.`);
             return;
           }
         }
@@ -1436,8 +1448,8 @@ const processJobInBackground = async (jobId) => {
           // **ADDITIONAL STATUS CHECK** - Check if job completed during delay
           const latestJobs = await loadJobs();
           const latestJob = latestJobs[jobId];
-          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed") {
-            console.log(`🛑 Job ${jobId} completed/cancelled during delay. Stopping processing.`);
+          if (!latestJob || latestJob.status === "cancelled" || latestJob.status === "failed" || latestJob.status === "completed" || latestJob.forceStop) {
+            console.log(`🛑 Job ${jobId} completed/cancelled during delay or has force stop flag. Stopping processing.`);
             return;
           }
         }
@@ -3797,6 +3809,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       job.completedAt = now;
       job.completionReason = reason;
       job.manualCompletion = true;
+      job.forceStop = true; // Force stop flag ekle
       job.lastProcessedAt = now;
       // Mark cooldown as overridden to prevent unwanted restart
       job.cooldownOverridden = true;
