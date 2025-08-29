@@ -158,33 +158,35 @@ const loadJobs = async () => {
 // Save jobs to MongoDB
 const saveJobs = async (jobs) => {
   try {
-    // Filter out ONLY completed jobs to prevent unnecessary saves
-    // Keep cancelled jobs for history and cooldown tracking
-    const jobsToSave = {};
-    let skippedCompleted = 0;
+    const operations = [];
+    let skippedCount = 0;
 
     for (const [jobId, jobData] of Object.entries(jobs)) {
-      if (jobData.status === "completed") {
-        console.log(`⏭️ Skipping save for completed job ${jobId}`);
-        skippedCompleted++;
+      // CRITICAL FIX: Always save if manualCompletion or forcedCompletion is true
+      const shouldSave = jobData.status !== "completed" || 
+                        jobData.manualCompletion || 
+                        jobData.forcedCompletion ||
+                        jobData.completionReason === "User completed processing from extension - all remaining contacts marked as successful";
+      
+      if (shouldSave) {
+        operations.push({
+          updateOne: {
+            filter: { jobId },
+            update: { $set: jobData },
+            upsert: true
+          }
+        });
       } else {
-        jobsToSave[jobId] = jobData;
+        console.log(`⏭️ Skipping save for naturally completed job ${jobId}`);
+        skippedCount++;
       }
     }
 
-    const operations = Object.entries(jobsToSave).map(([jobId, jobData]) => ({
-      updateOne: {
-        filter: { jobId },
-        update: { $set: jobData },
-        upsert: true
-      }
-    }));
-
     if (operations.length > 0) {
       await Job.bulkWrite(operations);
-      console.log(`💾 Saved ${operations.length} jobs to MongoDB${skippedCompleted > 0 ? ` (${skippedCompleted} completed jobs skipped)` : ''}`);
-    } else if (skippedCompleted > 0) {
-      console.log(`⏭️ All jobs were completed - no save needed (${skippedCompleted} completed)`);
+      console.log(`💾 Saved ${operations.length} jobs to MongoDB${skippedCount > 0 ? ` (${skippedCount} naturally completed jobs skipped)` : ''}`);
+    } else if (skippedCount > 0) {
+      console.log(`⏭️ All jobs were naturally completed - no save needed (${skippedCount} completed)`);
     }
   } catch (error) {
     console.error("❌ Error saving jobs to MongoDB:", error?.message);
