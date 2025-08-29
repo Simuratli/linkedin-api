@@ -66,30 +66,6 @@ const normalizeCrmUrl = (crmUrl) => {
   }
 };
 
-
-const debugJobState = (job, context) => {
-  console.log(`🔍 DEBUG ${context} for job ${job.jobId}:`);
-  console.log(`  Status: ${job.status}`);
-  console.log(`  Total contacts: ${job.totalContacts}`);
-  console.log(`  Contacts array length: ${job.contacts ? job.contacts.length : 'undefined'}`);
-  
-  if (job.contacts) {
-    const statusCounts = job.contacts.reduce((acc, c) => {
-      acc[c.status] = (acc[c.status] || 0) + 1;
-      return acc;
-    }, {});
-    console.log(`  Contact status breakdown:`, statusCounts);
-    
-    // Log first few pending contacts
-    const pending = job.contacts.filter(c => c.status === "pending");
-    console.log(`  First 3 pending contacts:`, pending.slice(0, 3).map(c => ({
-      id: c.contactId,
-      url: c.linkedinUrl,
-      status: c.status
-    })));
-  }
-};
-
 // CRM-based key generation functions for shared limits
 const getTodayCrmKey = (crmUrl) => {
   const normalizedCrm = normalizeCrmUrl(crmUrl);
