@@ -1,4 +1,5 @@
 const express = require("express");
+const { v4: uuidv4 } = require('uuid');
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs/promises");
@@ -995,6 +996,9 @@ const processJobInBackground = async (jobId) => {
   let jobs = await loadJobs();
   let job = jobs[jobId];
 
+  // Cache cancelToken at start
+  const initialCancelToken = job.cancelToken;
+
   if (!job) {
     console.error(`❌ No job found with ID ${jobId}`);
     return;
@@ -1253,12 +1257,17 @@ const processJobInBackground = async (jobId) => {
         
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
           
+
           // CRITICAL: Check job status before EVERY contact
           if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before processing)`)) return;
 
-          // CRITICAL: Get fresh job and contact data
+          // Cancel token check: if changed, exit immediately
           jobs = await loadJobs();
           job = jobs[jobId];
+          if (job.cancelToken && typeof initialCancelToken !== 'undefined' && job.cancelToken !== initialCancelToken) {
+            console.log(`🛑 Cancel token changed for job ${jobId} at contact ${contactIndex + 1}, exiting loop immediately.`);
+            return;
+          }
 
           // Find the current contact in the fresh data
           const originalContact = batch[contactIndex];
@@ -3863,6 +3872,8 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     
     // Complete each active job
     for (const job of userActiveJobs) {
+  // Set a new cancelToken to break any running background loops
+  job.cancelToken = uuidv4();
       console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
       // Mark all remaining pending/processing contacts as completed
       let newlyCompletedCount = 0;

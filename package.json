@@ -23,7 +23,8 @@
     "mongoose": "^8.17.1",
     "node-fetch": "^2.7.0",
     "path": "^0.12.7",
-    "socks-proxy-agent": "^8.0.5"
+    "socks-proxy-agent": "^8.0.5",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "prettier": "3.6.2"
