@@ -1499,8 +1499,13 @@ const processJobInBackground = async (jobId) => {
         // Save progress after each batch
         const currentJobs = await loadJobs();
         currentJobs[jobId] = job;
+        
+        // **CRITICAL FIX** - Update currentBatchIndex after each batch
+        job.currentBatchIndex = batchIndex + 1;
+        console.log(`📍 Updated currentBatchIndex to ${job.currentBatchIndex} after batch ${batchIndex + 1}`);
+        
         await saveJobs(currentJobs);
-        console.log(`💾 İşlem durumu kaydedildi`);
+        console.log(`💾 İşlem durumu kaydedildi (batch ${batchIndex + 1}/${contactBatches.length})`);
 
         // Human-like behavior: Check for pattern-aware breaks
         const breakTime = shouldTakeBreak(processedInSession);
@@ -3694,6 +3699,10 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
     job.restartedAt = new Date().toISOString();
     job.restartCount = (job.restartCount || 0) + 1;
     job.status = "processing";
+    
+    // Reset batch index to start from beginning
+    job.currentBatchIndex = 0;
+    console.log(`🔄 Reset currentBatchIndex to 0 for manual restart`);
     
     // Clear any pause reasons
     delete job.pauseReason;
