@@ -1041,20 +1041,24 @@ const processJobInBackground = async (jobId) => {
     
     // Update job status to processing ONLY if it's not completed/cancelled
     if (!["completed", "cancelled", "failed"].includes(job.status)) {
+      // YENİ: Son bir kez güncel job'ı yükle ve status kontrolü yap
+      const latestJobs = await loadJobs();
+      const latestJob = latestJobs[jobId];
+      if (["completed", "cancelled", "failed"].includes(latestJob.status)) {
+        console.log(`🛑 Job ${jobId} was externally set to ${latestJob.status}, exiting before setting processing`);
+        return;
+      }
       job.status = "processing";
       job.lastProcessedAt = new Date().toISOString();
       job.lastProcessedTime = new Date();
-      
       // Initialize batch index if not exists
       if (!job.currentBatchIndex) {
         job.currentBatchIndex = 0;
       }
-      
       // Make sure timestamps are properly set
       if (!job.createdAt) {
         job.createdAt = job.startTime || new Date().toISOString();
       }
-      
       await saveJobs({ ...jobs, [jobId]: job });
     } else {
       console.log(`⏹️ Job ${jobId} is already ${job.status}. Exiting background processing.`);
