@@ -3238,6 +3238,12 @@ app.post("/restart-processing/:userId", async (req, res) => {
     console.log(`✅ Job resetlendi ve yeniden başlatıldı: ${currentJob.jobId}`);
     console.log(`📊 Final job state: ${currentJob.totalContacts} total contacts, ${currentJob.contacts ? currentJob.contacts.length : 0} contacts in array`);
 
+    // **ADD MISSING BACKGROUND PROCESSING START**
+    console.log(`🚀 Starting background processing for restarted job: ${currentJob.jobId}`);
+    processJobInBackground(currentJob.jobId).catch(error => {
+      console.error(`❌ Background processing failed for job ${currentJob.jobId}:`, error);
+    });
+
     res.status(200).json({
       success: true,
       message: "Job resetlendi ve yeniden başlatıldı.",
@@ -3260,7 +3266,6 @@ app.post("/restart-processing/:userId", async (req, res) => {
     });
   }
 });
-
 // Simple override endpoint without verification (for testing)
 app.post("/override-cooldown-simple/:userId", async (req, res) => {
   try {
