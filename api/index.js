@@ -1050,6 +1050,22 @@ const processJobInBackground = async (jobId) => {
 
     // Get pending contacts from FRESH job data
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");
+    
+    // If no pending contacts remain, job is complete
+    if (pendingContacts.length === 0) {
+      console.log(`✅ No pending contacts found. Job ${jobId} appears to be completed.`);
+      
+      // Only mark as completed if not already completed by external operation
+      if (job.status === "processing") {
+        job.status = "completed";
+        job.completedAt = new Date().toISOString();
+        job.completionReason = "no_pending_contacts_found";
+        await saveJobs({ ...(await loadJobs()), [jobId]: job });
+        console.log(`🎉 Job ${jobId} marked as completed - no pending contacts`);
+      }
+      return;
+    }
+    
     const contactBatches = chunkArray(pendingContacts, BATCH_SIZE);
 
     // Continue from current batch index
