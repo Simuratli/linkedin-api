@@ -1121,6 +1121,18 @@ const processJobInBackground = async (jobId) => {
         job.currentBatchIndex = 0;
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
       }
+
+      // Her batch başında status ve cancelToken kontrolü
+      jobs = await loadJobs();
+      job = jobs[jobId];
+      if (["completed", "cancelled", "failed"].includes(job.status)) {
+        console.log(`🛑 [BATCH GUARD] Job status is ${job.status}, exiting batch loop.`);
+        return;
+      }
+      if (job.cancelToken && typeof initialCancelToken !== 'undefined' && job.cancelToken !== initialCancelToken) {
+        console.log(`🛑 [BATCH GUARD] Cancel token changed for job ${jobId} at batch ${batchIndex + 1}, exiting batch loop.`);
+        return;
+      }
   console.log(`🟦 [BATCH ${batchIndex + 1}] BEGIN`);
       
       // CRITICAL: Check job status at the beginning of EVERY batch
@@ -1284,6 +1296,18 @@ const processJobInBackground = async (jobId) => {
             console.log(`🟥 [CONTACT BATCH INDEX GUARD] currentBatchIndex (${job.currentBatchIndex}) >= contactBatches.length (${contactBatches.length}), sıfırlanıyor.`);
             job.currentBatchIndex = 0;
             await saveJobs({ ...(await loadJobs()), [jobId]: job });
+          }
+
+          // Her contact başında status ve cancelToken kontrolü
+          jobs = await loadJobs();
+          job = jobs[jobId];
+          if (["completed", "cancelled", "failed"].includes(job.status)) {
+            console.log(`🛑 [CONTACT GUARD] Job status is ${job.status}, exiting contact loop.`);
+            return;
+          }
+          if (job.cancelToken && typeof initialCancelToken !== 'undefined' && job.cancelToken !== initialCancelToken) {
+            console.log(`🛑 [CONTACT GUARD] Cancel token changed for job ${jobId} at contact ${contactIndex + 1}, exiting contact loop.`);
+            return;
           }
           console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] BEGIN`);
           
