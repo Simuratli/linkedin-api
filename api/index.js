@@ -606,16 +606,13 @@ app.post("/start-processing", async (req, res) => {
     let jobId = null;
     const normalizedCrm = normalizeCrmUrl(crmUrl);
 
-    // First, check if there are any incomplete jobs for this CRM (not just user)
+    // First, check if there are any jobs for this CRM (not just incomplete ones)
     for (const job of Object.values(jobs)) {
       const jobCrmUrl = userSessions[job.userId]?.crmUrl;
-      if (jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm && 
-          job.status !== "completed" && 
-          job.contacts && 
-          job.processedCount < job.totalContacts) {
+      if (jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm) {
         existingJob = job;
         jobId = job.jobId;
-        console.log("📋 Found CRM-shared incomplete job:", {
+        console.log("📋 Found CRM-shared job:", {
           jobId: job.jobId,
           originalUserId: job.userId,
           currentUserId: userId,
@@ -628,11 +625,11 @@ app.post("/start-processing", async (req, res) => {
       }
     }
 
-    // If we found a CRM-shared job, add current user to the job participants
+    // If we found a CRM-shared job, handle it based on status
     if (existingJob) {
-      console.log(`🔧 Adding user ${userId} to CRM-shared job ${jobId}`);
-      
-      // Add current user to job participants (if not already added)
+      console.log(`🔧 Found CRM-shared job ${jobId} with status: ${existingJob.status}`);
+
+      // Add current user to the job participants (if not already added)
       if (!existingJob.participants) {
         existingJob.participants = [existingJob.userId]; // Add original creator
       }
@@ -640,7 +637,7 @@ app.post("/start-processing", async (req, res) => {
         existingJob.participants.push(userId);
         console.log(`✅ User ${userId} added to job participants:`, existingJob.participants);
       }
-      
+
       // Update user session with the shared job
       userSessions[userId] = {
         currentJobId: jobId,
@@ -654,47 +651,108 @@ app.post("/start-processing", async (req, res) => {
         crmUrl,
         lastActivity: new Date().toISOString()
       };
-      
+
       // Save updated data
       jobs[jobId] = existingJob;
       await saveJobs(jobs);
       await saveUserSessions(userSessions);
       console.log("✅ User session updated with CRM-shared job");
 
-      // If job was paused due to missing session or token issues, resume it
-      if (existingJob.status === "paused" && 
-          (existingJob.pauseReason === "user_session_missing" || 
-           existingJob.pauseReason === "linkedin_session_invalid" ||
-           existingJob.pauseReason === "dataverse_session_invalid" ||
-           existingJob.pauseReason === "token_refresh_failed")) {
-        console.log(`🔄 Resuming paused job with restored session. Previous pause reason: ${existingJob.pauseReason}`);
-        existingJob.status = "processing";
-        existingJob.resumedAt = new Date().toISOString();
-        existingJob.lastProcessedAt = new Date().toISOString();
-        delete existingJob.pauseReason;
-        delete existingJob.pausedAt;
-        delete existingJob.lastError;
-        
-        // Save updated job
-        jobs[jobId] = existingJob;
-        await saveJobs(jobs);
-        
-        // Start background processing
-        setImmediate(() => processJobInBackground(jobId));
-        
+      // Handle based on job status
+      if (existingJob.status === "completed") {
+        // Job is completed - show completion message
         const currentPattern = getCurrentHumanPattern();
         return res.status(200).json({
-          success: true,
-          message: "Session restored and job resumed successfully",
+          success: false,
+          message: `All contacts for this CRM have been processed. (${existingJob.processedCount}/${existingJob.totalContacts} contacts completed)`,
           jobId: existingJob.jobId,
-          status: "processing",
+          status: "completed",
           processedCount: existingJob.processedCount,
           totalContacts: existingJob.totalContacts,
+          completedAt: existingJob.completedAt,
+          canResume: false,
           currentPattern: currentPattern.name,
-          canResume: true,
-          resumedAt: new Date().toISOString(),
-          sessionRestored: true
+          limitInfo: limitCheck,
+          crmShared: true
         });
+      } else if (existingJob.status === "cancelled" || existingJob.status === "failed") {
+        // Job is cancelled/failed - allow restart
+        const currentPattern = getCurrentHumanPattern();
+        return res.status(200).json({
+          success: false,
+          message: `Previous job was ${existingJob.status}. You can restart processing with your previous contacts.`,
+          jobId: existingJob.jobId,
+          status: existingJob.status,
+          processedCount: existingJob.processedCount,
+          totalContacts: existingJob.totalContacts,
+          canResume: true,
+          canRestart: true,
+          currentPattern: currentPattern.name,
+          limitInfo: limitCheck,
+          crmShared: true
+        });
+      } else {
+        // Job is active (processing/paused) - resume it
+        if (existingJob.status === "paused" &&
+            (existingJob.pauseReason === "user_session_missing" ||
+             existingJob.pauseReason === "linkedin_session_invalid" ||
+             existingJob.pauseReason === "dataverse_session_invalid" ||
+             existingJob.pauseReason === "token_refresh_failed")) {
+          console.log(`🔄 Resuming paused job with restored session. Previous pause reason: ${existingJob.pauseReason}`);
+          existingJob.status = "processing";
+          existingJob.resumedAt = new Date().toISOString();
+          existingJob.lastProcessedAt = new Date().toISOString();
+          delete existingJob.pauseReason;
+          delete existingJob.pausedAt;
+          delete existingJob.lastError;
+
+          // Save updated job
+          jobs[jobId] = existingJob;
+          await saveJobs(jobs);
+
+          // Start background processing
+          setImmediate(() => processJobInBackground(jobId));
+
+          const currentPattern = getCurrentHumanPattern();
+          return res.status(200).json({
+            success: true,
+            message: "Session restored and job resumed successfully",
+            jobId: existingJob.jobId,
+            status: "processing",
+            processedCount: existingJob.processedCount,
+            totalContacts: existingJob.totalContacts,
+            currentPattern: currentPattern.name,
+            canResume: true,
+            resumedAt: new Date().toISOString(),
+            sessionRestored: true,
+            crmShared: true
+          });
+        } else {
+          // Normal resume for active job
+          if (existingJob.status === "paused") {
+            existingJob.status = "processing";
+            existingJob.resumedAt = new Date().toISOString();
+            await saveJobs(jobs);
+            console.log("🔄 Resuming paused job:", existingJob.jobId);
+          }
+
+          // Start processing in background
+          setImmediate(() => processJobInBackground(existingJob.jobId));
+
+          const currentPattern = getCurrentHumanPattern();
+          return res.status(200).json({
+            success: true,
+            message: "Continuing existing CRM-shared job",
+            jobId: existingJob.jobId,
+            status: "processing",
+            processedCount: existingJob.processedCount,
+            totalContacts: existingJob.totalContacts,
+            currentPattern: currentPattern.name,
+            canResume: true,
+            resumedAt: new Date().toISOString(),
+            crmShared: true
+          });
+        }
       }
     }
 
@@ -840,8 +898,10 @@ app.post("/start-processing", async (req, res) => {
       });
     }
 
-    // Create new job if no existing job
+    // Create new job if no existing job for this CRM
     if (!existingJob) {
+        console.log(`🆕 Creating new CRM-shared job for ${normalizedCrm}`);
+
         // Generate new job ID
         jobId = generateJobId();
 
@@ -863,47 +923,48 @@ app.post("/start-processing", async (req, res) => {
 
         const contacts = response.value.filter((c) => !!c.uds_linkedin);
 
-      const currentPattern = getCurrentHumanPattern();
-      existingJob = {
-        jobId,
-        userId, // Original creator
-        participants: [userId], // Track all users sharing this job
-        crmUrl: normalizedCrm, // Store normalized CRM URL
-        totalContacts: contacts.length,
-        contacts: contacts.map((c) => ({
-          contactId: c.contactid,
-          linkedinUrl: c.uds_linkedin,
-          status: "pending", // pending, processing, completed, failed
-        })),
-        processedCount: 0,
-        successCount: 0,
-        failureCount: 0,
-        status: "pending", // pending, processing, paused, completed, failed
-        createdAt: new Date().toISOString(),
-        lastProcessedAt: null,
-        errors: [],
-        humanPatterns: {
-          startPattern: currentPattern.name,
-          startTime: new Date().toISOString(),
-          patternHistory: [],
-        },
-        dailyStats: {
-          startDate: getTodayKey(),
-          processedToday: 0,
-          patternBreakdown: {},
-          crmBased: true, // Flag to indicate CRM-based processing
-        },
-      };
+        const currentPattern = getCurrentHumanPattern();
+        existingJob = {
+          jobId,
+          userId, // Original creator
+          participants: [userId], // Track all users sharing this job
+          crmUrl: normalizedCrm, // Store normalized CRM URL
+          totalContacts: contacts.length,
+          contacts: contacts.map((c) => ({
+            contactId: c.contactid,
+            linkedinUrl: c.uds_linkedin,
+            status: "pending", // pending, processing, completed, failed
+          })),
+          processedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          status: "pending", // pending, processing, paused, completed, failed
+          createdAt: new Date().toISOString(),
+          lastProcessedAt: null,
+          errors: [],
+          humanPatterns: {
+            startPattern: currentPattern.name,
+            startTime: new Date().toISOString(),
+            patternHistory: [],
+          },
+          dailyStats: {
+            startDate: getTodayKey(),
+            processedToday: 0,
+            patternBreakdown: {},
+            crmBased: true, // Flag to indicate CRM-based processing
+          },
+        };
 
-      jobs[jobId] = existingJob;
-      userSessions[userId] = {
-        currentJobId: jobId,
-        lastActivity: new Date().toISOString(),
-      };
+        jobs[jobId] = existingJob;
+        userSessions[userId] = {
+          currentJobId: jobId,
+          lastActivity: new Date().toISOString(),
+        };
 
-      await saveJobs(jobs);
-      await saveUserSessions(userSessions);
-    }
+        await saveJobs(jobs);
+        await saveUserSessions(userSessions);
+        console.log(`✅ New CRM-shared job created: ${jobId} for CRM ${normalizedCrm}`);
+      }
 
     // Update user session with complete fresh data from frontend
     console.log("🔄 Updating user session with fresh frontend data...");
