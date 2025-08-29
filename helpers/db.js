@@ -158,14 +158,18 @@ const loadJobs = async () => {
 // Save jobs to MongoDB
 const saveJobs = async (jobs) => {
   try {
-    // Filter out completed jobs to prevent unnecessary saves
+    // Filter out completed and cancelled jobs to prevent unnecessary saves
     const jobsToSave = {};
     let skippedCompleted = 0;
+    let skippedCancelled = 0;
     
     for (const [jobId, jobData] of Object.entries(jobs)) {
       if (jobData.status === "completed") {
         console.log(`⏭️ Skipping save for completed job ${jobId}`);
         skippedCompleted++;
+      } else if (jobData.status === "cancelled") {
+        console.log(`⏭️ Skipping save for cancelled job ${jobId}`);
+        skippedCancelled++;
       } else {
         jobsToSave[jobId] = jobData;
       }
@@ -181,9 +185,9 @@ const saveJobs = async (jobs) => {
 
     if (operations.length > 0) {
       await Job.bulkWrite(operations);
-      console.log(`💾 Saved ${operations.length} jobs to MongoDB${skippedCompleted > 0 ? ` (${skippedCompleted} completed jobs skipped)` : ''}`);
-    } else if (skippedCompleted > 0) {
-      console.log(`⏭️ All ${skippedCompleted} jobs were completed - no save needed`);
+      console.log(`💾 Saved ${operations.length} jobs to MongoDB${skippedCompleted > 0 ? ` (${skippedCompleted} completed jobs skipped)` : ''}${skippedCancelled > 0 ? ` (${skippedCancelled} cancelled jobs skipped)` : ''}`);
+    } else if (skippedCompleted > 0 || skippedCancelled > 0) {
+      console.log(`⏭️ All jobs were completed/cancelled - no save needed (${skippedCompleted} completed, ${skippedCancelled} cancelled)`);
     }
   } catch (error) {
     console.error("❌ Error saving jobs to MongoDB:", error?.message);
