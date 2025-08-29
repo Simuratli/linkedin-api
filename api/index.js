@@ -1035,7 +1035,9 @@ const processJobInBackground = async (jobId) => {
     userId: job.userId
   });
 
+  console.log(`🟪 [GLOBAL] processJobInBackground started for jobId: ${jobId}`);
   try {
+  console.log(`🟪 [GLOBAL] Entered try block for jobId: ${jobId}`);
     // CRITICAL: Always work with fresh job data
     jobs = await loadJobs();
     job = jobs[jobId];
@@ -1107,16 +1109,25 @@ const processJobInBackground = async (jobId) => {
     console.log(`🕒 Continuing with ${currentPatternName} pattern from batch ${startBatchIndex + 1}/${contactBatches.length}`);
 
     for (let batchIndex = startBatchIndex; batchIndex < contactBatches.length; batchIndex++) {
+  console.log(`🟦 [BATCH ${batchIndex + 1}] BEGIN`);
       
       // CRITICAL: Check job status at the beginning of EVERY batch
-      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1}`)) return;
-      
+      console.log(`🟦 [BATCH ${batchIndex + 1}] Starting. Checking job status...`);
+      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1}`)) {
+        console.log(`🟥 [BATCH ${batchIndex + 1}] Exiting due to job status.`);
+        return;
+      }
+
       // CRITICAL: Always work with fresh job data
       jobs = await loadJobs();
       job = jobs[jobId];
-      
+      console.log(`🟦 [BATCH ${batchIndex + 1}] Loaded job. Status: ${job.status}, cancelToken: ${job.cancelToken}, processedCount: ${job.processedCount}`);
+
       // Double check after reload
-      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1} after reload`)) return;
+      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1} after reload`)) {
+        console.log(`🟥 [BATCH ${batchIndex + 1}] Exiting after reload due to job status.`);
+        return;
+      }
 
       // Save progress after each batch (currentBatchIndex bir sonraki batch için güncellenir)
       job.currentBatchIndex = batchIndex + 1;
@@ -1256,10 +1267,15 @@ const processJobInBackground = async (jobId) => {
         console.log(`🔄 Batch işlemi başlatılıyor: ${batchIndex + 1}/${contactBatches.length}`);
         
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
+          console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] BEGIN`);
           
 
           // CRITICAL: Check job status before EVERY contact
-          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before processing)`)) return;
+          console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Checking job status...`);
+          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before processing)`)) {
+            console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Exiting due to job status.`);
+            return;
+          }
 
           // Cancel token check: if changed, exit immediately
           jobs = await loadJobs();
@@ -1274,30 +1290,38 @@ const processJobInBackground = async (jobId) => {
           let contact = job.contacts.find(c => c.contactId === originalContact.contactId);
 
           if (!contact) {
-            console.log(`⚠️ Contact ${originalContact.contactId} not found in fresh job data`);
+            console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Contact ${originalContact.contactId} not found in fresh job data. Skipping.`);
             continue;
           }
 
           // Skip if contact is already processed (due to cancel operation)
           if (["completed", "cancelled", "failed"].includes(contact.status)) {
-            console.log(`✅ Contact ${contact.contactId} already ${contact.status}, skipping`);
+            console.log(`🟩 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Contact ${contact.contactId} already ${contact.status}, skipping.`);
             continue;
           }
 
           // Ekstra güvenlik: contact'ı processing yapmadan hemen önce tekrar job status kontrolü
-          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (right before processing)`)) return;
+          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (right before processing)`)) {
+            console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Exiting right before processing due to job status.`);
+            return;
+          }
 
           try {
-            console.log(`🔄 Kişi işlemi başlatılıyor: ${contact.contactId}`);
+            console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] TRY BLOCK ENTERED`);
+            console.log(`🟦 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Starting processing for contactId: ${contact.contactId}, status: ${contact.status}, jobStatus: ${job.status}, cancelToken: ${job.cancelToken}`);
             contact.status = "processing";
+            console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Set status to processing`);
             // Hemen sonra tekrar güncel job ve contact'ı kontrol et
             jobs = await loadJobs();
             job = jobs[jobId];
             contact = job.contacts.find(c => c.contactId === originalContact.contactId);
+            console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Refreshed job/contact after processing set. Status: ${contact ? contact.status : 'undefined'}`);
             if (!contact || ["completed", "cancelled", "failed"].includes(contact.status)) {
-              console.log(`⏹️ Contact ${originalContact.contactId} was externally set to ${contact ? contact.status : "unknown"} after processing started, skipping`);
+              console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Contact ${originalContact.contactId} was externally set to ${contact ? contact.status : "unknown"} after processing started, skipping.`);
               continue;
             }
+            console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] END`);
+  console.log(`🟦 [BATCH ${batchIndex + 1}] END`);
 
             // Get fresh user session for each contact
             const currentUserSessions = await loadUserSessions();
@@ -1612,7 +1636,8 @@ const processJobInBackground = async (jobId) => {
 
     console.log(`✅ Job ${jobId} processing completed. Status: ${job.status}`);
   } catch (error) {
-    console.error(`❌ Background processing error for job ${jobId}:`, error);
+  console.error(`🟥 [GLOBAL ERROR] Background processing error for job ${jobId}:`, error);
+  console.log(`🟪 [GLOBAL] processJobInBackground END for jobId: ${jobId}`);
     
     // Only mark as failed if not already completed/cancelled
     jobs = await loadJobs();
