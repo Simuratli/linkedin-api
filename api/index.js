@@ -463,25 +463,12 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Enhanced endpoint with human pattern awareness
 app.post("/start-processing", async (req, res) => {
-  try {
-    const {
-      li_at,
-      accessToken,
-      refreshToken,
-      clientId,
-      tenantId,
-      verifier,
-      crmUrl,
-      jsessionid,
-      userId,
-      resume = false,
-    } = req.body;
-
-    // CRM URL bazında global tekil job kontrolü (parametreler parse edildikten hemen sonra)
-    if (crmUrl && userId) {
+    // CRM URL bazında global tekil job kontrolü (req.body'den sonra)
+    // CRM URL bazlı job kontrolü: parametreler parse edildikten hemen sonra ve null-check ile
+    if (req.body && req.body.crmUrl && req.body.userId) {
       const jobsAll = await loadJobs();
       const userSessionsAll = await loadUserSessions();
-      const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
+      const normalizedCrmUrl = normalizeCrmUrl(req.body.crmUrl);
       for (const job of Object.values(jobsAll)) {
         const jobCrmUrl = userSessionsAll[job.userId]?.crmUrl;
         if (
@@ -491,7 +478,7 @@ app.post("/start-processing", async (req, res) => {
         ) {
           return res.status(409).json({
             success: false,
-            message: `There is already an active job for this CRM URL (${crmUrl}). Please wait for it to complete or cancel it before starting a new one.`,
+            message: `There is already an active job for this CRM URL (${req.body.crmUrl}). Please wait for it to complete or cancel it before starting a new one.`,
             jobId: job.jobId,
             status: job.status,
             userId: job.userId
@@ -1013,14 +1000,6 @@ app.post("/start-processing", async (req, res) => {
       currentPattern: limitCheck.currentPattern,
       limitInfo: limitCheck,
     });
-  } catch (error) {
-    console.error("❌ Error in /start-processing:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
-  }
   } catch (error) {
     console.error("❌ Error in /start-processing:", error);
     res.status(500).json({
