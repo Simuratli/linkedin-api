@@ -1749,6 +1749,8 @@ const processJobInBackground = async (jobId) => {
               throw new Error("User session not found");
             }
 
+            // Extract LinkedIn profile ID from URL
+            const match = contact.linkedinUrl ? contact.linkedinUrl.match(/\/in\/([^\/]+)/) : null;
             const profileId = match ? match[1] : null;
 
             if (!profileId) {
