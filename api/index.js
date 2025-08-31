@@ -2065,6 +2065,25 @@ const processJobInBackground = async (jobId) => {
       });
 
       console.log(`🎉 Job ${jobId} completed by background processing! Final pattern breakdown:`, job.dailyStats.patternBreakdown);
+      
+      // CRITICAL: Also update MongoDB to ensure consistency
+      try {
+        await Job.findOneAndUpdate(
+          { jobId: jobId },
+          { 
+            status: "completed",
+            completedAt: new Date(),
+            currentBatchIndex: 0,
+            completionReason: "background_processing_completed",
+            humanPatterns: job.humanPatterns,
+            dailyStats: job.dailyStats
+          },
+          { new: true }
+        );
+        console.log(`✅ Job ${jobId} completion also saved to MongoDB`);
+      } catch (mongoError) {
+        console.error(`❌ Error updating MongoDB completion for job ${jobId}:`, mongoError);
+      }
     } else if (remainingPending > 0) {
       // Check if we've processed all available contacts but some are still pending
       // This can happen if processing was interrupted
@@ -2202,11 +2221,26 @@ app.get("/job-status/:jobId", async (req, res) => {
         job.currentBatchIndex = 0;
         job.completionReason = "auto_completed_by_status_check";
         
-        // Save the updated job
+        // Save the updated job to both memory and MongoDB
         jobs[jobId] = job;
         await saveJobs(jobs);
         
-        console.log(`✅ Job ${jobId} auto-completed successfully`);
+        // CRITICAL: Also update the MongoDB document directly
+        try {
+          await Job.findOneAndUpdate(
+            { jobId: jobId },
+            { 
+              status: "completed",
+              completedAt: new Date(),
+              currentBatchIndex: 0,
+              completionReason: "auto_completed_by_status_check"
+            },
+            { new: true }
+          );
+          console.log(`✅ Job ${jobId} auto-completed successfully in both memory and MongoDB`);
+        } catch (mongoError) {
+          console.error(`❌ Error updating MongoDB for job ${jobId}:`, mongoError);
+        }
       }
     }
 
@@ -3958,6 +3992,80 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error cancelling processing",
+      error: error.message
+    });
+  }
+});
+
+// Endpoint to fix stuck completed jobs
+app.post("/fix-stuck-jobs", async (req, res) => {
+  try {
+    console.log("🔧 Starting to fix stuck completed jobs...");
+    
+    const jobs = await loadJobs();
+    let fixedCount = 0;
+    const fixedJobs = [];
+    
+    for (const [jobId, job] of Object.entries(jobs)) {
+      // Check if job should be completed but isn't
+      if (job.status === "processing") {
+        const remainingPending = job.contacts ? job.contacts.filter(c => c.status === "pending").length : 0;
+        const allContactsProcessed = job.processedCount >= job.totalContacts;
+        
+        if (remainingPending === 0 && allContactsProcessed) {
+          console.log(`🔧 Fixing job ${jobId} - all contacts completed but status was still processing`);
+          console.log(`   - Total: ${job.totalContacts}, Processed: ${job.processedCount}, Success: ${job.successCount}`);
+          
+          // Fix the job status in memory
+          job.status = "completed";
+          job.completedAt = new Date().toISOString();
+          job.currentBatchIndex = 0;
+          job.completionReason = "fixed_by_admin_endpoint";
+          
+          // Update MongoDB
+          try {
+            await Job.findOneAndUpdate(
+              { jobId: jobId },
+              { 
+                status: "completed",
+                completedAt: new Date(),
+                currentBatchIndex: 0,
+                completionReason: "fixed_by_admin_endpoint"
+              },
+              { new: true }
+            );
+            console.log(`✅ Job ${jobId} fixed in both memory and MongoDB`);
+            fixedJobs.push({
+              jobId: jobId,
+              userId: job.userId,
+              totalContacts: job.totalContacts,
+              processedCount: job.processedCount
+            });
+            fixedCount++;
+          } catch (mongoError) {
+            console.error(`❌ Error updating MongoDB for job ${jobId}:`, mongoError);
+          }
+        }
+      }
+    }
+    
+    if (fixedCount > 0) {
+      await saveJobs(jobs);
+      console.log(`✅ Fixed ${fixedCount} completed jobs`);
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: `Fixed ${fixedCount} stuck jobs`,
+      fixedJobs: fixedJobs,
+      totalChecked: Object.keys(jobs).length
+    });
+    
+  } catch (error) {
+    console.error("❌ Error fixing stuck jobs:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fixing stuck jobs",
       error: error.message
     });
   }
