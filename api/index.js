@@ -185,11 +185,16 @@ const getPatternKey = () => {
 const checkDailyLimit = async (userId, crmUrl) => {
   const stats = await loadDailyStats();
   
+  console.log(`🔍 checkDailyLimit called with userId: ${userId}, crmUrl: ${crmUrl}`);
+  console.log(`🔍 Available stats keys:`, Object.keys(stats));
+  
   // Get current time-based keys
   const today = new Date().toISOString().split("T")[0]; // 2025-08-31
   const hour = `${today}-${new Date().getHours()}`; // 2025-08-31-20
   const currentPattern = getCurrentHumanPattern();
   const pattern = `${today}-${currentPattern.name}`; // 2025-08-31-afternoonWork
+  
+  console.log(`🔍 Looking for keys: today=${today}, hour=${hour}, pattern=${pattern}`);
   
   let todayCount = 0;
   let hourCount = 0;
@@ -201,16 +206,21 @@ const checkDailyLimit = async (userId, crmUrl) => {
     hourCount = stats[userId][hour] || 0;
     patternCount = stats[userId][pattern] || 0;
     console.log(`📊 User ${userId} stats found:`, { todayCount, hourCount, patternCount });
+  } else {
+    console.log(`⚠️ No stats found for userId: ${userId}`);
   }
   
   // If no user stats, try CRM-based keys
   if (todayCount === 0 && hourCount === 0 && patternCount === 0 && crmUrl) {
     const normalizedCrm = normalizeCrmUrl(crmUrl);
+    console.log(`🔍 Trying CRM key: ${normalizedCrm}`);
     if (stats[normalizedCrm]) {
       todayCount = stats[normalizedCrm][today] || 0;
       hourCount = stats[normalizedCrm][hour] || 0;
       patternCount = stats[normalizedCrm][pattern] || 0;
       console.log(`📊 CRM ${normalizedCrm} stats found:`, { todayCount, hourCount, patternCount });
+    } else {
+      console.log(`⚠️ No stats found for CRM: ${normalizedCrm}`);
     }
   }
   
