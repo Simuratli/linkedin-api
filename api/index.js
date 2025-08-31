@@ -2800,46 +2800,44 @@ app.get("/job-poll/:userId", async (req, res) => {
       const time = new Date(pause.timestamp).toLocaleTimeString('tr-TR');
       switch (pause.reason) {
         case "hourly_limit_reached":
-          return `🕐 ${time} - Saatlik limit doldu (${pause.limits.hourly})`;
+          return `🕐 ${pause.estimatedResumeTime ? Math.ceil((new Date(pause.estimatedResumeTime) - new Date()) / 60000) : 60} minutes`;
         case "daily_limit_reached":
-          return `📅 ${time} - Günlük limit doldu (${pause.limits.daily})`;
+          return `📅 ${pause.estimatedResumeTime ? Math.ceil((new Date(pause.estimatedResumeTime) - new Date()) / 60000) : 1440} minutes`;
         case "pattern_limit_reached":
-          return `⏰ ${time} - ${pause.details.pattern} deseni limiti doldu (${pause.limits.pattern})`;
+          return `⏰ ${pause.estimatedResumeTime ? Math.ceil((new Date(pause.estimatedResumeTime) - new Date()) / 60000) : 30} minutes`;
         case "pause_period":
-          return `😴 ${time} - ${pause.details.pattern} mola zamanı`;
+          return `😴 ${pause.estimatedResumeTime ? Math.ceil((new Date(pause.estimatedResumeTime) - new Date()) / 60000) : 15} minutes`;
         case "user_session_missing":
-          return `🔐 ${time} - Oturum bilgisi kayboldu`;
+          return `🔐 ${time} - Session expired`;
         case "linkedin_session_invalid":
-          return `🔗 ${time} - LinkedIn oturumu geçersiz`;
+          return `🔗 ${time} - LinkedIn session invalid`;
         case "dataverse_session_invalid":
-          return `💼 ${time} - CRM oturumu geçersiz`;
+          return `💼 ${time} - CRM session invalid`;
         default:
-          return `⏸️ ${time} - İşlem duraklatıldı: ${pause.reason}`;
+          return `⏸️ ${time} - Paused: ${pause.reason}`;
       }
     };
 
     const getResumeDisplayMessage = (resume) => {
       const time = new Date(resume.timestamp).toLocaleTimeString('tr-TR');
-      const duration = resume.pauseDuration ? `${Math.round(resume.pauseDuration / 60)} dakika` : '';
+      const duration = resume.pauseDuration ? `${Math.round(resume.pauseDuration / 60)}` : '';
       
       switch (resume.reason) {
         case "automatic_limits_reset":
-          return `✅ ${time} - Otomatik devam (limitler sıfırlandı)${duration ? ` - ${duration} mola` : ''}`;
+          return `✅ ${duration} minutes break completed`;
         case "user_reconnected":
-          return `🔄 ${time} - Kullanıcı yeniden bağlandı${duration ? ` - ${duration} mola` : ''}`;
+          return `🔄 ${duration} minutes break completed`;
         case "session_restored":
-          return `🔐 ${time} - Oturum bilgisi yenilendi${duration ? ` - ${duration} mola` : ''}`;
+          return `🔐 ${duration} minutes break completed`;
         default:
-          return `▶️ ${time} - İşlem devam etti${duration ? ` - ${duration} mola` : ''}`;
+          return `▶️ ${duration} minutes break completed`;
       }
     };
 
     const getBreakDisplayMessage = (breakEvent) => {
-      const time = new Date(breakEvent.timestamp).toLocaleTimeString('tr-TR');
-      const duration = `${breakEvent.durationMinutes} dakika`;
-      const pattern = breakEvent.currentPattern;
+      const duration = `${breakEvent.durationMinutes}`;
       
-      return `☕ ${time} - ${pattern} molası (${duration}) - ${breakEvent.processedInSession} profil sonrası`;
+      return `☕ ${duration} minutes`;
     };
     
     res.status(200).json({
