@@ -31,7 +31,7 @@ const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
 // Add this helper function at the top of your file
-const checkJobStatusAndExit = async (jobId, checkPoint = "") => {
+const checkJobStatusAndExit = async (jobId, checkPoint = "", initialCancelToken = null) => {
   const latestJobs = await loadJobs();
   const latestJob = latestJobs[jobId];
   
@@ -42,6 +42,12 @@ const checkJobStatusAndExit = async (jobId, checkPoint = "") => {
   
   if (["completed", "cancelled", "failed"].includes(latestJob.status)) {
     console.log(`🛑 Job ${jobId} is ${latestJob.status} during ${checkPoint}. Exiting background processing.`);
+    return true; // Should exit
+  }
+  
+  // Check for cancel token change (indicates cancellation request)
+  if (initialCancelToken !== null && latestJob.cancelToken && latestJob.cancelToken !== initialCancelToken) {
+    console.log(`🛑 Job ${jobId} cancel token changed during ${checkPoint} (${initialCancelToken} -> ${latestJob.cancelToken}). Exiting background processing.`);
     return true; // Should exit
   }
   
@@ -1005,7 +1011,7 @@ const processJobInBackground = async (jobId) => {
   }
 
   // CRITICAL: Check job status before doing anything
-  if (await checkJobStatusAndExit(jobId, "initial check")) return;
+  if (await checkJobStatusAndExit(jobId, "initial check", initialCancelToken)) return;
 
   const userSessions = await loadUserSessions();
   const userSession = userSessions[job.userId];
@@ -1043,7 +1049,7 @@ const processJobInBackground = async (jobId) => {
     job = jobs[jobId];
     
     // Check again after reload
-    if (await checkJobStatusAndExit(jobId, "after reload")) return;
+    if (await checkJobStatusAndExit(jobId, "after reload", initialCancelToken)) return;
     
     // Update job status to processing ONLY if it's not completed/cancelled
     if (!["completed", "cancelled", "failed"].includes(job.status)) {
@@ -1080,7 +1086,7 @@ const processJobInBackground = async (jobId) => {
     job = jobs[jobId];
     
     // Check if job was cancelled while we were setting up
-    if (await checkJobStatusAndExit(jobId, "before processing contacts")) return;
+    if (await checkJobStatusAndExit(jobId, "before processing contacts", initialCancelToken)) return;
 
     // Get pending contacts from FRESH job data
     const pendingContacts = job.contacts.filter((c) => c.status === "pending");
@@ -1129,15 +1135,12 @@ const processJobInBackground = async (jobId) => {
         console.log(`🛑 [BATCH GUARD] Job status is ${job.status}, exiting batch loop.`);
         return;
       }
-      if (job.cancelToken && typeof initialCancelToken !== 'undefined' && job.cancelToken !== initialCancelToken) {
-        console.log(`🛑 [BATCH GUARD] Cancel token changed for job ${jobId} at batch ${batchIndex + 1}, exiting batch loop.`);
-        return;
-      }
-  console.log(`🟦 [BATCH ${batchIndex + 1}] BEGIN`);
+      // Cancel token check is now handled by checkJobStatusAndExit function
+      console.log(`🟦 [BATCH ${batchIndex + 1}] BEGIN`);
       
       // CRITICAL: Check job status at the beginning of EVERY batch
       console.log(`🟦 [BATCH ${batchIndex + 1}] Starting. Checking job status...`);
-      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1}`)) {
+      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1}`, initialCancelToken)) {
         console.log(`🟥 [BATCH ${batchIndex + 1}] Exiting due to job status.`);
         return;
       }
@@ -1148,7 +1151,7 @@ const processJobInBackground = async (jobId) => {
       console.log(`🟦 [BATCH ${batchIndex + 1}] Loaded job. Status: ${job.status}, cancelToken: ${job.cancelToken}, processedCount: ${job.processedCount}`);
 
       // Double check after reload
-      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1} after reload`)) {
+      if (await checkJobStatusAndExit(jobId, `batch ${batchIndex + 1} after reload`, initialCancelToken)) {
         console.log(`🟥 [BATCH ${batchIndex + 1}] Exiting after reload due to job status.`);
         return;
       }
@@ -1305,28 +1308,20 @@ const processJobInBackground = async (jobId) => {
             console.log(`🛑 [CONTACT GUARD] Job status is ${job.status}, exiting contact loop.`);
             return;
           }
-          if (job.cancelToken && typeof initialCancelToken !== 'undefined' && job.cancelToken !== initialCancelToken) {
-            console.log(`🛑 [CONTACT GUARD] Cancel token changed for job ${jobId} at contact ${contactIndex + 1}, exiting contact loop.`);
-            return;
-          }
+          // Cancel token check is now handled by checkJobStatusAndExit function
           console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] BEGIN`);
           
 
           // CRITICAL: Check job status before EVERY contact
           console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Checking job status...`);
-          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before processing)`)) {
+          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before processing)`, initialCancelToken)) {
             console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Exiting due to job status.`);
             return;
           }
 
-          // Cancel token check: if changed, exit immediately
+          // Fresh job data loaded by checkJobStatusAndExit, get fresh contact data too
           jobs = await loadJobs();
           job = jobs[jobId];
-          if (job.cancelToken && typeof initialCancelToken !== 'undefined' && job.cancelToken !== initialCancelToken) {
-            console.log(`🛑 Cancel token changed for job ${jobId} at contact ${contactIndex + 1}, exiting loop immediately.`);
-            return;
-          }
-
           // Find the current contact in the fresh data
           const originalContact = batch[contactIndex];
           let contact = job.contacts.find(c => c.contactId === originalContact.contactId);
@@ -1343,7 +1338,7 @@ const processJobInBackground = async (jobId) => {
           }
 
           // Ekstra güvenlik: contact'ı processing yapmadan hemen önce tekrar job status kontrolü
-          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (right before processing)`)) {
+          if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (right before processing)`, initialCancelToken)) {
             console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Exiting right before processing due to job status.`);
             return;
           }
@@ -1353,6 +1348,18 @@ const processJobInBackground = async (jobId) => {
             console.log(`🟦 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Starting processing for contactId: ${contact.contactId}, status: ${contact.status}, jobStatus: ${job.status}, cancelToken: ${job.cancelToken}`);
             contact.status = "processing";
             console.log(`🟨 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Set status to processing`);
+            
+            // CRITICAL: Check cancellation immediately after setting status to processing
+            if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (after setting processing)`, initialCancelToken)) {
+              console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Job was cancelled after setting processing status. Reverting contact status.`);
+              contact.status = "pending"; // Revert to pending since we didn't actually process
+              // Save the reverted contact status
+              const revertJobs = await loadJobs();
+              revertJobs[jobId] = job;
+              await saveJobs(revertJobs);
+              return;
+            }
+            
             // Hemen sonra tekrar güncel job ve contact'ı kontrol et
             jobs = await loadJobs();
             job = jobs[jobId];
@@ -1413,6 +1420,12 @@ const processJobInBackground = async (jobId) => {
 
             // Add error handling for Dataverse calls
             try {
+              // CRITICAL: Check cancellation before making any external API calls
+              if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before LinkedIn API)`, initialCancelToken)) {
+                console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Job was cancelled before LinkedIn API call. Stopping processing.`);
+                return;
+              }
+              
               const profileData = await fetchLinkedInProfile(profileId, customCookies);
               
               if (profileData.error && (profileData.error.includes("unauthorized") || profileData.error.includes("not found"))) {
@@ -1431,6 +1444,12 @@ const processJobInBackground = async (jobId) => {
 
               // Wrap Dataverse calls in try-catch
               try {
+                // CRITICAL: Check cancellation before making Dataverse API calls
+                if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (before Dataverse API)`, initialCancelToken)) {
+                  console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Job was cancelled before Dataverse API call. Stopping processing.`);
+                  return;
+                }
+                
                 const convertedProfile = await transformToCreateUserRequest(
                   profileData,
                   `${currentUserSession.crmUrl}/api/data/v9.2`,
@@ -1448,6 +1467,12 @@ const processJobInBackground = async (jobId) => {
                   verifier: currentUserSession.verifier,
                   userId: job.userId
                 } : null;
+
+                // CRITICAL: One final check before the actual API call
+                if (await checkJobStatusAndExit(jobId, `contact ${contactIndex + 1} in batch ${batchIndex + 1} (final check before API)`, initialCancelToken)) {
+                  console.log(`🟥 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Job was cancelled right before final API call. Stopping processing.`);
+                  return;
+                }
 
                 await callDataverseWithRefresh(
                   updateUrl,
@@ -1577,7 +1602,7 @@ const processJobInBackground = async (jobId) => {
           console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
           
           // CRITICAL: Check if job completed during break
-          if (await checkJobStatusAndExit(jobId, "after break")) return;
+          if (await checkJobStatusAndExit(jobId, "after break", initialCancelToken)) return;
         }
 
         // Wait between batches with human pattern timing
@@ -1588,7 +1613,7 @@ const processJobInBackground = async (jobId) => {
           console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
           
           // CRITICAL: Check if job completed during delay
-          if (await checkJobStatusAndExit(jobId, "after delay")) return;
+          if (await checkJobStatusAndExit(jobId, "after delay", initialCancelToken)) return;
         }
 
         console.log(`📈 Progress for job ${jobId}: ${job.processedCount}/${job.totalContacts} contacts processed (${currentPatternName}: ${processedInSession})`);
