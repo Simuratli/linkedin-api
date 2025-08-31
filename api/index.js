@@ -928,6 +928,7 @@ app.post("/start-processing", async (req, res) => {
         status: "pending", // pending, processing, paused, completed, failed
         createdAt: new Date().toISOString(),
         lastProcessedAt: null,
+        cancelToken: uuidv4(), // Initialize with a cancelToken for proper cancellation tracking
         errors: [],
         humanPatterns: {
           startPattern: currentPattern.name,
@@ -1334,6 +1335,17 @@ const processJobInBackground = async (jobId) => {
           // Skip if contact is already processed (due to cancel operation)
           if (["completed", "cancelled", "failed"].includes(contact.status)) {
             console.log(`🟩 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Contact ${contact.contactId} already ${contact.status}, skipping.`);
+            continue;
+          }
+          
+          // CRITICAL: Also check if contact was marked as completed by cancel-processing
+          // Reload fresh job data to check latest contact status
+          const freshJobs = await loadJobs();
+          const freshJob = freshJobs[jobId];
+          const freshContact = freshJob?.contacts?.find(c => c.contactId === originalContact.contactId);
+          
+          if (freshContact && ["completed", "cancelled", "failed"].includes(freshContact.status)) {
+            console.log(`🟩 [CONTACT ${contactIndex + 1} in BATCH ${batchIndex + 1}] Contact ${freshContact.contactId} was externally marked as ${freshContact.status}, skipping.`);
             continue;
           }
 
@@ -3964,8 +3976,12 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     
     // Complete each active job
     for (const job of userActiveJobs) {
-  // Set a new cancelToken to break any running background loops
-  job.cancelToken = uuidv4();
+      // Set a new cancelToken to break any running background loops
+      const newCancelToken = uuidv4();
+      const oldCancelToken = job.cancelToken;
+      job.cancelToken = newCancelToken;
+      
+      console.log(`🛑 Setting new cancelToken for job ${job.jobId}: ${oldCancelToken} -> ${newCancelToken}`);
       console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
       // Mark all remaining pending/processing contacts as completed
       let newlyCompletedCount = 0;
