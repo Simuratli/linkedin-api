@@ -3956,9 +3956,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
-      // DON'T automatically override cooldown - let user see override button after 1 second
-      // job.cooldownOverridden = true;
-      // job.overriddenAt = now;
+      // Manual cancellation should override cooldown automatically
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
       jobs[job.jobId] = job;
       cancelledJobs.push({
         jobId: job.jobId,
@@ -3967,18 +3967,18 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown will be active for override button`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden (manual cancellation)`);
     }
     await saveJobs(jobs);
 
-    // Clear current job ID from user session but DON'T set cooldownOverridden
+    // Clear current job ID from user session and set cooldownOverridden for manual cancellation
     const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
-      // Remove automatic cooldown override to show override button
-      // userSessions[userId].cooldownOverridden = true;
-      // userSessions[userId].overriddenAt = now;
+      // Manual cancellation overrides cooldown
+      userSessions[userId].cooldownOverridden = true;
+      userSessions[userId].overriddenAt = now;
     }
     await saveUserSessions(userSessions);
 
@@ -3997,9 +3997,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       completedJobs: cancelledJobs,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
-        cooldownOverridden: false, // Changed to false - cooldown is active, override button will show
+        cooldownOverridden: true, // Manual cancellation overrides cooldown automatically
         userSessionUpdated: !!userSessions[userId],
-        nextStep: "Wait 1 second for override cooldown button to appear"
+        nextStep: "Reload the extension to see updated status"
       }
     });
     
