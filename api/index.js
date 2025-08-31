@@ -100,7 +100,7 @@ const PORT = process.env.PORT || 3000;
 
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
-const BURST_LIMIT = 15; // Max profiles in one hour (fallback)
+const BURST_LIMIT = 30; // Max profiles in one hour (fallback)
 const HOUR_IN_MS = 60 * 60 * 1000;
 
 // CRM URL normalization for shared processing
@@ -780,6 +780,26 @@ app.post("/start-processing", async (req, res) => {
            existingJob.pauseReason === "dataverse_session_invalid" ||
            existingJob.pauseReason === "token_refresh_failed")) {
         console.log(`🔄 Resuming paused job with restored session. Previous pause reason: ${existingJob.pauseReason}`);
+        
+        // Initialize resume history if not exists
+        if (!existingJob.resumeHistory) {
+          existingJob.resumeHistory = [];
+        }
+
+        // Add resume event to history
+        const resumeEvent = {
+          timestamp: new Date().toISOString(),
+          reason: "session_restored",
+          previousPauseReason: existingJob.pauseReason,
+          pauseDuration: existingJob.pausedAt ? 
+            Math.round((new Date() - new Date(existingJob.pausedAt)) / 1000) : null,
+          processedCount: existingJob.processedCount,
+          totalContacts: existingJob.totalContacts
+        };
+
+        existingJob.resumeHistory.push(resumeEvent);
+        console.log(`📝 Resume event logged:`, resumeEvent);
+        
         existingJob.status = "processing";
         existingJob.resumedAt = new Date().toISOString();
         existingJob.lastProcessedAt = new Date().toISOString();
@@ -888,6 +908,25 @@ app.post("/start-processing", async (req, res) => {
 
         // If job was paused, resume it
         if (existingJob.status === "paused") {
+          // Initialize resume history if not exists
+          if (!existingJob.resumeHistory) {
+            existingJob.resumeHistory = [];
+          }
+
+          // Add resume event to history
+          const resumeEvent = {
+            timestamp: new Date().toISOString(),
+            reason: "user_reconnected",
+            previousPauseReason: existingJob.pauseReason,
+            pauseDuration: existingJob.pausedAt ? 
+              Math.round((new Date() - new Date(existingJob.pausedAt)) / 1000) : null,
+            processedCount: existingJob.processedCount,
+            totalContacts: existingJob.totalContacts
+          };
+
+          existingJob.resumeHistory.push(resumeEvent);
+          console.log(`📝 Resume event logged:`, resumeEvent);
+          
           existingJob.status = "processing";
           existingJob.resumedAt = new Date().toISOString();
           await saveJobs(jobs);
@@ -1501,6 +1540,30 @@ const processJobInBackground = async (jobId) => {
           pauseReason = "hourly_limit_reached";
         }
 
+        // Initialize pause history if not exists
+        if (!job.pauseHistory) {
+          job.pauseHistory = [];
+        }
+
+        // Add pause event to history
+        const pauseEvent = {
+          timestamp: new Date().toISOString(),
+          reason: pauseReason,
+          currentPattern: limitCheck.currentPattern,
+          limits: {
+            daily: `${limitCheck.dailyCount}/${limitCheck.dailyLimit}`,
+            hourly: `${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
+            pattern: `${limitCheck.patternCount}/${limitCheck.patternLimit || '∞'}`
+          },
+          estimatedResumeTime: estimatedResume,
+          batchIndex: batchIndex + 1,
+          totalBatches: contactBatches.length,
+          processedInThisSession: processedInSession
+        };
+
+        job.pauseHistory.push(pauseEvent);
+        console.log(`📝 Pause event logged:`, pauseEvent);
+
         job.status = "paused";
         job.pauseReason = pauseReason;
         job.pausedAt = new Date().toISOString();
@@ -1897,6 +1960,32 @@ const processJobInBackground = async (jobId) => {
         if (breakTime > 0) {
           const breakMinutes = Math.round(breakTime / 1000 / 60);
           console.log(`😴 Taking a ${breakMinutes} minute break after ${processedInSession} profiles in ${currentPatternName}...`);
+          
+          // Initialize break history if not exists
+          if (!job.breakHistory) {
+            job.breakHistory = [];
+          }
+
+          // Add break event to history
+          const breakEvent = {
+            timestamp: new Date().toISOString(),
+            reason: `pattern_break_${currentPatternName}`,
+            durationMs: breakTime,
+            durationMinutes: breakMinutes,
+            processedInSession: processedInSession,
+            currentPattern: currentPatternName,
+            batchIndex: batchIndex + 1,
+            totalBatches: contactBatches.length
+          };
+
+          job.breakHistory.push(breakEvent);
+          console.log(`📝 Break event logged:`, breakEvent);
+
+          // Save job with break info before actually taking the break
+          const jobsBeforeBreak = await loadJobs();
+          jobsBeforeBreak[jobId] = job;
+          await saveJobs(jobsBeforeBreak);
+          
           await new Promise((resolve) => setTimeout(resolve, breakTime));
           console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
           
@@ -2582,6 +2671,31 @@ app.get("/job-poll/:userId", async (req, res) => {
         // If we can process now, resume the job
         if (limitCheck.canProcess) {
           console.log(`✅ Limits have reset, resuming paused job ${job.jobId}`);
+          
+          // Initialize resume history if not exists
+          if (!job.resumeHistory) {
+            job.resumeHistory = [];
+          }
+
+          // Add automatic resume event to history
+          const resumeEvent = {
+            timestamp: new Date().toISOString(),
+            reason: "automatic_limits_reset",
+            previousPauseReason: job.pauseReason,
+            pauseDuration: job.pausedAt ? 
+              Math.round((new Date() - new Date(job.pausedAt)) / 1000) : null,
+            processedCount: job.processedCount,
+            totalContacts: job.totalContacts,
+            limitStatus: {
+              daily: `${limitCheck.dailyCount}/${limitCheck.dailyLimit}`,
+              hourly: `${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
+              pattern: `${limitCheck.patternCount}/${limitCheck.patternLimit || '∞'}`
+            }
+          };
+
+          job.resumeHistory.push(resumeEvent);
+          console.log(`📝 Automatic resume event logged:`, resumeEvent);
+          
           job.status = "processing";
           job.resumedAt = new Date().toISOString();
           await saveJobs({...(await loadJobs()), [jobId]: job});
@@ -2617,6 +2731,115 @@ app.get("/job-poll/:userId", async (req, res) => {
     
     console.log(`📊 Job poll response: ${job.processedCount}/${job.totalContacts}, status: ${job.status}`);
     
+    // Format pause/resume history for user display
+    const formatPauseResumeHistory = () => {
+      const events = [];
+      
+      // Add pause events
+      if (job.pauseHistory && job.pauseHistory.length > 0) {
+        job.pauseHistory.forEach(pause => {
+          events.push({
+            type: "pause",
+            timestamp: pause.timestamp,
+            reason: pause.reason,
+            details: {
+              limits: pause.limits,
+              pattern: pause.currentPattern,
+              estimatedResumeTime: pause.estimatedResumeTime,
+              batchProgress: `${pause.batchIndex}/${pause.totalBatches}`,
+              processedInSession: pause.processedInThisSession
+            },
+            displayMessage: getPauseDisplayMessage(pause)
+          });
+        });
+      }
+      
+      // Add resume events
+      if (job.resumeHistory && job.resumeHistory.length > 0) {
+        job.resumeHistory.forEach(resume => {
+          events.push({
+            type: "resume",
+            timestamp: resume.timestamp,
+            reason: resume.reason,
+            details: {
+              previousPauseReason: resume.previousPauseReason,
+              pauseDuration: resume.pauseDuration,
+              processedCount: resume.processedCount,
+              limitStatus: resume.limitStatus
+            },
+            displayMessage: getResumeDisplayMessage(resume)
+          });
+        });
+      }
+      
+      // Add break events
+      if (job.breakHistory && job.breakHistory.length > 0) {
+        job.breakHistory.forEach(breakEvent => {
+          events.push({
+            type: "break",
+            timestamp: breakEvent.timestamp,
+            reason: breakEvent.reason,
+            details: {
+              durationMinutes: breakEvent.durationMinutes,
+              processedInSession: breakEvent.processedInSession,
+              currentPattern: breakEvent.currentPattern,
+              batchProgress: `${breakEvent.batchIndex}/${breakEvent.totalBatches}`
+            },
+            displayMessage: getBreakDisplayMessage(breakEvent)
+          });
+        });
+      }
+      
+      // Sort by timestamp (newest first)
+      return events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    };
+
+    const getPauseDisplayMessage = (pause) => {
+      const time = new Date(pause.timestamp).toLocaleTimeString('tr-TR');
+      switch (pause.reason) {
+        case "hourly_limit_reached":
+          return `🕐 ${time} - Saatlik limit doldu (${pause.limits.hourly})`;
+        case "daily_limit_reached":
+          return `📅 ${time} - Günlük limit doldu (${pause.limits.daily})`;
+        case "pattern_limit_reached":
+          return `⏰ ${time} - ${pause.details.pattern} deseni limiti doldu (${pause.limits.pattern})`;
+        case "pause_period":
+          return `😴 ${time} - ${pause.details.pattern} mola zamanı`;
+        case "user_session_missing":
+          return `🔐 ${time} - Oturum bilgisi kayboldu`;
+        case "linkedin_session_invalid":
+          return `🔗 ${time} - LinkedIn oturumu geçersiz`;
+        case "dataverse_session_invalid":
+          return `💼 ${time} - CRM oturumu geçersiz`;
+        default:
+          return `⏸️ ${time} - İşlem duraklatıldı: ${pause.reason}`;
+      }
+    };
+
+    const getResumeDisplayMessage = (resume) => {
+      const time = new Date(resume.timestamp).toLocaleTimeString('tr-TR');
+      const duration = resume.pauseDuration ? `${Math.round(resume.pauseDuration / 60)} dakika` : '';
+      
+      switch (resume.reason) {
+        case "automatic_limits_reset":
+          return `✅ ${time} - Otomatik devam (limitler sıfırlandı)${duration ? ` - ${duration} mola` : ''}`;
+        case "user_reconnected":
+          return `🔄 ${time} - Kullanıcı yeniden bağlandı${duration ? ` - ${duration} mola` : ''}`;
+        case "session_restored":
+          return `🔐 ${time} - Oturum bilgisi yenilendi${duration ? ` - ${duration} mola` : ''}`;
+        default:
+          return `▶️ ${time} - İşlem devam etti${duration ? ` - ${duration} mola` : ''}`;
+      }
+    };
+
+    const getBreakDisplayMessage = (breakEvent) => {
+      const time = new Date(breakEvent.timestamp).toLocaleTimeString('tr-TR');
+      const duration = `${breakEvent.durationMinutes} dakika`;
+      const pattern = breakEvent.currentPattern;
+      
+      return `☕ ${time} - ${pattern} molası (${duration}) - ${breakEvent.processedInSession} profil sonrası`;
+    };
+    
     res.status(200).json({
       success: true,
       canResume: job.status === "paused" || job.status === "processing",
@@ -2644,6 +2867,23 @@ app.get("/job-poll/:userId", async (req, res) => {
         currentPattern: currentPattern.name,
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
+        // NEW: Pause/Resume history for user display
+        pauseResumeHistory: formatPauseResumeHistory(),
+        totalPauses: job.pauseHistory ? job.pauseHistory.length : 0,
+        totalResumes: job.resumeHistory ? job.resumeHistory.length : 0,
+        totalBreaks: job.breakHistory ? job.breakHistory.length : 0,
+        // Activity summary for user
+        activitySummary: {
+          totalPauses: job.pauseHistory ? job.pauseHistory.length : 0,
+          totalResumes: job.resumeHistory ? job.resumeHistory.length : 0,
+          totalBreaks: job.breakHistory ? job.breakHistory.length : 0,
+          lastActivity: job.pauseHistory?.length > 0 || job.resumeHistory?.length > 0 || job.breakHistory?.length > 0 ? 
+            Math.max(
+              ...(job.pauseHistory || []).map(p => new Date(p.timestamp).getTime()),
+              ...(job.resumeHistory || []).map(r => new Date(r.timestamp).getTime()),
+              ...(job.breakHistory || []).map(b => new Date(b.timestamp).getTime())
+            ) : null
+        }
       },
       simpleClientStats: null, // Frontend expects this property
       simpleClientInitialized: true // Frontend expects this property
@@ -2653,6 +2893,89 @@ app.get("/job-poll/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Internal server error",
+      error: error.message
+    });
+  }
+});
+
+// New endpoint to get job activity summary
+app.get("/job-activity/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found"
+      });
+    }
+
+    const pauseEvents = job.pauseHistory || [];
+    const resumeEvents = job.resumeHistory || [];
+    const breakEvents = job.breakHistory || [];
+
+    // Calculate total pause time
+    const totalPauseTime = pauseEvents.reduce((total, pause, index) => {
+      const pauseTime = new Date(pause.timestamp);
+      const resumeEvent = resumeEvents.find(r => r.timestamp > pause.timestamp);
+      if (resumeEvent) {
+        const resumeTime = new Date(resumeEvent.timestamp);
+        return total + (resumeTime - pauseTime);
+      }
+      return total;
+    }, 0);
+
+    // Calculate total break time
+    const totalBreakTime = breakEvents.reduce((total, breakEvent) => {
+      return total + (breakEvent.durationMs || 0);
+    }, 0);
+
+    // Group pauses by reason
+    const pausesByReason = pauseEvents.reduce((acc, pause) => {
+      acc[pause.reason] = (acc[pause.reason] || 0) + 1;
+      return acc;
+    }, {});
+
+    // Group breaks by pattern
+    const breaksByPattern = breakEvents.reduce((acc, breakEvent) => {
+      acc[breakEvent.currentPattern] = (acc[breakEvent.currentPattern] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.status(200).json({
+      success: true,
+      jobId: job.jobId,
+      activitySummary: {
+        totalEvents: pauseEvents.length + resumeEvents.length + breakEvents.length,
+        pauses: {
+          count: pauseEvents.length,
+          totalTimeMs: totalPauseTime,
+          totalTimeMinutes: Math.round(totalPauseTime / 60000),
+          byReason: pausesByReason
+        },
+        resumes: {
+          count: resumeEvents.length
+        },
+        breaks: {
+          count: breakEvents.length,
+          totalTimeMs: totalBreakTime,
+          totalTimeMinutes: Math.round(totalBreakTime / 60000),
+          byPattern: breaksByPattern
+        }
+      },
+      events: {
+        pauses: pauseEvents,
+        resumes: resumeEvents,
+        breaks: breakEvents
+      }
+    });
+  } catch (error) {
+    console.error("❌ Error getting job activity:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error getting job activity",
       error: error.message
     });
   }
