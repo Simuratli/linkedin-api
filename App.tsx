@@ -30,6 +30,45 @@ interface DailyLimitInfo {
   estimatedResumeTime?: string;
 }
 
+// Activity Summary Interfaces
+interface PauseResumeEvent {
+  type: "pause" | "resume" | "break";
+  timestamp: string;
+  reason: string;
+  icon: string;
+  message: string;
+  details: {
+    limits?: {
+      daily: string;
+      hourly: string;
+      pattern: string;
+    };
+    pattern?: string;
+    estimatedResumeTime?: string;
+    batchProgress?: string;
+    processedInSession?: number;
+    previousPauseReason?: string;
+    pauseDuration?: number;
+    processedCount?: number;
+    limitStatus?: {
+      daily: string;
+      hourly: string;
+      pattern: string;
+    };
+    durationMinutes?: number;
+    currentPattern?: string;
+  };
+  displayMessage: string;
+}
+
+interface ActivitySummary {
+  totalPauses: number;
+  totalResumes: number;
+  totalBreaks: number;
+  lastActivity?: number;
+  events?: PauseResumeEvent[];
+}
+
 interface JobStatus {
   jobId: string;
   status: "pending" | "processing" | "paused" | "completed" | "failed" | "cancelled";
@@ -72,6 +111,7 @@ interface JobStatus {
     processedToday: number;
     patternBreakdown?: Record<string, number>;
   };
+  activitySummary?: ActivitySummary;
 }
 
 interface HumanPattern {
@@ -1291,20 +1331,17 @@ const handleOverrideCooldown = async () => {
 
         try {
           const result = await callStartProcessingAPI(requestData);
-          
+
           // Handle cooldown override 403 response - show override button
           if (result.needsOverrideButton || (result.cooldownOverridden && !result.success)) {
             console.log("🚫 Cooldown overridden - showing override option:", result);
-            
-            // Set cooldown info to show the override button
             setCooldownInfo({
               active: true,
-              daysLeft: result.daysLeft || 30, // fallback to 30 days
+              daysLeft: result.daysLeft || 30,
               lastCompleted: result.overriddenAt,
-              needsOverride: true, // Special flag for override case
+              needsOverride: true,
               overrideReason: result.message
             });
-            
             chrome.runtime.sendMessage({
               type: "PROCESS_STATUS",
               data: {
@@ -1322,10 +1359,31 @@ const handleOverrideCooldown = async () => {
             });
             return;
           }
-          
+
+          // Handle failed/cancelled job case from start-processing endpoint
+          if ((result.jobStatus === 'failed' || result.jobStatus === 'cancelled') && result.cancelInfo) {
+            setJobStatus({
+              jobId: result.cancelInfo.jobId,
+              status: result.cancelInfo.status,
+              processedCount: result.cancelInfo.processedCount,
+              totalContacts: result.cancelInfo.totalContacts,
+              successCount: 0, // Not available in response
+              failureCount: 0, // Not available in response
+              createdAt: result.cancelInfo.cancelledAt,
+              cancelledAt: result.cancelInfo.cancelledAt,
+              canRestart: result.canRestart,
+              dailyLimitInfo: result.limitInfo,
+              currentPattern: result.currentPattern,
+            });
+            setDailyLimitInfo(result.limitInfo);
+            setCurrentHumanPattern(null);
+            setCooldownInfo(null);
+            setAuthError(null);
+            return;
+          }
+
           // Handle cooldown override success case (older logic)
           if (result.cooldownOverridden === true && result.success) {
-            // Always persist cooldownOverridden state in localStorage for reloads
             const cooldownOverrideState = {
               jobId: result.jobId,
               status: "completed",
@@ -1351,7 +1409,7 @@ const handleOverrideCooldown = async () => {
             });
             return;
           }
-          
+
           // Handle cooldown case specifically
           if (result.cooldownActive) {
             setCooldownInfo({
@@ -1369,27 +1427,6 @@ const handleOverrideCooldown = async () => {
                   daysLeft: result.cooldownDaysLeft,
                   lastCompleted: result.lastCompleted
                 }
-              },
-            });
-            return;
-          }
-
-          // Handle cancelled job case
-          if (result.jobCancelled) {
-            setJobStatus(result.job || null);
-            chrome.runtime.sendMessage({
-              type: "PROCESS_STATUS",
-              data: {
-                status: "cancelled",
-                message: `🛑 Processing was cancelled. Progress saved: ${result.processedCount || 0}/${result.totalContacts || 0} contacts. You can restart processing from where you left off.`,
-                progress: {
-                  total: result.totalContacts || 0,
-                  processed: result.processedCount || 0,
-                  success: result.successCount || 0,
-                  failed: result.failureCount || 0,
-                },
-                canRestart: true,
-                jobData: result.job,
               },
             });
             return;

@@ -49,6 +49,45 @@ interface LastError {
   timestamp: string;
 }
 
+// NEW: Pause/Resume/Break Event Interfaces
+interface PauseResumeEvent {
+  type: "pause" | "resume" | "break";
+  timestamp: string;
+  reason: string;
+  icon: string;
+  message: string;
+  details: {
+    limits?: {
+      daily: string;
+      hourly: string;
+      pattern: string;
+    };
+    pattern?: string;
+    estimatedResumeTime?: string;
+    batchProgress?: string;
+    processedInSession?: number;
+    previousPauseReason?: string;
+    pauseDuration?: number;
+    processedCount?: number;
+    limitStatus?: {
+      daily: string;
+      hourly: string;
+      pattern: string;
+    };
+    durationMinutes?: number;
+    currentPattern?: string;
+  };
+  displayMessage: string;
+}
+
+interface ActivitySummary {
+  totalPauses: number;
+  totalResumes: number;
+  totalBreaks: number;
+  lastActivity?: number;
+  events?: PauseResumeEvent[];
+}
+
 interface JobStatus {
   jobId: string;
   status: "pending" | "processing" | "paused" | "completed" | "failed" | "cancelled";
@@ -85,6 +124,13 @@ interface JobStatus {
   currentPatternInfo?: HumanPattern;
   cooldownOverridden?: boolean;
   overriddenAt?: string;
+  canRestart?: boolean;
+  // NEW: Pause/Resume/Break History
+  pauseResumeHistory?: PauseResumeEvent[];
+  totalPauses?: number;
+  totalResumes?: number;
+  totalBreaks?: number;
+  activitySummary?: ActivitySummary;
 }
 
 interface JobStatusPopoverProps {
@@ -124,6 +170,39 @@ export function JobStatusPopover({
 }: JobStatusPopoverProps) {
   const [visible, setVisible] = useState(false);
   const [showRestartOptions, setShowRestartOptions] = useState(false);
+  // Fix: Move restartLoading state to top-level to avoid hook order issues
+  const [restartLoading, setRestartLoading] = useState(false);
+
+  // Defensive: If jobStatus is not fully populated, try to map/fill missing fields for failed jobs
+  let normalizedJobStatus = jobStatus;
+  if (jobStatus && jobStatus.status === 'failed') {
+    // If backend sends 'processed' and 'total' instead of processedCount/totalContacts
+    if (
+      typeof jobStatus.processedCount === 'undefined' &&
+      typeof (jobStatus as any).processed !== 'undefined'
+    ) {
+      normalizedJobStatus = {
+        ...jobStatus,
+        processedCount: (jobStatus as any).processed,
+      };
+    }
+    if (
+      typeof jobStatus.totalContacts === 'undefined' &&
+      typeof (jobStatus as any).total !== 'undefined'
+    ) {
+      normalizedJobStatus = {
+        ...normalizedJobStatus!,
+        totalContacts: (jobStatus as any).total,
+      };
+    }
+    // If error field is missing, show a generic error
+    if (typeof jobStatus.error === 'undefined') {
+      normalizedJobStatus = {
+        ...normalizedJobStatus!,
+        error: 'Job failed. No error message from backend.'
+      };
+    }
+  }
 
     // FAILED/CANCELLED JOB YENİDEN BAŞLATMA
     const API_BASE_URL = "https://linkedin-api-basl.onrender.com";
@@ -147,38 +226,8 @@ export function JobStatusPopover({
       }
     };
 
-    // Always show restart button for failed/cancelled jobs (outside popup)
-    const alwaysVisibleRestartButton = () => {
-      if (!jobStatus) return null;
-      if (jobStatus.status === "failed" || jobStatus.status === "cancelled") {
-        return (
-          <div className="job-controls-section always-visible-restart" style={{ marginBottom: 12 }}>
-            <button
-              className="control-button restart-button"
-              onClick={handleRestartJob}
-              style={{
-                background: "linear-gradient(45deg, #3B82F6, #2563EB)",
-                color: "white",
-                border: "1px solid #2563EB",
-                borderRadius: "6px",
-                padding: "8px 12px",
-                fontSize: "12px",
-                fontWeight: "bold",
-                cursor: "pointer",
-                transition: "all 0.2s ease",
-                marginRight: 8
-              }}
-            >
-              🔄 Job'u Yeniden Başlat
-            </button>
-            <small style={{ color: "#6B7280", fontSize: "10px", marginTop: "4px", display: "inline-block" }}>
-              Job'u tekrar başlatır ve kaldığı yerden devam eder.
-            </small>
-          </div>
-        );
-      }
-      return null;
-    };
+  // Remove alwaysVisibleRestartAndOverride: restart button will only show in popup now
+  const alwaysVisibleRestartAndOverride = () => null;
   // Handle timing for showing restart options after cancellation
   useEffect(() => {
     if (jobStatus?.status === "cancelled" && jobStatus.cancelledAt) {
@@ -317,27 +366,27 @@ export function JobStatusPopover({
       return <span className="status-badge auth-error">Login Required</span>;
     }
     
-    if (!jobStatus) {
+    if (!normalizedJobStatus) {
       return <span className="status-badge ready">Ready</span>;
     }
 
     // Show special auth error badges for different services
-    if (jobStatus.pauseReason === 'linkedin_session_invalid') {
+    if (normalizedJobStatus.pauseReason === 'linkedin_session_invalid') {
       return <span className="status-badge auth-error">LinkedIn Auth Error</span>;
     }
-    if (jobStatus.pauseReason === 'dataverse_session_invalid') {
+    if (normalizedJobStatus.pauseReason === 'dataverse_session_invalid') {
       return <span className="status-badge auth-error">Dataverse Auth Error</span>;
     }
-    if (jobStatus.pauseReason === 'token_refresh_failed') {
+    if (normalizedJobStatus.pauseReason === 'token_refresh_failed') {
       return <span className="status-badge auth-error">Auth Refresh Failed</span>;
     }
 
     return (
       <span 
-        className={`status-badge ${jobStatus.status}`}
-        style={{ backgroundColor: getStatusColor(jobStatus.status) }}
+        className={`status-badge ${normalizedJobStatus.status}`}
+        style={{ backgroundColor: getStatusColor(normalizedJobStatus.status) }}
       >
-        {jobStatus.status.charAt(0).toUpperCase() + jobStatus.status.slice(1)}
+        {normalizedJobStatus.status.charAt(0).toUpperCase() + normalizedJobStatus.status.slice(1)}
       </span>
     );
   };
@@ -540,10 +589,14 @@ export function JobStatusPopover({
   };
 
   const renderJobProgress = () => {
-    if (!jobStatus) return null;
+    if (!normalizedJobStatus) return null;
 
-    const progressPercentage = getProgressPercentage();
-    const successRate = getSuccessRate();
+    const progressPercentage = normalizedJobStatus.totalContacts
+      ? Math.round((normalizedJobStatus.processedCount / normalizedJobStatus.totalContacts) * 100)
+      : 0;
+    const successRate = normalizedJobStatus.processedCount
+      ? Math.round((normalizedJobStatus.successCount / normalizedJobStatus.processedCount) * 100)
+      : 0;
 
     return (
       <div className="progress-section">
@@ -554,7 +607,7 @@ export function JobStatusPopover({
           <div className="stat-item">
             <span className="stat-label">Overall:</span>
             <span className="stat-value">
-              {jobStatus.processedCount}/{jobStatus.totalContacts} ({progressPercentage}%)
+              {normalizedJobStatus.processedCount}/{normalizedJobStatus.totalContacts} ({progressPercentage}%)
             </span>
           </div>
           <div className="progress-bar">
@@ -566,11 +619,11 @@ export function JobStatusPopover({
           <div className="success-failure">
             <div className="stat-item success">
               <span className="stat-label">✅ Success:</span>
-              <span className="stat-value">{jobStatus.successCount}</span>
+              <span className="stat-value">{normalizedJobStatus.successCount ?? 0}</span>
             </div>
             <div className="stat-item failure">
               <span className="stat-label">❌ Failed:</span>
-              <span className="stat-value">{jobStatus.failureCount}</span>
+              <span className="stat-value">{normalizedJobStatus.failureCount ?? 0}</span>
             </div>
             <div className="stat-item success-rate">
               <span className="stat-label">Success Rate:</span>
@@ -785,11 +838,125 @@ const renderErrors = () => {
   );
 };
 
+  const renderPauseResumeHistory = () => {
+    if (!jobStatus?.activitySummary?.events || jobStatus.activitySummary.events.length === 0) {
+      return null;
+    }
+
+    const events = jobStatus.activitySummary.events;
+    
+    return (
+      <div className="pause-resume-section" style={{ 
+        marginTop: '12px', 
+        padding: '10px', 
+        backgroundColor: '#f8f9fa', 
+        borderRadius: '6px', 
+        border: '1px solid #e9ecef' 
+      }}>
+        <div className="section-header">
+          <strong>🕒 Activity Timeline:</strong>
+        </div>
+        <div className="activity-timeline" style={{ marginTop: '8px' }}>
+          {events.map((event, index) => (
+            <div key={index} className="activity-event" style={{ 
+              marginBottom: '8px', 
+              padding: '8px', 
+              backgroundColor: 'white', 
+              borderRadius: '4px', 
+              borderLeft: `3px solid ${event.type === 'pause' ? '#ff6b6b' : event.type === 'resume' ? '#51cf66' : '#339af0'}` 
+            }}>
+              <div className="event-time" style={{ 
+                fontSize: '12px', 
+                fontWeight: 'bold', 
+                color: '#495057', 
+                marginBottom: '4px' 
+              }}>
+                {event.icon} {formatTime(event.timestamp)}
+              </div>
+              <div className="event-message" style={{ 
+                fontSize: '13px', 
+                color: '#212529', 
+                marginBottom: '2px' 
+              }}>
+                {event.message}
+              </div>
+              {event.reason && (
+                <div className="event-reason" style={{ 
+                  fontSize: '11px', 
+                  color: '#6c757d', 
+                  fontStyle: 'italic' 
+                }}>
+                  <small>Reason: {event.reason}</small>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="activity-stats" style={{ 
+          marginTop: '10px', 
+          display: 'flex', 
+          gap: '12px', 
+          flexWrap: 'wrap' 
+        }}>
+          <div className="stat-item" style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '4px', 
+            fontSize: '12px' 
+          }}>
+            <span className="stat-label" style={{ color: '#6c757d' }}>Total Pauses:</span>
+            <span className="stat-value" style={{ 
+              fontWeight: 'bold', 
+              color: '#ff6b6b',
+              backgroundColor: '#ffe3e3',
+              padding: '2px 6px',
+              borderRadius: '3px'
+            }}>
+              {jobStatus.activitySummary.totalPauses}
+            </span>
+          </div>
+          <div className="stat-item" style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '4px', 
+            fontSize: '12px' 
+          }}>
+            <span className="stat-label" style={{ color: '#6c757d' }}>Total Resumes:</span>
+            <span className="stat-value" style={{ 
+              fontWeight: 'bold', 
+              color: '#51cf66',
+              backgroundColor: '#e3ffe3',
+              padding: '2px 6px',
+              borderRadius: '3px'
+            }}>
+              {jobStatus.activitySummary.totalResumes}
+            </span>
+          </div>
+          <div className="stat-item" style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '4px', 
+            fontSize: '12px' 
+          }}>
+            <span className="stat-label" style={{ color: '#6c757d' }}>Total Breaks:</span>
+            <span className="stat-value" style={{ 
+              fontWeight: 'bold', 
+              color: '#339af0',
+              backgroundColor: '#e3f2ff',
+              padding: '2px 6px',
+              borderRadius: '3px'
+            }}>
+              {jobStatus.activitySummary.totalBreaks}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const renderJobControls = () => {
     // Show different controls based on job status
     if (!jobStatus) return null;
-    
     // Show stop button for processing or paused jobs
     if ((jobStatus.status === "processing" || jobStatus.status === "paused") && onStopProcessing) {
       return (
@@ -802,16 +969,17 @@ const renderErrors = () => {
               className="control-button stop-button"
               onClick={handleStopProcessing}
               title="Complete current processing job"
-              style={{ 
-                background: 'linear-gradient(45deg, #EF4444, #DC2626)',
-                color: 'white',
-                border: '1px solid #DC2626',
-                borderRadius: '6px',
-                padding: '8px 12px',
-                fontSize: '12px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease'
+              style={{
+                background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                color: "white",
+                border: "1px solid #2563EB",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+                marginRight: 8
               }}
             >
               ✅ Complete Processing
@@ -819,6 +987,56 @@ const renderErrors = () => {
             <small style={{ color: '#6B7280', fontSize: '10px', marginTop: '4px', display: 'block' }}>
               Complete the job by marking all remaining contacts as successful
             </small>
+          </div>
+        </div>
+      );
+    }
+
+    // Show restart and override buttons for failed/cancelled jobs (in popup only)
+    if ((jobStatus.status === "failed" || jobStatus.status === "cancelled") && jobStatus.jobId && jobStatus.canRestart) {
+      return (
+        <div className="job-controls-section">
+          <div className="section-header">
+            <strong>Job Controls:</strong>
+          </div>
+          <div className="controls-buttons">
+            <button
+              className="control-button override-button"
+              onClick={handleRestartJob}
+              style={{
+                background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                color: "white",
+                border: "1px solid #2563EB",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                transition: "all 0.2s ease"
+              }}
+            >
+              🔄 Job'u Yeniden Başlat
+            </button>
+            {onOverrideCooldown && (
+              <button
+                className="control-button override-button"
+                onClick={onOverrideCooldown}
+                style={{
+                  background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                  color: "white",
+                  border: "1px solid #2563EB",
+                  borderRadius: "6px",
+                  padding: "8px 12px",
+                  fontSize: "12px",
+                  fontWeight: "bold",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease",
+                  marginLeft: 8
+                }}
+              >
+                🔓 Override Cooldown
+              </button>
+            )}
           </div>
         </div>
       );
@@ -840,15 +1058,15 @@ const renderErrors = () => {
               className="control-button override-button"
               onClick={onOverrideCooldown}
               style={{
-                background: 'linear-gradient(45deg, #f59e42, #e67e22)',
-                color: 'white',
-                border: '1px solid #e67e22',
-                borderRadius: '6px',
-                padding: '8px 12px',
-                fontSize: '12px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
+                background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                color: "white",
+                border: "1px solid #2563EB",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
                 marginTop: 8
               }}
             >
@@ -885,16 +1103,16 @@ const renderErrors = () => {
               className="control-button restart-button"
               onClick={() => handleRestartAfterCancel(false)}
               title="Continue from where you left off"
-              style={{ 
-                background: 'linear-gradient(45deg, #10B981, #059669)',
-                color: 'white',
-                border: '1px solid #059669',
-                borderRadius: '6px',
-                padding: '8px 12px',
-                fontSize: '12px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
+              style={{
+                background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                color: "white",
+                border: "1px solid #2563EB",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
                 marginBottom: '6px'
               }}
             >
@@ -903,21 +1121,20 @@ const renderErrors = () => {
             <small style={{ color: '#6B7280', fontSize: '10px', marginBottom: '8px', display: 'block' }}>
               Resume from {jobStatus.processedCount}/{jobStatus.totalContacts} contacts
             </small>
-            
             <button 
               className="control-button restart-fresh-button"
               onClick={() => handleRestartAfterCancel(true)}
               title="Start completely fresh from 0"
-              style={{ 
-                background: 'linear-gradient(45deg, #3B82F6, #2563EB)',
-                color: 'white',
-                border: '1px solid #2563EB',
-                borderRadius: '6px',
-                padding: '8px 12px',
-                fontSize: '12px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease'
+              style={{
+                background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                color: "white",
+                border: "1px solid #2563EB",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                transition: "all 0.2s ease"
               }}
             >
               🆕 Start Fresh
@@ -933,7 +1150,7 @@ const renderErrors = () => {
     return null;
   };
 
-  if (isCheckingJob && !jobStatus) {
+  if (isCheckingJob && !normalizedJobStatus) {
     return (
       <div className="job-status-wrapper checking">
         <span className="update-icon" style={{ cursor: "pointer" }}>
@@ -943,9 +1160,18 @@ const renderErrors = () => {
     );
   }
 
+  // Show debug info if jobStatus is not fully populated
+  if (normalizedJobStatus && (!normalizedJobStatus.status || !normalizedJobStatus.jobId)) {
+    return (
+      <div className="job-status-wrapper error">
+        <span style={{ color: 'red', fontWeight: 'bold' }}>JobStatus verisi eksik veya hatalı!</span>
+        <pre style={{ fontSize: 10, color: '#333', background: '#f8d7da', padding: 8, borderRadius: 4, marginTop: 8 }}>{JSON.stringify(normalizedJobStatus, null, 2)}</pre>
+      </div>
+    );
+  }
+
   return (
     <div>
-      {alwaysVisibleRestartButton()}
       <div
         className="job-status-wrapper"
         onMouseEnter={() => setVisible(true)}
@@ -953,7 +1179,7 @@ const renderErrors = () => {
         style={{ position: "relative", display: "inline-block" }}
       >
         <span className="update-icon" style={{ cursor: "pointer" }}>
-          <UpdateIcon status={jobStatus?.status === "cancelled" ? "paused" : (jobStatus?.status || "pending")} />
+          <UpdateIcon status={normalizedJobStatus?.status === "cancelled" ? "paused" : (normalizedJobStatus?.status || "pending")} />
           {renderStatusBadge()}
         </span>
 
@@ -976,10 +1202,11 @@ const renderErrors = () => {
               {renderPauseReason()}
               {renderTimestamps()}
               {renderErrors()}
+              {renderPauseResumeHistory()}
             </div>
-            {jobStatus && (
+            {normalizedJobStatus && (
               <div className="popup-footer">
-                <small>Job ID: {jobStatus.jobId}</small>
+                <small>Job ID: {normalizedJobStatus.jobId}</small>
               </div>
             )}
           </div>
