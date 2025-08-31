@@ -46,13 +46,13 @@ const HUMAN_PATTERNS = {
   },
   eveningLight: {
     time: "6-8 PM (Weekdays)",
-    profiles: 15,
+    profiles: 30,
     delay: "12-25 sec", // Quick evening check
     hourStart: 18,
     hourEnd: 20,
     minDelay: 12000, // 12 sec
     maxDelay: 25000, // 25 sec
-    maxProfiles: 15,
+    maxProfiles: 30,
     weekdayOnly: true,
   },
   nightRest: {
