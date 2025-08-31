@@ -200,27 +200,28 @@ const checkDailyLimit = async (userId, crmUrl) => {
   let hourCount = 0;
   let patternCount = 0;
   
-  // First try user-specific stats
-  if (stats[userId]) {
-    todayCount = stats[userId][today] || 0;
-    hourCount = stats[userId][hour] || 0;
-    patternCount = stats[userId][pattern] || 0;
-    console.log(`📊 User ${userId} stats found:`, { todayCount, hourCount, patternCount });
-  } else {
-    console.log(`⚠️ No stats found for userId: ${userId}`);
+  // Determine which key to use for stats lookup
+  let statsKey = userId;
+  if (crmUrl) {
+    statsKey = normalizeCrmUrl(crmUrl);
+    console.log(`🔍 Using CRM-based key: ${statsKey}`);
   }
   
-  // If no user stats, try CRM-based keys
-  if (todayCount === 0 && hourCount === 0 && patternCount === 0 && crmUrl) {
-    const normalizedCrm = normalizeCrmUrl(crmUrl);
-    console.log(`🔍 Trying CRM key: ${normalizedCrm}`);
-    if (stats[normalizedCrm]) {
-      todayCount = stats[normalizedCrm][today] || 0;
-      hourCount = stats[normalizedCrm][hour] || 0;
-      patternCount = stats[normalizedCrm][pattern] || 0;
-      console.log(`📊 CRM ${normalizedCrm} stats found:`, { todayCount, hourCount, patternCount });
-    } else {
-      console.log(`⚠️ No stats found for CRM: ${normalizedCrm}`);
+  // Load stats using the appropriate key
+  if (stats[statsKey]) {
+    todayCount = stats[statsKey][today] || 0;
+    hourCount = stats[statsKey][hour] || 0;
+    patternCount = stats[statsKey][pattern] || 0;
+    console.log(`📊 Stats found for ${statsKey}:`, { todayCount, hourCount, patternCount });
+  } else {
+    console.log(`⚠️ No stats found for key: ${statsKey}`);
+    
+    // If using CRM key failed, try user-specific as fallback
+    if (crmUrl && stats[userId]) {
+      todayCount = stats[userId][today] || 0;
+      hourCount = stats[userId][hour] || 0;
+      patternCount = stats[userId][pattern] || 0;
+      console.log(`📊 Fallback to user ${userId} stats:`, { todayCount, hourCount, patternCount });
     }
   }
   
@@ -261,7 +262,6 @@ const checkDailyLimit = async (userId, crmUrl) => {
   };
 };
 
-// Get next active (non-pause) pattern
 const getNextActivePattern = () => {
   const now = new Date();
   const currentHour = now.getHours();
@@ -324,18 +324,14 @@ const updateCrmDailyStats = async (crmUrl) => {
 
 const updateUserDailyStats = async (userId, crmUrl) => {
   try {
-    if (crmUrl) {
-      // Use CRM-based stats for shared processing
-      await updateCrmDailyStats(crmUrl);
-    } else {
-      // Fallback to user-based stats for backward compatibility
-      const today = getTodayKey();
-      const hourKey = getHourKey();
-      const patternKey = getPatternKey();
-      
-      await updateDailyStats(userId, today, hourKey, patternKey);
-      console.log(`📊 Updated user daily stats for ${userId}: ${today}, ${hourKey}, ${patternKey}`);
-    }
+    // Always use CRM-based stats when available
+    const statsKey = crmUrl ? normalizeCrmUrl(crmUrl) : userId;
+    const today = getTodayKey();
+    const hourKey = getHourKey();
+    const patternKey = getPatternKey();
+    
+    await updateDailyStats(statsKey, today, hourKey, patternKey);
+    console.log(`📊 Updated daily stats for ${statsKey}: day=${today}, hour=${hourKey}, pattern=${patternKey}`);
   } catch (error) {
     console.error("❌ Error updating daily stats:", error?.message);
   }
@@ -1594,7 +1590,6 @@ const processJobInBackground = async (jobId) => {
         for (let contactIndex = 0; contactIndex < batch.length; contactIndex++) {
           // KORUMA: currentBatchIndex hiçbir zaman batch sayısından büyük olamaz (contact içinde de kontrol)
           if (job.currentBatchIndex >= contactBatches.length) {
-            console.log(`🟥 [CONTACT BATCH INDEX GUARD] currentBatchIndex (${job.currentBatchIndex}) >= contactBatches.length (${contactBatches.length}), sıfırlanıyor.`);
             job.currentBatchIndex = 0;
             await saveJobs({ ...(await loadJobs()), [jobId]: job });
           }
@@ -1887,6 +1882,9 @@ const processJobInBackground = async (jobId) => {
             }
           }
           
+                   
+          
+                   
           // CRITICAL: Save job after each contact with fresh data merge
           const currentJobs = await loadJobs();
           currentJobs[jobId] = job;
@@ -2537,7 +2535,8 @@ app.get("/job-poll/:userId", async (req, res) => {
     }
     
     const jobs = await loadJobs();
-    const job = jobs[userSession.currentJobId];
+    const jobId = userSession.currentJobId;
+    const job = jobs[jobId];
     
     console.log(`🔍 Job poll check for ${userId}:`, 
       job ? 
@@ -2595,10 +2594,10 @@ app.get("/job-poll/:userId", async (req, res) => {
           console.log(`✅ Limits have reset, resuming paused job ${job.jobId}`);
           job.status = "processing";
           job.resumedAt = new Date().toISOString();
-          await saveJobs({...(await loadJobs()), [job.jobId]: job});
+          await saveJobs({...(await loadJobs()), [jobId]: job});
           
           // Use setImmediate to restart processing in background
-          setImmediate(() => processJobInBackground(job.jobId));
+          setImmediate(() => processJobInBackground(jobId));
         }
       }
     }
@@ -2935,17 +2934,13 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
         overridden: lastCompletedJob.cooldownOverridden || false,
         overriddenAt: lastCompletedJob.overriddenAt || null,
         overrideReason: lastCompletedJob.overrideReason || null,
-        canOverride: diffDays < 30 && !lastCompletedJob.cooldownOverridden
+        jobId: lastCompletedJob.jobId
       };
     }
     
-    // Get user session to determine current job
-    const userSessions = await loadUserSessions();
-    const currentJobId = userSessions[userId]?.currentJobId;
-    
     res.status(200).json({
       success: true,
-      currentJobId,
+      currentJobId: userSession?.currentJobId,
       jobs: userJobs,
       cooldownInfo
     });
@@ -3192,15 +3187,22 @@ app.post("/override-cooldown/:userId", async (req, res) => {
           jobId: newJobId,
           status: 'pending',
           totalContacts: freshContacts.length,
-          processedCount: 0,
-          message: 'New job started automatically with all contacts reset to pending'
+          processedCount: 0
         },
         autoStarted: true,
-        canStartNewJob: true
+        canStartNewJob: true,
+        contactSummary: {
+          totalFromCRM: freshContacts.length,
+          validLinkedInContacts: freshContacts.length,
+          contactDetails: freshContacts.map(c => ({
+            name: c.fullName,
+            hasLinkedIn: !!c.linkedinUrl
+          }))
+        }
       });
       
-    } catch (autoStartError) {
-      console.error(`❌ Error auto-starting new job after override: ${autoStartError.message}`);
+    } catch (error) {
+      console.error(`❌ Error auto-starting new job after override: ${error.message}`);
       
       // Still return success for the override, but mention auto-start failed
       res.status(200).json({
@@ -3213,7 +3215,7 @@ app.post("/override-cooldown/:userId", async (req, res) => {
           daysRemaining: 30 - daysSinceCompletion
         },
         canStartNewJob: true,
-        autoStartFailed: autoStartError.message,
+        autoStartFailed: error.message,
         nextStep: "Please start a new job manually"
       });
     }
@@ -3223,736 +3225,6 @@ app.post("/override-cooldown/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error overriding cooldown",
-      error: error.message
-    });
-  }
-});
-
-// Clean override endpoint - removes all jobs and starts fresh
-app.post("/override-cooldown-clean/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { reason = "Clean override - fresh start" } = req.body;
-    
-    console.log(`🧹 Clean cooldown override requested for user ${userId}`);
-    
-    // 1. Remove ALL jobs for this user from MongoDB
-    const jobs = await loadJobs();
-    const userJobIds = Object.keys(jobs).filter(jobId => jobs[jobId].userId === userId);
-    
-    console.log(`🗑️ Removing ${userJobIds.length} existing jobs for user ${userId}`);
-    
-    // Remove from jobs object
-    userJobIds.forEach(jobId => {
-      delete jobs[jobId];
-    });
-    
-    // Save updated jobs (without user's jobs)
-    await saveJobs(jobs);
-    
-    // 2. Clear user session
-    const userSessions = await loadUserSessions();
-    if (userSessions[userId]) {
-      delete userSessions[userId];
-      await saveUserSessions(userSessions);
-      console.log(`🗑️ Cleared user session for ${userId}`);
-    }
-    
-    // 3. Clear other user data
-    try {
-      // Daily stats
-      const dailyStats = await require('./helpers/fileLock').readJsonFile('./data/daily_stats.json');
-      if (dailyStats[userId]) {
-        delete dailyStats[userId];
-        await require('./helpers/fileLock').writeJsonFile('./data/daily_stats.json', dailyStats);
-      }
-      
-      // Daily rate limits
-      const rateLimits = await require('./helpers/fileLock').readJsonFile('./data/daily_rate_limits.json');
-      if (rateLimits[userId]) {
-        delete rateLimits[userId];
-        await require('./helpers/fileLock').writeJsonFile('./data/daily_rate_limits.json', rateLimits);
-      }
-    } catch (cleanupError) {
-      console.log(`⚠️ Optional cleanup warning: ${cleanupError.message}`);
-    }
-    
-    console.log(`✅ All data cleared for user ${userId}. User can now start completely fresh.`);
-    
-    res.status(200).json({
-      success: true,
-      message: `All jobs and data cleared for user ${userId}. You can now start fresh from 0.`,
-      clearedJobs: userJobIds.length,
-      clearedJobIds: userJobIds,
-      overrideReason: reason,
-      overriddenAt: new Date().toISOString(),
-      canStartFresh: true,
-      nextStep: "Import contacts and start a new job - everything starts from 0"
-    });
-    
-  } catch (error) {
-    console.error(`❌ Error in clean override: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Error in clean override",
-      error: error.message
-    });
-  }
-});
-
-// Complete reset endpoint - nuclear option
-app.post("/admin/reset-user-completely/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { confirmReset = false } = req.body;
-    
-    if (!confirmReset) {
-      return res.status(400).json({
-        success: false,
-        message: "Please confirm reset by sending confirmReset: true",
-        warning: "This will completely remove ALL data for this user"
-      });
-    }
-    
-    console.log(`🔥 COMPLETE RESET requested for user ${userId}`);
-    
-    // Remove all jobs
-    const jobs = await loadJobs();
-    const userJobIds = Object.keys(jobs).filter(jobId => jobs[jobId].userId === userId);
-    userJobIds.forEach(jobId => delete jobs[jobId]);
-    await saveJobs(jobs);
-    
-    // Remove user session
-    const userSessions = await loadUserSessions();
-    delete userSessions[userId];
-    await saveUserSessions(userSessions);
-    
-    // Remove from all data files
-    const dataFiles = [
-      './data/daily_stats.json',
-      './data/daily_rate_limits.json',
-      './data/user_sessions.json',
-      './data/direct_sessions.json',
-      './data/free_sessions.json'
-    ];
-    
-    for (const file of dataFiles) {
-      try {
-        const data = await require('./helpers/fileLock').readJsonFile(file);
-        if (data[userId]) {
-          delete data[userId];
-          await require('./helpers/fileLock').writeJsonFile(file, data);
-          console.log(`🗑️ Removed ${userId} from ${file}`);
-        }
-      } catch (fileError) {
-        console.log(`⚠️ Could not clean ${file}: ${fileError.message}`);
-      }
-    }
-    
-    console.log(`🔥 COMPLETE RESET completed for user ${userId}`);
-    
-    res.status(200).json({
-      success: true,
-      message: `User ${userId} has been completely reset. All data removed.`,
-      removedJobs: userJobIds.length,
-      resetAt: new Date().toISOString(),
-      status: "User can start completely fresh as if they never used the system"
-    });
-    
-  } catch (error) {
-    console.error(`❌ Error in complete reset: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Error in complete reset",
-      error: error.message
-    });
-  }
-});
-
-// Simple restart endpoint - reset counts to 0 and disable cooldown
-app.post("/restart-processing/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { reason = "Manual restart", updateContacts = true } = req.body;
-    
-    console.log(`🔄 Restart processing requested for user ${userId}`);
-    
-    // Load jobs
-    const jobs = await loadJobs();
-    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
-    
-    if (userJobs.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No jobs found for this user"
-      });
-    }
-    
-    // Find the most recent job (completed or not)
-    const sortedJobs = userJobs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    const currentJob = sortedJobs[0];
-    
-    console.log(`🔧 Resetting job ${currentJob.jobId} counts to 0 and disabling cooldown`);
-    
-    // Get user session for CRM access
-    const userSessions = await loadUserSessions();
-    const userSession = userSessions[userId];
-    
-    // Update contacts from CRM if requested and session exists
-    if (updateContacts && userSession && userSession.crmUrl && userSession.accessToken) {
-      try {
-        console.log(`📥 Fetching updated contacts from CRM for user ${userId}`);
-        console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
-        
-        // Import the function to fetch contacts from CRM
-        const { fetchContactsFromDataverse } = require('../helpers/dynamics');
-        
-        // Fetch fresh contacts from CRM
-        const freshContactsFromCRM = await fetchContactsFromDataverse(
-          userSession.accessToken,
-          userSession.crmUrl,
-          userSession.tenantId
-        );
-
-        console.log(freshContactsFromCRM,'freshContactsFromCRM')
-        
-        if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
-          console.log(`📋 Raw contacts from CRM: ${freshContactsFromCRM.length}`);
-          
-          // Log sample contact structure for debugging
-          if (freshContactsFromCRM.length > 0) {
-            console.log(`📝 Sample contact structure:`, Object.keys(freshContactsFromCRM[0]));
-            console.log(`📝 Sample contact data:`, JSON.stringify(freshContactsFromCRM[0], null, 2));
-          }
-          
-          // Convert CRM contacts to job format with detailed logging
-          const updatedContacts = freshContactsFromCRM.map((contact, index) => {
-            const contactId = contact.contactid || contact.id;
-            const fullName = contact.fullname || `${contact.firstname || ''} ${contact.lastname || ''}`.trim();
-            
-            // Try multiple possible field names for LinkedIn URL with priority order
-            const linkedinUrl = contact.uds_linkedin || 
-                               contact.linkedinurl || 
-                               contact.linkedin_url || 
-                               contact.linkedinprofileurl ||
-                               contact.uds_linkedinprofileurl ||
-                               contact.uds_linkedinurl ||
-                               contact.websiteurl; // websiteurl as last resort
-            
-            // Get all LinkedIn-related fields for debugging
-            const linkedinFields = Object.keys(contact).filter(key => 
-              key.toLowerCase().includes('linkedin') || 
-              key.toLowerCase().includes('website') ||
-              key.includes('uds_')
-            ).reduce((obj, field) => {
-              obj[field] = contact[field];
-              return obj;
-            }, {});
-            
-            console.log(`Contact ${index + 1}/${freshContactsFromCRM.length} - ${fullName}:`, {
-              contactId,
-              fullName,
-              linkedinUrl: linkedinUrl || 'NOT_FOUND',
-              hasLinkedIn: !!linkedinUrl,
-              linkedinFields,
-              email: contact.emailaddress1
-            });
-            
-            return {
-              contactId,
-              fullName,
-              linkedinUrl,
-              email: contact.emailaddress1,
-              status: 'pending',
-              error: null
-            };
-          });
-          
-          // More flexible filtering - include contacts with any LinkedIn-like URL or include all contacts for manual processing
-          const contactsWithLinkedIn = updatedContacts.filter(contact => {
-            // Include contacts with any non-empty LinkedIn URL
-            const hasLinkedInUrl = contact.linkedinUrl && 
-                                  contact.linkedinUrl.trim() !== '' && 
-                                  contact.linkedinUrl !== 'null' &&
-                                  contact.linkedinUrl !== 'undefined';
-            
-            // Also include contacts that have email but no LinkedIn (they might be processed manually)
-            const hasEmail = contact.email && contact.email.trim() !== '';
-            
-            // Accept if has LinkedIn URL or if has email (more flexible approach)
-            const shouldInclude = hasLinkedInUrl || hasEmail;
-            
-            if (!shouldInclude) {
-              console.log(`⚠️ Filtering out contact ${contact.contactId} (${contact.fullName}): no LinkedIn URL and no email`);
-            } else if (hasLinkedInUrl) {
-              console.log(`✅ Valid contact ${contact.contactId} (${contact.fullName}): LinkedIn URL: "${contact.linkedinUrl}"`);
-            } else {
-              console.log(`📧 Including contact ${contact.contactId} (${contact.fullName}): Email only: "${contact.email}"`);
-            }
-            
-            return shouldInclude;
-          });
-          
-          const oldContactCount = currentJob.contacts ? currentJob.contacts.length : 0;
-          const totalFromCRM = freshContactsFromCRM.length;
-          const validContactCount = contactsWithLinkedIn.length;
-          
-          console.log(`📊 Contact processing summary:`, {
-            totalFromCRM,
-            validContacts: validContactCount,
-            filteredOut: totalFromCRM - validContactCount,
-            oldCount: oldContactCount,
-            updateType: 'CRM_REFRESH'
-          });
-          
-
-          if (contactsWithLinkedIn.length > 0) {
-            // Update job with fresh contacts
-            currentJob.contacts = contactsWithLinkedIn;
-            currentJob.totalContacts = validContactCount;
-            
-            console.log(`✅ Updated job contacts: ${oldContactCount} → ${validContactCount} contacts from CRM`);
-          } else {
-            console.log(`⚠️ No valid LinkedIn URLs found in ${totalFromCRM} CRM contacts, keeping existing contacts`);
-            
-            // Reset existing contacts to pending
-            if (currentJob.contacts) {
-              currentJob.contacts.forEach(contact => {
-                contact.status = 'pending';
-                contact.error = null;
-              });
-              currentJob.totalContacts = currentJob.contacts.length;
-              currentJob.status = 'processing'; // Ensure job status is pending
-            } else {
-              currentJob.contacts = [];
-              currentJob.totalContacts = 0;
-            }
-          }
-          
-        } else {
-          console.log(`⚠️ No contacts returned from CRM API for user ${userId}, keeping existing contacts`);
-          console.log(currentJob,'currentjhob')
-          
-          // Reset existing contacts to pending
-          if (currentJob.contacts && currentJob.contacts.length > 0) {
-            currentJob.contacts.forEach(contact => {
-              contact.status = 'pending';
-              contact.error = null;
-            });
-            // Keep the existing contact count - DON'T set to 0
-            currentJob.totalContacts = currentJob.contacts.length;
-            currentJob.status = 'processing'; 
-            currentJob.successCount = 0; 
-            currentJob.processedCount = 0; 
-            currentJob.currentBatchIndex = 0; 
-            currentJob.cooldownOverridden = false;
-            
-            console.log(`✅ Reset ${currentJob.contacts.length} existing contacts to pending status`);
-          } else {
-            currentJob.contacts = [];
-            currentJob.totalContacts = 0;
-            console.log(`⚠️ No existing contacts found to reset`);
-          }
-        }
-        
-      } catch (crmError) {
-        console.error(`❌ Error fetching contacts from CRM: ${crmError.message}`);
-        console.log(`⚠️ CRM Error details:`, crmError);
-        console.log(`⚠️ Falling back to resetting existing contacts to pending`);
-        
-        // Fallback: Reset existing contacts to pending
-        if (currentJob.contacts && currentJob.contacts.length > 0) {
-          currentJob.contacts.forEach(contact => {
-            contact.status = 'pending';
-            contact.error = null;
-          });
-          // Keep the existing contact count - DON'T set to 0
-          currentJob.totalContacts = currentJob.contacts.length;
-          currentJob.status = 'processing';
-          currentJob.successCount = 0; 
-          currentJob.processedCount = 0; 
-          currentJob.currentBatchIndex = 0;
-          
-          console.log(`✅ Fallback: Reset ${currentJob.contacts.length} existing contacts to pending status`);
-        } else {
-          currentJob.contacts = [];
-          currentJob.totalContacts = 0;
-          console.log(`⚠️ Fallback: No existing contacts found to reset`);
-        }
-      }
-    } else {
-      console.log(`📝 Resetting existing contacts to pending (updateContacts: ${updateContacts})`);
-      
-      // Reset existing contacts to pending and update total count
-      if (currentJob.contacts && currentJob.contacts.length > 0) {
-        currentJob.contacts.forEach(contact => {
-          contact.status = 'pending';
-          contact.error = null;
-        });
-        
-        // Update total contacts count based on actual contacts array
-        const actualContactCount = currentJob.contacts.length;
-        if (currentJob.totalContacts !== actualContactCount) {
-          console.log(`📊 Updating totalContacts from ${currentJob.totalContacts} to ${actualContactCount}`);
-          currentJob.totalContacts = actualContactCount;
-        }
-        
-        // Reset other job counters
-        currentJob.successCount = 0; 
-        currentJob.processedCount = 0; 
-        currentJob.currentBatchIndex = 0;
-        currentJob.status = 'processing';
-        
-        console.log(`✅ Reset ${actualContactCount} existing contacts to pending status`);
-      } else {
-        console.log(`⚠️ No contacts array found in job ${currentJob.jobId}`);
-        currentJob.contacts = [];
-        currentJob.totalContacts = 0;
-      }
-    }
-    
-    // **CLEAR COOLDOWN AND MARK AS OVERRIDDEN**
-    if (userSession) {
-      // Clear cooldown settings and mark as overridden
-      userSession.cooldownActive = false;
-      userSession.cooldownEndDate = null;
-      userSession.lastJobCompleted = null;
-      userSession.currentJobId = null; // Clear current job reference
-      userSession.cooldownOverridden = true; // Mark as overridden
-      userSession.overriddenAt = new Date().toISOString();
-      
-      userSessions[userId] = userSession;
-      await saveUserSessions(userSessions);
-      console.log(`✅ Cooldown cleared and marked as overridden for user ${userId} - ready for new processing`);
-    }
-    
-    // **ALSO MARK ALL COMPLETED JOBS AS OVERRIDDEN** - This prevents reload restart
-    const allUserJobs = Object.values(jobs).filter(job => job.userId === userId);
-    let markedJobs = 0;
-    
-    for (const job of allUserJobs) {
-      if (job.status === "completed") {
-        job.cooldownOverridden = true;
-        job.overriddenAt = new Date().toISOString();
-        jobs[job.jobId] = job;
-        markedJobs++;
-        console.log(`🔓 Marked job ${job.jobId} as cooldown overridden`);
-      }
-    }
-    
-    // Mevcut job'ı tamamen sıfırla ve yeniden başlat
-    currentJob.currentBatchIndex = 0;
-    currentJob.cooldownOverridden = false;
-    currentJob.successCount = 0;
-    currentJob.processedCount = 0;
-    currentJob.failureCount = 0;
-    currentJob.status = 'processing';
-    currentJob.lastProcessedAt = null;
-    currentJob.completedAt = null;
-    currentJob.overriddenAt = null;
-    currentJob.overrideReason = null;
-    if (currentJob.contacts && currentJob.contacts.length > 0) {
-      currentJob.contacts.forEach(contact => {
-        contact.status = 'pending';
-        contact.error = null;
-        contact.completedAt = null;
-      });
-    }
-    // Pattern breakdown ve dailyStats da sıfırlansın
-    if (currentJob.dailyStats && currentJob.dailyStats.patternBreakdown) {
-      Object.keys(currentJob.dailyStats.patternBreakdown).forEach(key => {
-        currentJob.dailyStats.patternBreakdown[key] = 0;
-      });
-      currentJob.dailyStats.processedToday = 0;
-    }
-    jobs[currentJob.jobId] = currentJob;
-    await saveJobs(jobs);
-
-    // User session'da currentJobId'yi güncelle
-    if (userSession) {
-      userSession.currentJobId = currentJob.jobId;
-      await saveUserSessions(userSessions);
-      console.log(`✅ User session currentJobId güncellendi: ${currentJob.jobId}`);
-    }
-
-    if (markedJobs > 0) {
-      console.log(`✅ Marked ${markedJobs} completed jobs as overridden to prevent reload restart`);
-    }
-
-    console.log(`✅ Job resetlendi ve yeniden başlatıldı: ${currentJob.jobId}`);
-    console.log(`📊 Final job state: ${currentJob.totalContacts} total contacts, ${currentJob.contacts ? currentJob.contacts.length : 0} contacts in array`);
-
-    // **ADD MISSING BACKGROUND PROCESSING START**
-    console.log(`🚀 Starting background processing for restarted job: ${currentJob.jobId}`);
-    processJobInBackground(currentJob.jobId).catch(error => {
-      console.error(`❌ Background processing failed for job ${currentJob.jobId}:`, error);
-    });
-
-    res.status(200).json({
-      success: true,
-      message: "Job resetlendi ve yeniden başlatıldı.",
-      restarted: true,
-      processingStarted: true,
-      readyForNewJob: false,
-      jobStatus: {
-        totalContacts: currentJob.totalContacts,
-        contactsInArray: currentJob.contacts ? currentJob.contacts.length : 0,
-        status: currentJob.status
-      }
-    });
-    
-  } catch (error) {
-    console.error(`❌ Error restarting processing: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Error restarting processing",
-      error: error.message
-    });
-  }
-});
-// Simple override endpoint without verification (for testing)
-app.post("/override-cooldown-simple/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { reason = "Simple override" } = req.body;
-    
-    console.log(`🔓 Simple cooldown override requested for user ${userId}`);
-    
-    // İLK ÖNCE CRM'DAN CONTACTLARI ÇEK VE LOGLA
-    const userSessions = await loadUserSessions();
-    const userSession = userSessions[userId];
-    
-    if (!userSession || !userSession.crmUrl || !userSession.accessToken) {
-      return res.status(400).json({
-        success: false,
-        message: "User session, CRM URL veya access token bulunamadı"
-      });
-    }
-    
-    console.log(`📥 CRM'dan contactları çekiyorum...`);
-    console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
-    
-    try {
-      const { fetchContactsFromDataverse } = require('../helpers/dynamics');
-      
-      const freshContactsFromCRM = await fetchContactsFromDataverse(
-        userSession.accessToken,
-        userSession.crmUrl,
-        userSession.tenantId
-      );
-      
-      console.log(`📋 CRM'dan gelen RAW contactlar: ${freshContactsFromCRM ? freshContactsFromCRM.length : 0}`);
-      
-      if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
-        console.log(`🔍 === TÜM CRM CONTACTLARI ===`);
-        freshContactsFromCRM.forEach((contact, index) => {
-          console.log(`Contact ${index + 1}:`, {
-            contactid: contact.contactid,
-            id: contact.id,
-            firstname: contact.firstname,
-            lastname: contact.lastname,
-            uds_linkedin: contact.uds_linkedin,
-            linkedinurl: contact.linkedinurl,
-            linkedin_url: contact.linkedin_url,
-            websiteurl: contact.websiteurl
-          });
-        });
-        console.log(`🔍 === CRM CONTACTLARI SONU ===`);
-      } else {
-        console.log(`❌ CRM'dan contact gelmedi!`);
-        return res.status(400).json({
-          success: false,
-          message: "CRM'dan contact alınamadı"
-        });
-      }
-    } catch (crmError) {
-      console.error(`❌ CRM contact fetch hatası: ${crmError.message}`);
-      return res.status(500).json({
-        success: false,
-        message: `CRM'dan contact çekerken hata: ${crmError.message}`
-      });
-    }
-    
-    // Load jobs
-    const jobs = await loadJobs();
-    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
-    
-    if (userJobs.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No jobs found for this user"
-      });
-    }
-    
-    // Find the most recent completed job
-    const completedJobs = userJobs
-      .filter(job => job.status === "completed" && job.completedAt)
-      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-    
-    if (completedJobs.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No completed jobs found to override cooldown for"
-      });
-    }
-    
-    const lastCompletedJob = completedJobs[0];
-    const now = new Date();
-    
-    // Simply set the override flags
-    lastCompletedJob.cooldownOverridden = true;
-    lastCompletedJob.overriddenAt = now.toISOString();
-    lastCompletedJob.overrideReason = reason;
-    
-    // Save without verification
-    jobs[lastCompletedJob.jobId] = lastCompletedJob;
-    await saveJobs(jobs);
-    
-    console.log(`✅ Simple override completed for user ${userId}, job ${lastCompletedJob.jobId}`);
-    
-    // Auto-start new job after simple override
-    try {
-      console.log(`🚀 Yeni job başlatılıyor...`);
-      
-      // CRM'dan gelen contactları job formatına çevir
-      const freshContactsFromCRM = await fetchContactsFromDataverse(
-        userSession.accessToken,
-        userSession.crmUrl,
-        userSession.tenantId
-      );
-      
-      console.log(`📋 CRM'dan gelen ${freshContactsFromCRM.length} contact işleniyor...`);
-      
-      const updatedContacts = freshContactsFromCRM.map((contact, index) => {
-        const contactId = contact.contactid;
-        const fullName = contact.fullname || `${contact.firstname || ''} ${contact.lastname || ''}`.trim();
-        
-        // LinkedIn URL'ini al (CRM'da uds_linkedin alanında)
-        let linkedinUrl = contact.uds_linkedin;
-        
-        // LinkedIn URL temizleme ve doğrulama
-        if (linkedinUrl) {
-          // URL'yi normalize et
-          linkedinUrl = linkedinUrl.trim();
-          if (!linkedinUrl.startsWith('http')) {
-            linkedinUrl = 'https://' + linkedinUrl;
-          }
-          
-          // LinkedIn kontrolü
-          if (!linkedinUrl.includes('linkedin.com')) {
-            console.log(`⚠️ Contact ${index + 1} (${fullName}): LinkedIn URL geçersiz - "${linkedinUrl}"`);
-            linkedinUrl = null;
-          } else {
-            console.log(`✅ Contact ${index + 1} (${fullName}): LinkedIn URL geçerli - "${linkedinUrl}"`);
-          }
-        } else {
-          console.log(`⚠️ Contact ${index + 1} (${fullName}): LinkedIn URL bulunamadı`);
-        }
-        
-        return {
-          contactId,
-          fullName,
-          linkedinUrl,
-          status: 'pending',
-          error: null
-        };
-      });
-      
-      // Tüm contactları dahil et (LinkedIn URL olmayanları da)
-      const validContacts = updatedContacts.filter(contact => contact.linkedinUrl);
-      
-      console.log(`📊 Contact Özeti:`);
-      console.log(`   Toplam CRM Contact: ${freshContactsFromCRM.length}`);
-      console.log(`   LinkedIn URL'li Contact: ${validContacts.length}`);
-      console.log(`   İşlenecek Contact: ${validContacts.length}`);
-      
-      if (validContacts.length === 0) {
-        console.log(`❌ Hiç geçerli LinkedIn URL'li contact bulunamadı!`);
-        return res.status(400).json({
-          success: false,
-          message: "CRM'da geçerli LinkedIn URL'li contact bulunamadı"
-        });
-      }
-      
-      // Create new job with fresh contacts
-      const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const now = new Date();
-        
-        const newJob = {
-          jobId: newJobId,
-          userId: userId,
-          status: 'pending',
-          contacts: validContacts,
-          totalContacts: validContacts.length,
-          processedCount: 0,
-          successCount: 0,
-          failureCount: 0,
-          currentBatchIndex: 0,
-          createdAt: now.toISOString(),
-          startTime: now.toISOString(),
-          errors: [],
-          humanPatterns: {
-            startPattern: null,
-            startTime: now.toISOString(),
-            patternHistory: []
-          },
-          dailyStats: {
-            startDate: now.toISOString().split('T')[0],
-            processedToday: 0,
-            patternBreakdown: {}
-          }
-        };
-        
-        jobs[newJobId] = newJob;
-        await saveJobs(jobs);
-        
-        userSession.currentJobId = newJobId;
-        await saveUserSessions(userSessions);
-        
-        // Start processing
-        setImmediate(() => processJobInBackground(newJobId));
-        
-        res.status(200).json({
-          success: true,
-          message: `Cooldown overridden and new job started automatically (simple method)`,
-          overriddenJob: {
-            jobId: lastCompletedJob.jobId,
-            completedAt: lastCompletedJob.completedAt,
-            overriddenAt: lastCompletedJob.overriddenAt,
-            overrideReason: lastCompletedJob.overrideReason
-          },
-          newJob: {
-            jobId: newJobId,
-            status: 'pending',
-            totalContacts: validContacts.length,
-            processedCount: 0
-          },
-          autoStarted: true,
-          canStartNewJob: true,
-          contactSummary: {
-            totalFromCRM: freshContactsFromCRM.length,
-            validLinkedInContacts: validContacts.length,
-            contactDetails: validContacts.map(c => ({
-              name: c.fullName,
-              hasLinkedIn: !!c.linkedinUrl
-            }))
-          }
-        });
-        
-    } catch (error) {
-      console.error(`❌ Job oluşturma hatası: ${error.message}`);
-      res.status(500).json({
-        success: false,
-        message: "Job oluşturulurken hata oluştu",
-        error: error.message
-      });
-    }
-    
-  } catch (error) {
-    console.error(`❌ Override cooldown hatası: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Override cooldown işleminde hata",
       error: error.message
     });
   }
@@ -3998,7 +3270,7 @@ app.get("/can-override-cooldown/:userId", async (req, res) => {
     const completedAt = new Date(lastCompletedJob.completedAt);
     const now = new Date();
     const daysSinceCompletion = Math.floor((now - completedAt) / (1000 * 60 * 60 * 24));
-    const daysRemaining = Math.max(0, 30 - daysSinceCompletion);
+    const daysRemaining = Math.max(0, Math.ceil(30 - daysSinceCompletion));
 
     // Check if already overridden
     const alreadyOverridden = lastCompletedJob.cooldownOverridden;
@@ -4102,7 +3374,7 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
   }
 });
 
-// Endpoint to clean up and reset user data (for debugging cooldown issues)
+// Endpoint to clean up and reset user data (for debugging)
 app.post("/admin/cleanup-user/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -4155,8 +3427,8 @@ app.post("/admin/cleanup-user/:userId", async (req, res) => {
           await require('./helpers/fileLock').writeJsonFile('./data/daily_rate_limits.json', rateLimits);
           cleanedItems.push('rate limits');
         }
-      } catch (error) {
-        console.log(`⚠️ Some optional cleanup failed: ${error.message}`);
+      } catch (cleanupError) {
+        console.log(`⚠️ Some optional cleanup failed: ${cleanupError.message}`);
       }
     }
     
