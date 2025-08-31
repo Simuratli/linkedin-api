@@ -1,46 +1,7 @@
 /**
  * Utility to synchronize job data with daily statistics to ensure consistency
  */
-const fs = require('fs').promises;
-const path = require('path');
-
-// Path to daily stats file
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DAILY_STATS_FILE = path.join(DATA_DIR, 'daily_rate_limits.json');
-
-/**
- * Load the daily stats file
- */
-const loadDailyStats = async () => {
-  try {
-    const data = await fs.readFile(DAILY_STATS_FILE, "utf8");
-    return JSON.parse(data);
-  } catch (error) {
-    // If file doesn't exist, create directory and empty file
-    if (error.code === 'ENOENT') {
-      console.log(`⚠️ Daily stats file not found, creating empty one at ${DAILY_STATS_FILE}`);
-      await fs.mkdir(path.dirname(DAILY_STATS_FILE), { recursive: true });
-      await fs.writeFile(DAILY_STATS_FILE, '{}', { mode: 0o666 });
-    } else {
-      console.error("Error loading daily stats:", error);
-    }
-    return {};
-  }
-};
-
-/**
- * Save the daily stats file
- */
-const saveDailyStats = async (stats) => {
-  try {
-    // Make sure the directory exists before writing
-    await fs.mkdir(path.dirname(DAILY_STATS_FILE), { recursive: true });
-    await fs.writeFile(DAILY_STATS_FILE, JSON.stringify(stats, null, 2));
-    console.log(`✅ Daily stats saved to ${DAILY_STATS_FILE}`);
-  } catch (error) {
-    console.error("Error saving daily stats:", error);
-  }
-};
+const { loadDailyStats, saveDailyStats, loadUserSessions } = require('./db');
 
 /**
  * Get today's date key in YYYY-MM-DD format
@@ -58,55 +19,96 @@ const getHourKey = () => {
 };
 
 /**
+ * Get pattern key in YYYY-MM-DD-patternName format
+ */
+const getPatternKey = (patternName) => {
+  return `${getTodayKey()}-${patternName}`;
+};
+
+/**
+ * Normalize CRM URL for use as stats key
+ */
+const normalizeCrmUrl = (crmUrl) => {
+  if (!crmUrl) return 'unknown_crm';
+  try {
+    const url = new URL(crmUrl);
+    return url.hostname.toLowerCase().replace(/\./g, '_');
+  } catch (error) {
+    return crmUrl.toLowerCase().replace(/[^a-z0-9]/g, '_');
+  }
+};
+
+/**
  * Synchronize job data with daily stats to ensure consistency
  * 
  * @param {string} userId - The user ID
  * @param {Object} job - The job object to synchronize
- * @param {Object} dailyStats - Daily statistics object (optional, will be loaded if not provided)
  * @returns {Object} - Updated daily stats
  */
-const synchronizeJobWithDailyStats = async (userId, job, dailyStats = null) => {
+const synchronizeJobWithDailyStats = async (userId, job) => {
   try {
-    console.log(`🔄 Senkronizasyon başlatılıyor: Kullanıcı ${userId}`);
+    console.log(`🔄 Starting synchronization for user ${userId}, job ${job?.jobId}`);
     
     // Null check for job object
     if (!job) {
-      console.error(`❌ Senkronizasyon hatası: job objesi undefined veya null`);
+      console.error(`❌ Sync error: job object is undefined or null`);
       return null;
     }
     
-    // Load daily stats if not provided
-    if (!dailyStats) {
-      try {
-        console.log(`📊 Günlük istatistikler yükleniyor...`);
-        dailyStats = await loadDailyStats();
-        console.log(`✅ Günlük istatistikler yüklendi`);
-      } catch (loadError) {
-        console.error(`❌ Günlük istatistikleri yükleme hatası: ${loadError.message}`);
-        // Boş bir obje oluştur ve devam et
-        dailyStats = {};
-      }
-    }
-
-    // Initialize user stats if not exist
-    if (!dailyStats[userId]) {
-      console.log(`📊 ${userId} için yeni günlük istatistik kaydı oluşturuluyor`);
-      dailyStats[userId] = {};
+    // Load user sessions to get CRM URL
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    // Determine the stats key (CRM-based or user-based)
+    let statsKey = userId;
+    if (userSession?.crmUrl) {
+      statsKey = normalizeCrmUrl(userSession.crmUrl);
+      console.log(`📊 Using CRM-based stats key: ${statsKey} for CRM: ${userSession.crmUrl}`);
+    } else {
+      console.log(`📊 Using user-based stats key: ${statsKey}`);
     }
     
-    // Get today's key
+    // Load daily stats from MongoDB
+    const dailyStats = await loadDailyStats();
+    
+    // Initialize stats for this key if not exist
+    if (!dailyStats[statsKey]) {
+      console.log(`📊 Creating new daily stats record for ${statsKey}`);
+      dailyStats[statsKey] = {};
+    }
+    
+    // Get time-based keys
     const today = getTodayKey();
     const hourKey = getHourKey();
     
-    console.log(`📅 Bugün: ${today}, Saat: ${hourKey}`);
+    console.log(`📅 Today: ${today}, Hour: ${hourKey}`);
     
-    // Calculate the number of processed contacts in this job
-    const processedCount = job.successCount || 0;
-    console.log(`📊 İşlenen profil sayısı: ${processedCount}`);
+    // Get the actual processed count from job
+    const processedCount = job.processedCount || 0;
+    const successCount = job.successCount || 0;
     
-    // Ensure job's dailyStats object is properly initialized
+    console.log(`📊 Job stats - Processed: ${processedCount}, Success: ${successCount}`);
+    
+    // Update daily stats with the actual job counts
+    // Use the success count as the actual processed profiles
+    const actualProfilesProcessed = successCount;
+    
+    // Set the stats to match the job's actual counts
+    dailyStats[statsKey][today] = actualProfilesProcessed;
+    dailyStats[statsKey][hourKey] = actualProfilesProcessed;
+    
+    // Update pattern-specific stats from job data
+    if (job.dailyStats && job.dailyStats.patternBreakdown) {
+      console.log(`📊 Updating pattern breakdown:`, job.dailyStats.patternBreakdown);
+      for (const [patternName, count] of Object.entries(job.dailyStats.patternBreakdown)) {
+        const patternKey = getPatternKey(patternName);
+        dailyStats[statsKey][patternKey] = count || 0;
+        console.log(`📊 Pattern ${patternName}: ${count} profiles`);
+      }
+    }
+    
+    // Ensure job's dailyStats object is properly updated
     if (!job.dailyStats) {
-      console.log(`📊 İş istatistikleri başlatılıyor`);
       job.dailyStats = {
         startDate: today,
         processedToday: 0,
@@ -114,40 +116,30 @@ const synchronizeJobWithDailyStats = async (userId, job, dailyStats = null) => {
       };
     }
     
-    // Update daily stats based on job processed count
-    dailyStats[userId][today] = processedCount;
-    dailyStats[userId][hourKey] = processedCount;
-    
-    // Also update the job's dailyStats object for consistency
-    job.dailyStats.processedToday = processedCount;
+    // Update job's dailyStats to match
+    job.dailyStats.processedToday = actualProfilesProcessed;
     job.dailyStats.startDate = job.dailyStats.startDate || today;
     
-    console.log(`📊 Güncellenmiş istatistikler: Bugün=${processedCount}`);
+    // Save the updated daily stats to MongoDB
+    await saveDailyStats(dailyStats);
     
-    // Save the updated daily stats
-    try {
-      console.log(`💾 Günlük istatistikler kaydediliyor...`);
-      await saveDailyStats(dailyStats);
-      console.log(`✅ Günlük istatistikler kaydedildi`);
-    } catch (saveError) {
-      console.error(`❌ Günlük istatistikleri kaydetme hatası: ${saveError.message}`);
-      // Hatayı yut ve devam et
-    }
-    
-    console.log(`✅ Senkronizasyon tamamlandı: ${userId} için ${processedCount} profil işlendi`);
+    console.log(`✅ Synchronization completed for ${statsKey}:`, {
+      today: dailyStats[statsKey][today],
+      hour: dailyStats[statsKey][hourKey],
+      patterns: job.dailyStats.patternBreakdown || {}
+    });
     
     return dailyStats;
   } catch (error) {
-    console.error(`❌ Senkronizasyon ana hatası: ${error.message}`, error);
-    // Hatayı yukarı fırlatma - arka plan işlemi devam etsin
+    console.error(`❌ Sync error for user ${userId}:`, error.message);
     return null;
   }
 };
 
 module.exports = {
   synchronizeJobWithDailyStats,
-  loadDailyStats,
-  saveDailyStats,
   getTodayKey,
-  getHourKey
+  getHourKey,
+  getPatternKey,
+  normalizeCrmUrl
 };
