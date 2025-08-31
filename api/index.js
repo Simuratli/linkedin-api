@@ -3950,13 +3950,13 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
-      // Mark job as completed
+      // Mark job as complet
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
-      // Manual cancellation should override cooldown automatically
+      // Mark cooldown as overridden to prevent unwanted restart
       job.cooldownOverridden = true;
       job.overriddenAt = now;
       jobs[job.jobId] = job;
@@ -3967,16 +3967,15 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden (manual cancellation)`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
     }
     await saveJobs(jobs);
 
-    // Clear current job ID from user session and set cooldownOverridden for manual cancellation
+    // Clear current job ID from user session and set cooldownOverridden
     const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
-      // Manual cancellation overrides cooldown
       userSessions[userId].cooldownOverridden = true;
       userSessions[userId].overriddenAt = now;
     }
@@ -3997,7 +3996,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       completedJobs: cancelledJobs,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
-        cooldownOverridden: true, // Manual cancellation overrides cooldown automatically
+        cooldownOverridden: true,
         userSessionUpdated: !!userSessions[userId],
         nextStep: "Reload the extension to see updated status"
       }
