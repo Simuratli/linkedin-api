@@ -1790,17 +1790,20 @@ const processJobInBackground = async (jobId) => {
                 await handleDataverseError(dataverseError);
               }
 
+              // After successful contact processing
               contact.status = "completed";
               contact.processedAt = new Date().toISOString();
               contact.humanPattern = profileData.humanPattern || currentPatternName;
               job.successCount++;
               processedInSession++;
 
-              // Update job count and synchronize with daily stats
+              // Update job count
               job.processedCount = job.successCount + job.failureCount;
-              await synchronizeJobWithDailyStats(job.userId, job);
-
-              // Update pattern-specific stats
+              
+              // REMOVE THE updateUserDailyStats CALL TO PREVENT DOUBLE COUNTING
+              // The synchronizeJobWithDailyStats function will handle this properly
+              
+              // Update pattern-specific stats in job object only
               if (!job.dailyStats) {
                 job.dailyStats = {
                   startDate: getTodayKey(),
@@ -1818,18 +1821,7 @@ const processJobInBackground = async (jobId) => {
               }
               
               job.dailyStats.patternBreakdown[currentPatternName]++;
-
-              // Update CRM-based daily stats (shared across users)
-              const userSessionForStats = await (async () => {
-                const sessions = await loadUserSessions();
-                return sessions[job.userId];
-              })();
-              
-              if (userSessionForStats?.crmUrl) {
-                await updateUserDailyStats(job.userId, userSessionForStats.crmUrl);
-              } else {
-                await updateUserDailyStats(job.userId); // Fallback to user-based
-              }
+              job.dailyStats.processedToday = job.successCount;
 
               console.log(`✅ Successfully updated contact ${contact.contactId} (${processedInSession} in ${currentPatternName} session)`);
             } catch (error) {
@@ -2042,8 +2034,6 @@ app.get("/job-status/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
     console.log(`🔍 JOB STATUS REQUEST - Getting status for job ID: ${jobId}`);
-    console.log(`🔍 Request headers:`, req.headers['user-agent']);
-    console.log(`🔍 Request from IP: ${req.ip}`);
     
     const jobs = await loadJobs();
     const job = jobs[jobId];
@@ -2105,8 +2095,8 @@ app.get("/job-status/:jobId", async (req, res) => {
       await saveJobs({ ...jobs, [jobId]: job });
     }
 
-    // Synchronize the job stats with daily stats to ensure consistency
-    console.log(`🔄 Synchronizing job stats for user ${job.userId}`);
+    // ENSURE synchronization happens BEFORE checking limits
+    console.log(`🔄 Synchronizing job stats for user ${job.userId} before returning status`);
     await synchronizeJobWithDailyStats(job.userId, job);
 
     // Include current pattern and daily limit info
@@ -3265,7 +3255,7 @@ app.get("/can-override-cooldown/:userId", async (req, res) => {
         inCooldown: false
       });
     }
-
+    
     const lastCompletedJob = completedJobs[0];
     const completedAt = new Date(lastCompletedJob.completedAt);
     const now = new Date();
@@ -3357,6 +3347,7 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
     delete job.lastError;
     
     // Save job
+    jobs[jobId] = job;
     await saveJobs(jobs);
     
     // Restart background processing
