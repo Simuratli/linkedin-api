@@ -1,5 +1,10 @@
 const express = require("express");
 const { v4: uuidv4 } = require('uuid');
+try {
+  require('dotenv').config();
+} catch (e) {
+  console.log('dotenv not available, checking environment variables');
+}
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs/promises");

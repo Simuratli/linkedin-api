@@ -1,1 +1,103 @@
-{}
+{
+  "job_1756469462270_nbgs7egqt4": {
+    "jobId": "job_1756469462270_nbgs7egqt4",
+    "userId": "simuratli",
+    "status": "processing",
+    "totalContacts": 12,
+    "processedCount": 0,
+    "successCount": 0,
+    "failureCount": 0,
+    "currentBatchIndex": 0,
+    "createdAt": "2025-08-29T12:11:03.425Z",
+    "startTime": "2025-08-29T12:11:03.523Z",
+    "lastProcessedAt": "2025-08-31T19:37:10.337Z",
+    "cooldownOverridden": false,
+    "dailyStats": {
+      "startDate": "2025-08-29",
+      "processedToday": 0,
+      "patternBreakdown": {
+        "afternoonWork": 0
+      }
+    },
+    "humanPatterns": {
+      "startPattern": "afternoonWork",
+      "startTime": "2025-08-29T12:11:03.425Z",
+      "patternHistory": []
+    },
+    "contacts": [
+      {
+        "contactId": "2bf23981-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/daniel-skirko/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "38176690-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/vira-solovii-482023230/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "315a0a9a-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/anastasiaandrushchenko/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "280f6aa2-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/henrik-siig-1605055/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "76b9accf-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/niels-ulrich-duedahl-713a88/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "ba1cb0d6-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/jens-peter-jp-clausen-848ab64/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "dfbdf4dc-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/kurt-kelty/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "e0bdf4dc-0a83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/mary-barra/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "5d1ac52d-0b83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/sarablakely27/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "2f34982c-0f83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/alex-rodriguez-b4161815a/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "3aeed6e4-1b83-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/easymoneysniper/",
+        "status": "pending",
+        "error": null
+      },
+      {
+        "contactId": "c293a279-9083-f011-b4cc-7c1e526b11c4",
+        "linkedinUrl": "https://www.linkedin.com/in/simuratli/",
+        "status": "pending",
+        "error": null
+      }
+    ],
+    "errors": []
+  }
+}

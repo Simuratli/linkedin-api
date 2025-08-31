@@ -1,1 +1,12 @@
-{}
+{
+  "simuratli": {
+    "userId": "simuratli",
+    "currentJobId": "job_1756469462270_nbgs7egqt4",
+    "lastActivity": "2025-08-31T19:37:10.337Z",
+    "cooldownActive": false,
+    "cooldownEndDate": null,
+    "lastJobCompleted": null,
+    "cooldownOverridden": true,
+    "overriddenAt": "2025-08-31T19:37:10.337Z"
+  }
+}

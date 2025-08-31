@@ -236,8 +236,16 @@ const saveUserSessions = async (sessions) => {
 // Initialize MongoDB connection
 const initializeDB = async () => {
   try {
-    // Remove deprecated options
-    await mongoose.connect(process.env.MONGODB_URI);
+    const mongoUri = process.env.MONGODB_URI;
+    
+    if (!mongoUri) {
+      console.log('⚠️ MongoDB URI not found, using file-based storage for local development');
+      console.log('⚠️ To use MongoDB, set MONGODB_URI environment variable');
+      return; // Skip MongoDB initialization, use file storage
+    }
+    
+    console.log('🔗 Connecting to MongoDB...');
+    await mongoose.connect(mongoUri);
     console.log('✅ Connected to MongoDB');
     
     // Migrate direct sessions data if needed
@@ -245,7 +253,8 @@ const initializeDB = async () => {
     
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
-    process.exit(1);
+    console.log('⚠️ Falling back to file-based storage');
+    // Don't exit, just continue with file storage
   }
 };
 
