@@ -30,6 +30,42 @@ const {
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
+
+// Professional logging system for debugging background processing
+const createProcessingLogger = (jobId) => {
+  const logContext = `[JOB:${jobId.slice(-8)}]`;
+  return {
+    info: (step, data = {}) => console.log(`ℹ️ ${logContext} ${step}:`, data),
+    debug: (step, data = {}) => console.log(`🔍 ${logContext} ${step}:`, data),
+    warn: (step, data = {}) => console.log(`⚠️ ${logContext} ${step}:`, data),
+    error: (step, data = {}) => console.log(`❌ ${logContext} ${step}:`, data),
+    checkpoint: (step, extra = '') => console.log(`📍 ${logContext} CHECKPOINT: ${step} ${extra}`),
+    contact: (contactIndex, batchIndex, step, data = {}) => 
+      console.log(`👤 ${logContext} [B${batchIndex}C${contactIndex}] ${step}:`, data)
+  };
+};
+
+// Job state tracking for debugging
+const updateJobState = async (jobId, state, details = {}) => {
+  try {
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    if (job) {
+      job.debugState = {
+        currentState: state,
+        timestamp: new Date().toISOString(),
+        details,
+        ...job.debugState
+      };
+      job.lastDebugUpdate = new Date().toISOString();
+      jobs[jobId] = job;
+      await saveJobs(jobs);
+    }
+  } catch (error) {
+    console.log(`Debug state update failed for ${jobId}:`, error.message);
+  }
+};
+
 // Add this helper function at the top of your file
 const checkJobStatusAndExit = async (jobId, checkPoint = "", initialCancelToken = null) => {
   const latestJobs = await loadJobs();
@@ -994,46 +1030,276 @@ app.post("/start-processing", async (req, res) => {
   }
 });
 
+// Simple restart endpoint for stuck jobs
+app.post("/restart-job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const logger = createProcessingLogger(jobId);
+    logger.checkpoint("MANUAL_RESTART_REQUESTED");
+    
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    
+    if (!job) {
+      logger.error("JOB_NOT_FOUND_FOR_RESTART", { jobId });
+      return res.status(404).json({
+        success: false,
+        message: "Job not found"
+      });
+    }
+    
+    logger.info("JOB_FOUND_FOR_RESTART", {
+      status: job.status,
+      totalContacts: job.totalContacts,
+      processedCount: job.processedCount,
+      currentBatchIndex: job.currentBatchIndex || 0
+    });
+    
+    // Reset any processing contacts to pending
+    let resetCount = 0;
+    if (job.contacts) {
+      job.contacts.forEach(contact => {
+        if (contact.status === "processing") {
+          contact.status = "pending";
+          resetCount++;
+          logger.debug("CONTACT_RESET_TO_PENDING", { contactId: contact.contactId });
+        }
+      });
+    }
+    
+    // Reset job state for fresh start
+    job.currentBatchIndex = 0;
+    job.lastProcessedAt = new Date().toISOString();
+    job.restartCount = (job.restartCount || 0) + 1;
+    job.lastRestart = new Date().toISOString();
+    job.lastRestartReason = "manual_restart_endpoint";
+    job.debugState = {
+      currentState: "MANUAL_RESTART",
+      timestamp: new Date().toISOString(),
+      resetContacts: resetCount,
+      restartCount: job.restartCount
+    };
+    
+    // Ensure job status is processing
+    if (job.status !== "processing") {
+      logger.info("SETTING_STATUS_TO_PROCESSING", { previousStatus: job.status });
+      job.status = "processing";
+      job.resumedAt = new Date().toISOString();
+      delete job.pauseReason;
+      delete job.pausedAt;
+      delete job.lastError;
+    }
+    
+    // Save job
+    jobs[jobId] = job;
+    await saveJobs(jobs);
+    
+    logger.info("JOB_STATE_RESET_COMPLETE", {
+      resetContacts: resetCount,
+      restartCount: job.restartCount,
+      currentBatchIndex: job.currentBatchIndex
+    });
+    
+    // Start background processing with enhanced logging
+    logger.checkpoint("STARTING_BACKGROUND_PROCESSING");
+    setImmediate(() => {
+      logger.checkpoint("BACKGROUND_PROCESS_IMMEDIATE_CALLED");
+      processJobInBackground(jobId).catch(error => {
+        logger.error("BACKGROUND_PROCESSING_FAILED", { error: error.message, stack: error.stack });
+      });
+    });
+    
+    return res.status(200).json({
+      success: true,
+      message: "Job restarted successfully with enhanced logging",
+      jobId,
+      resetContactsCount: resetCount,
+      restartCount: job.restartCount,
+      debugInfo: {
+        currentBatchIndex: job.currentBatchIndex,
+        status: job.status,
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount
+      }
+    });
+    
+  } catch (error) {
+    console.error("❌ Error restarting job:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error restarting job",
+      error: error.message
+    });
+  }
+});
+
+// Debug endpoint to get detailed job processing state
+app.get("/debug-job-state/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found"
+      });
+    }
+    
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[job.userId];
+    
+    // Analyze job state
+    const now = new Date();
+    const lastProcessed = job.lastProcessedAt ? new Date(job.lastProcessedAt) : null;
+    const timeSinceLastProcess = lastProcessed ? (now - lastProcessed) / 1000 : null;
+    
+    const pendingContacts = job.contacts ? job.contacts.filter(c => c.status === "pending") : [];
+    const processingContacts = job.contacts ? job.contacts.filter(c => c.status === "processing") : [];
+    const completedContacts = job.contacts ? job.contacts.filter(c => c.status === "completed") : [];
+    const failedContacts = job.contacts ? job.contacts.filter(c => c.status === "failed") : [];
+    
+    const debugInfo = {
+      jobId: job.jobId,
+      userId: job.userId,
+      status: job.status,
+      timestamps: {
+        createdAt: job.createdAt,
+        lastProcessedAt: job.lastProcessedAt,
+        lastRestart: job.lastRestart,
+        timeSinceLastProcess: timeSinceLastProcess ? Math.round(timeSinceLastProcess) : null
+      },
+      counters: {
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        successCount: job.successCount,
+        failureCount: job.failureCount,
+        currentBatchIndex: job.currentBatchIndex || 0,
+        restartCount: job.restartCount || 0
+      },
+      contactBreakdown: {
+        pending: pendingContacts.length,
+        processing: processingContacts.length,
+        completed: completedContacts.length,
+        failed: failedContacts.length
+      },
+      userSession: {
+        exists: !!userSession,
+        hasCrmUrl: !!(userSession?.crmUrl),
+        hasAccessToken: !!(userSession?.accessToken),
+        hasLinkedInSession: !!(userSession?.li_at && userSession?.jsessionid),
+        lastActivity: userSession?.lastActivity
+      },
+      debugState: job.debugState || null,
+      lastError: job.lastError || null,
+      pauseReason: job.pauseReason || null,
+      isStuck: timeSinceLastProcess > 120 && job.status === "processing" && pendingContacts.length > 0,
+      recommendations: []
+    };
+    
+    // Add recommendations based on state
+    if (debugInfo.isStuck) {
+      debugInfo.recommendations.push("Job appears stuck - use /restart-job/:jobId to restart");
+    }
+    if (!debugInfo.userSession.exists) {
+      debugInfo.recommendations.push("User session missing - user needs to reconnect");
+    }
+    if (!debugInfo.userSession.hasLinkedInSession) {
+      debugInfo.recommendations.push("LinkedIn session invalid - user needs to re-authenticate");
+    }
+    if (!debugInfo.userSession.hasAccessToken) {
+      debugInfo.recommendations.push("Dataverse access token missing - user needs to re-authenticate");
+    }
+    if (processingContacts.length > 0) {
+      debugInfo.recommendations.push(`${processingContacts.length} contacts stuck in processing state - restart will reset them to pending`);
+    }
+    
+    console.log(`🔍 Debug state for job ${jobId}:`, debugInfo);
+    
+    res.status(200).json({
+      success: true,
+      debug: debugInfo
+    });
+    
+  } catch (error) {
+    console.error("❌ Error getting debug state:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error getting debug state",
+      error: error.message
+    });
+  }
+});
+
 // Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
-  console.log(`🔄 Starting background processing for job: ${jobId}`);
-  console.log(`🕐 Process start time: ${new Date().toISOString()}`);
+  const logger = createProcessingLogger(jobId);
+  logger.checkpoint("BACKGROUND_PROCESSING_STARTED");
   
-  // Initial job load
-  let jobs = await loadJobs();
-  let job = jobs[jobId];
-
-  // Cache cancelToken at start
-  const initialCancelToken = job.cancelToken;
-
-  if (!job) {
-    console.error(`❌ No job found with ID ${jobId}`);
-    return;
-  }
-
-  // CRITICAL: Check job status before doing anything
-  if (await checkJobStatusAndExit(jobId, "initial check", initialCancelToken)) return;
-
-  const userSessions = await loadUserSessions();
-  const userSession = userSessions[job.userId];
-  
-  if (!userSession) {
-    console.error(`❌ No user session found for job ${jobId} (userId: ${job.userId})`);
-    console.log(`🔧 Job exists but user session is missing. This usually happens after server restart.`);
-    console.log(`💡 Solution: User needs to reconnect through extension or use debug-restart-job endpoint`);
+  try {
+    await updateJobState(jobId, "BACKGROUND_PROCESSING_STARTED", { timestamp: new Date().toISOString() });
     
-    // Mark job as paused with specific reason
-    job.status = "paused";
-    job.pauseReason = "user_session_missing";
-    job.pausedAt = new Date().toISOString();
-    job.lastError = {
-      type: "SESSION_ERROR",
-      message: "User session not found. Please reconnect through extension.",
-      timestamp: new Date().toISOString()
-    };
-    await saveJobs({ ...jobs, [jobId]: job });
-    return;
-  }
+    // Initial job load
+    logger.checkpoint("LOADING_INITIAL_JOB");
+    let jobs = await loadJobs();
+    let job = jobs[jobId];
+
+    if (!job) {
+      logger.error("JOB_NOT_FOUND", { jobId });
+      return;
+    }
+
+    logger.info("JOB_LOADED", {
+      status: job.status,
+      totalContacts: job.totalContacts,
+      processedCount: job.processedCount,
+      currentBatchIndex: job.currentBatchIndex
+    });
+
+    // Cache cancelToken at start
+    const initialCancelToken = job.cancelToken;
+    logger.debug("CANCEL_TOKEN_CACHED", { initialCancelToken });
+
+    // CRITICAL: Check job status before doing anything
+    logger.checkpoint("INITIAL_STATUS_CHECK");
+    if (await checkJobStatusAndExit(jobId, "initial check", initialCancelToken)) {
+      logger.warn("JOB_EXITED_AT_INITIAL_CHECK");
+      return;
+    }
+
+    await updateJobState(jobId, "CHECKING_USER_SESSION");
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[job.userId];
+    
+    if (!userSession) {
+      logger.error("USER_SESSION_MISSING", { userId: job.userId });
+      await updateJobState(jobId, "PAUSED_NO_SESSION");
+      
+      job.status = "paused";
+      job.pauseReason = "user_session_missing";
+      job.pausedAt = new Date().toISOString();
+      job.lastError = {
+        type: "SESSION_ERROR",
+        message: "User session not found. Please reconnect through extension.",
+        timestamp: new Date().toISOString()
+      };
+      await saveJobs({ ...jobs, [jobId]: job });
+      return;
+    }
+
+    logger.info("USER_SESSION_FOUND", {
+      userId: job.userId,
+      hasCrmUrl: !!userSession.crmUrl,
+      hasAccessToken: !!userSession.accessToken,
+      hasLinkedInSession: !!(userSession.li_at && userSession.jsessionid)
+    });
+
+    await updateJobState(jobId, "PREPARING_PROCESSING", {
+      userId: job.userId,
+      totalContacts: job.totalContacts,
+      processed: job.processedCount
+    });
 
   console.log(`📊 Processing job ${jobId}:`, {
     status: job.status,
@@ -1043,7 +1309,6 @@ const processJobInBackground = async (jobId) => {
   });
 
   console.log(`🟪 [GLOBAL] processJobInBackground started for jobId: ${jobId}`);
-  try {
   console.log(`🟪 [GLOBAL] Entered try block for jobId: ${jobId}`);
     // CRITICAL: Always work with fresh job data
     jobs = await loadJobs();
@@ -1715,12 +1980,12 @@ const processJobInBackground = async (jobId) => {
 
     console.log(`✅ Job ${jobId} processing completed. Status: ${job.status}`);
   } catch (error) {
-  console.error(`🟥 [GLOBAL ERROR] Background processing error for job ${jobId}:`, error);
-  console.log(`🟪 [GLOBAL] processJobInBackground END for jobId: ${jobId}`);
+    console.error(`🟥 [GLOBAL ERROR] Background processing error for job ${jobId}:`, error);
+    console.log(`🟪 [GLOBAL] processJobInBackground END for jobId: ${jobId}`);
     
     // Only mark as failed if not already completed/cancelled
-    jobs = await loadJobs();
-    job = jobs[jobId];
+    let jobs = await loadJobs();
+    let job = jobs[jobId];
     
     if (job && !["completed", "cancelled"].includes(job.status)) {
       job.status = "failed";
