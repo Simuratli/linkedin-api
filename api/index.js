@@ -2039,32 +2039,41 @@ const processJobInBackground = async (jobId) => {
 
     // Mark job as completed if all contacts processed
     const remainingPending = job.contacts.filter((c) => c.status === "pending").length;
+    const totalContactsLength = job.contacts ? job.contacts.length : job.totalContacts;
+    const allContactsProcessed = job.processedCount >= totalContactsLength;
     
     console.log(`📊 Job completion check for ${jobId}:`, {
       remainingPending,
       totalContacts: job.totalContacts,
+      totalContactsLength,
       processedCount: job.processedCount,
       successCount: job.successCount,
       failureCount: job.failureCount,
-      allContactsAccountedFor: (job.successCount + job.failureCount) === job.totalContacts
+      allContactsAccountedFor: (job.successCount + job.failureCount) === totalContactsLength,
+      allContactsProcessed
     });
     
-    if (remainingPending === 0 && job.status === "processing") {
+    // Complete job if either: no pending contacts OR all contacts have been processed (success + failed)
+    if ((remainingPending === 0 || allContactsProcessed) && job.status === "processing") {
+      // Same completion logic as cancel-processing endpoint
+      const now = new Date().toISOString();
+      
       job.status = "completed";
-      job.completedAt = new Date().toISOString();
-      job.currentBatchIndex = 0; // İş bittiğinde sıfırla
-      job.completionReason = "background_processing_completed";
+      job.completedAt = now;
+      job.currentBatchIndex = 0;
+      job.completionReason = allContactsProcessed ? "all_contacts_processed" : "background_processing_completed";
+      job.lastProcessedAt = now;
 
       // Final pattern history entry
       if (!job.humanPatterns.patternHistory)
         job.humanPatterns.patternHistory = [];
       job.humanPatterns.patternHistory.push({
         pattern: currentPatternName,
-        endTime: new Date().toISOString(),
+        endTime: now,
         profilesProcessed: processedInSession,
       });
 
-      console.log(`🎉 Job ${jobId} completed by background processing! Final pattern breakdown:`, job.dailyStats.patternBreakdown);
+      console.log(`🎉 Job ${jobId} completed by background processing! Reason: ${job.completionReason}, Final pattern breakdown:`, job.dailyStats.patternBreakdown);
       
       // CRITICAL: Also update MongoDB to ensure consistency
       try {
@@ -2074,9 +2083,10 @@ const processJobInBackground = async (jobId) => {
             status: "completed",
             completedAt: new Date(),
             currentBatchIndex: 0,
-            completionReason: "background_processing_completed",
+            completionReason: job.completionReason,
             humanPatterns: job.humanPatterns,
-            dailyStats: job.dailyStats
+            dailyStats: job.dailyStats,
+            lastProcessedAt: new Date()
           },
           { new: true }
         );
@@ -2087,6 +2097,8 @@ const processJobInBackground = async (jobId) => {
     } else if (remainingPending > 0) {
       // Check if we've processed all available contacts but some are still pending
       // This can happen if processing was interrupted
+    } else if (remainingPending > 0 && !allContactsProcessed) {
+      // Only mark as stalled if we haven't processed all contacts yet
       console.log(`⚠️ Job ${jobId} has ${remainingPending} pending contacts remaining after background processing`);
       console.log(`🔍 Investigating stuck contacts...`);
       
@@ -2103,6 +2115,9 @@ const processJobInBackground = async (jobId) => {
       job.stalledReason = `${remainingPending} contacts remain pending after background processing completed`;
       
       console.log(`🔄 Job ${jobId} marked as stalled, frontend monitoring will trigger restart if needed`);
+    } else if (remainingPending > 0 && allContactsProcessed) {
+      // All contacts processed but some still marked as pending - this shouldn't happen but let's log it
+      console.log(`✅ Job ${jobId} has processed all contacts (${job.processedCount}/${totalContactsLength}) but ${remainingPending} are still marked as pending - job should be completed above`);
     }
 
     // Final save
@@ -3992,80 +4007,6 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error cancelling processing",
-      error: error.message
-    });
-  }
-});
-
-// Endpoint to fix stuck completed jobs
-app.post("/fix-stuck-jobs", async (req, res) => {
-  try {
-    console.log("🔧 Starting to fix stuck completed jobs...");
-    
-    const jobs = await loadJobs();
-    let fixedCount = 0;
-    const fixedJobs = [];
-    
-    for (const [jobId, job] of Object.entries(jobs)) {
-      // Check if job should be completed but isn't
-      if (job.status === "processing") {
-        const remainingPending = job.contacts ? job.contacts.filter(c => c.status === "pending").length : 0;
-        const allContactsProcessed = job.processedCount >= job.totalContacts;
-        
-        if (remainingPending === 0 && allContactsProcessed) {
-          console.log(`🔧 Fixing job ${jobId} - all contacts completed but status was still processing`);
-          console.log(`   - Total: ${job.totalContacts}, Processed: ${job.processedCount}, Success: ${job.successCount}`);
-          
-          // Fix the job status in memory
-          job.status = "completed";
-          job.completedAt = new Date().toISOString();
-          job.currentBatchIndex = 0;
-          job.completionReason = "fixed_by_admin_endpoint";
-          
-          // Update MongoDB
-          try {
-            await Job.findOneAndUpdate(
-              { jobId: jobId },
-              { 
-                status: "completed",
-                completedAt: new Date(),
-                currentBatchIndex: 0,
-                completionReason: "fixed_by_admin_endpoint"
-              },
-              { new: true }
-            );
-            console.log(`✅ Job ${jobId} fixed in both memory and MongoDB`);
-            fixedJobs.push({
-              jobId: jobId,
-              userId: job.userId,
-              totalContacts: job.totalContacts,
-              processedCount: job.processedCount
-            });
-            fixedCount++;
-          } catch (mongoError) {
-            console.error(`❌ Error updating MongoDB for job ${jobId}:`, mongoError);
-          }
-        }
-      }
-    }
-    
-    if (fixedCount > 0) {
-      await saveJobs(jobs);
-      console.log(`✅ Fixed ${fixedCount} completed jobs`);
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: `Fixed ${fixedCount} stuck jobs`,
-      fixedJobs: fixedJobs,
-      totalChecked: Object.keys(jobs).length
-    });
-    
-  } catch (error) {
-    console.error("❌ Error fixing stuck jobs:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error fixing stuck jobs",
       error: error.message
     });
   }
