@@ -3950,15 +3950,15 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
-      // Mark job as complet
+      // Mark job as completed
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
-      // Mark cooldown as overridden to prevent unwanted restart
-      job.cooldownOverridden = true;
-      job.overriddenAt = now;
+      // DON'T automatically override cooldown - let user see override button after 1 second
+      // job.cooldownOverridden = true;
+      // job.overriddenAt = now;
       jobs[job.jobId] = job;
       cancelledJobs.push({
         jobId: job.jobId,
@@ -3967,17 +3967,18 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown will be active for override button`);
     }
     await saveJobs(jobs);
 
-    // Clear current job ID from user session and set cooldownOverridden
+    // Clear current job ID from user session but DON'T set cooldownOverridden
     const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
-      userSessions[userId].cooldownOverridden = true;
-      userSessions[userId].overriddenAt = now;
+      // Remove automatic cooldown override to show override button
+      // userSessions[userId].cooldownOverridden = true;
+      // userSessions[userId].overriddenAt = now;
     }
     await saveUserSessions(userSessions);
 
@@ -3996,9 +3997,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       completedJobs: cancelledJobs,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
-        cooldownOverridden: true,
+        cooldownOverridden: false, // Changed to false - cooldown is active, override button will show
         userSessionUpdated: !!userSessions[userId],
-        nextStep: "Reload the extension to see updated status"
+        nextStep: "Wait 1 second for override cooldown button to appear"
       }
     });
     
