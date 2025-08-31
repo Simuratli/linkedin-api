@@ -2190,6 +2190,26 @@ app.get("/job-status/:jobId", async (req, res) => {
     console.log(`🔄 Synchronizing job stats for user ${job.userId} before returning status`);
     await synchronizeJobWithDailyStats(job.userId, job);
 
+    // CHECK FOR COMPLETION - Fix for jobs that finished but status wasn't updated
+    if (job.status === "processing") {
+      const remainingPending = job.contacts ? job.contacts.filter(c => c.status === "pending").length : 0;
+      const allContactsProcessed = job.processedCount >= job.totalContacts;
+      
+      if (remainingPending === 0 && allContactsProcessed) {
+        console.log(`🔧 Auto-completing job ${jobId} - all contacts are done but status was still processing`);
+        job.status = "completed";
+        job.completedAt = new Date().toISOString();
+        job.currentBatchIndex = 0;
+        job.completionReason = "auto_completed_by_status_check";
+        
+        // Save the updated job
+        jobs[jobId] = job;
+        await saveJobs(jobs);
+        
+        console.log(`✅ Job ${jobId} auto-completed successfully`);
+      }
+    }
+
     // Include current pattern and daily limit info
     const userSessions = await loadUserSessions();
     const userSession = userSessions[job.userId];
