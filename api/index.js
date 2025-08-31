@@ -185,32 +185,49 @@ const getPatternKey = () => {
 const checkDailyLimit = async (userId, crmUrl) => {
   const stats = await loadDailyStats();
   
-  // CRM-based keys for shared limits
-  const todayCrmKey = getTodayCrmKey(crmUrl);
-  const hourCrmKey = getHourCrmKey(crmUrl);
-  const patternCrmKey = getPatternCrmKey(crmUrl);
+  // Get current time-based keys
+  const today = new Date().toISOString().split("T")[0]; // 2025-08-31
+  const hour = `${today}-${new Date().getHours()}`; // 2025-08-31-20
   const currentPattern = getCurrentHumanPattern();
-  const normalizedCrm = normalizeCrmUrl(crmUrl);
-
-  // Get CRM-wide counts (shared across all users of same CRM)
-  const todayCount = stats[todayCrmKey] || 0;
-  const hourCount = stats[hourCrmKey] || 0;
-  const patternCount = stats[patternCrmKey] || 0;
-
+  const pattern = `${today}-${currentPattern.name}`; // 2025-08-31-afternoonWork
+  
+  let todayCount = 0;
+  let hourCount = 0;
+  let patternCount = 0;
+  
+  // First try user-specific stats
+  if (stats[userId]) {
+    todayCount = stats[userId][today] || 0;
+    hourCount = stats[userId][hour] || 0;
+    patternCount = stats[userId][pattern] || 0;
+    console.log(`📊 User ${userId} stats found:`, { todayCount, hourCount, patternCount });
+  }
+  
+  // If no user stats, try CRM-based keys
+  if (todayCount === 0 && hourCount === 0 && patternCount === 0 && crmUrl) {
+    const normalizedCrm = normalizeCrmUrl(crmUrl);
+    if (stats[normalizedCrm]) {
+      todayCount = stats[normalizedCrm][today] || 0;
+      hourCount = stats[normalizedCrm][hour] || 0;
+      patternCount = stats[normalizedCrm][pattern] || 0;
+      console.log(`📊 CRM ${normalizedCrm} stats found:`, { todayCount, hourCount, patternCount });
+    }
+  }
+  
   // Check if in pause period
   const inPause = isDuringPause();
 
   // Get pattern-specific limit
   const patternLimit = currentPattern.maxProfiles || 0;
 
-  // Determine if can process based on CRM-wide limits
+  // Determine if can process based on limits
   const canProcess =
     !inPause &&
     todayCount < DAILY_PROFILE_LIMIT &&
     hourCount < BURST_LIMIT &&
     (patternLimit === 0 || patternCount < patternLimit);
 
-  console.log(`📊 CRM ${normalizedCrm} limits:`, {
+  console.log(`📊 Final limits for ${userId}:`, {
     today: `${todayCount}/${DAILY_PROFILE_LIMIT}`,
     hour: `${hourCount}/${BURST_LIMIT}`,
     pattern: `${patternCount}/${patternLimit || '∞'}`,
@@ -229,8 +246,8 @@ const checkDailyLimit = async (userId, crmUrl) => {
     inPause,
     nextActivePattern: getNextActivePattern(),
     estimatedResumeTime: getEstimatedResumeTime(),
-    crmUrl: normalizedCrm,
-    sharedLimits: `Shared with all users of ${normalizedCrm}`
+    crmUrl: crmUrl ? normalizeCrmUrl(crmUrl) : userId,
+    sharedLimits: crmUrl ? `Shared with all users of ${normalizeCrmUrl(crmUrl)}` : `User-specific limits`
   };
 };
 
