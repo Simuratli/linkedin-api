@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { readJsonFile, writeJsonFile } = require('./fileLock');
 
 // MongoDB Job Schema
 const jobSchema = new mongoose.Schema({
@@ -137,98 +138,142 @@ const directSessionStatsSchema = new mongoose.Schema({
 const DirectSession = mongoose.model('DirectSession', directSessionSchema);
 const DirectSessionStats = mongoose.model('DirectSessionStats', directSessionStatsSchema);
 
-// Load jobs from MongoDB
+// Load jobs from MongoDB or file fallback
 const loadJobs = async () => {
   try {
-    const jobs = await Job.find({});
-    const jobsMap = {};
-    
-    jobs.forEach(job => {
-      jobsMap[job.jobId] = job.toObject();
-    });
-    
-    console.log(`📖 Loaded ${Object.keys(jobsMap).length} jobs from MongoDB`);
-    return jobsMap;
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      const jobs = await Job.find({});
+      const jobsMap = {};
+      
+      jobs.forEach(job => {
+        jobsMap[job.jobId] = job.toObject();
+      });
+      
+      console.log(`📖 Loaded ${Object.keys(jobsMap).length} jobs from MongoDB`);
+      return jobsMap;
+    } else {
+      // Fallback to file storage
+      console.log(`⚠️ MongoDB not connected, loading jobs from file`);
+      return await readJsonFile('./data/processing_jobs.json');
+    }
   } catch (error) {
-    console.error("❌ Error loading jobs from MongoDB:", error?.message);
-    return {};
+    console.error("❌ Error loading jobs:", error?.message);
+    // Try file fallback on error
+    try {
+      console.log(`⚠️ Falling back to jobs file`);
+      return await readJsonFile('./data/processing_jobs.json');
+    } catch (fileError) {
+      console.error("❌ Error loading jobs from file:", fileError?.message);
+      return {};
+    }
   }
 };
 
-// Save jobs to MongoDB
+// Save jobs to MongoDB or file fallback
 const saveJobs = async (jobs) => {
   try {
-    const operations = [];
-    let skippedCount = 0;
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      const operations = [];
+      let skippedCount = 0;
 
-    for (const [jobId, jobData] of Object.entries(jobs)) {
-      // CRITICAL FIX: Always save if manualCompletion or forcedCompletion is true
-      const shouldSave = jobData.status !== "completed" || 
-                        jobData.manualCompletion || 
-                        jobData.forcedCompletion ||
-                        jobData.completionReason === "User completed processing from extension - all remaining contacts marked as successful";
-      
-      if (shouldSave) {
-        operations.push({
-          updateOne: {
-            filter: { jobId },
-            update: { $set: jobData },
-            upsert: true
-          }
-        });
-      } else {
-        console.log(`⏭️ Skipping save for naturally completed job ${jobId}`);
-        skippedCount++;
+      for (const [jobId, jobData] of Object.entries(jobs)) {
+        // CRITICAL FIX: Always save if manualCompletion or forcedCompletion is true
+        const shouldSave = jobData.status !== "completed" || 
+                          jobData.manualCompletion || 
+                          jobData.forcedCompletion ||
+                          jobData.completionReason === "User completed processing from extension - all remaining contacts marked as successful";
+        
+        if (shouldSave) {
+          operations.push({
+            updateOne: {
+              filter: { jobId },
+              update: { $set: jobData },
+              upsert: true
+            }
+          });
+        } else {
+          console.log(`⏭️ Skipping save for naturally completed job ${jobId}`);
+          skippedCount++;
+        }
       }
-    }
 
-    if (operations.length > 0) {
-      await Job.bulkWrite(operations);
-      console.log(`💾 Saved ${operations.length} jobs to MongoDB${skippedCount > 0 ? ` (${skippedCount} naturally completed jobs skipped)` : ''}`);
-    } else if (skippedCount > 0) {
-      console.log(`⏭️ All jobs were naturally completed - no save needed (${skippedCount} completed)`);
+      if (operations.length > 0) {
+        await Job.bulkWrite(operations);
+        console.log(`💾 Saved ${operations.length} jobs to MongoDB${skippedCount > 0 ? ` (${skippedCount} naturally completed jobs skipped)` : ''}`);
+      } else if (skippedCount > 0) {
+        console.log(`⏭️ All jobs were naturally completed - no save needed (${skippedCount} completed)`);
+      }
+    } else {
+      // Fallback to file storage
+      console.log(`⚠️ MongoDB not connected, saving jobs to file`);
+      await writeJsonFile('./data/processing_jobs.json', jobs);
+      console.log(`💾 Saved ${Object.keys(jobs).length} jobs to file`);
     }
   } catch (error) {
-    console.error("❌ Error saving jobs to MongoDB:", error?.message);
+    console.error("❌ Error saving jobs:", error?.message);
     throw error;
   }
 };
 
-// Load user sessions from MongoDB
+// Load user sessions from MongoDB or file fallback
 const loadUserSessions = async () => {
   try {
-    const sessions = await UserSession.find({});
-    const sessionsMap = {};
-    
-    sessions.forEach(session => {
-      sessionsMap[session.userId] = session.toObject();
-    });
-    
-    console.log(`📖 Loaded ${Object.keys(sessionsMap).length} user sessions from MongoDB`);
-    return sessionsMap;
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      const sessions = await UserSession.find({});
+      const sessionsMap = {};
+      
+      sessions.forEach(session => {
+        sessionsMap[session.userId] = session.toObject();
+      });
+      
+      console.log(`📖 Loaded ${Object.keys(sessionsMap).length} user sessions from MongoDB`);
+      return sessionsMap;
+    } else {
+      // Fallback to file storage
+      console.log(`⚠️ MongoDB not connected, loading user sessions from file`);
+      return await readJsonFile('./data/user_sessions.json');
+    }
   } catch (error) {
-    console.error("❌ Error loading user sessions from MongoDB:", error?.message);
-    return {};
+    console.error("❌ Error loading user sessions:", error?.message);
+    // Try file fallback on error
+    try {
+      console.log(`⚠️ Falling back to user sessions file`);
+      return await readJsonFile('./data/user_sessions.json');
+    } catch (fileError) {
+      console.error("❌ Error loading user sessions from file:", fileError?.message);
+      return {};
+    }
   }
 };
 
-// Save user sessions to MongoDB
+// Save user sessions to MongoDB or file fallback
 const saveUserSessions = async (sessions) => {
   try {
-    const operations = Object.entries(sessions).map(([userId, sessionData]) => ({
-      updateOne: {
-        filter: { userId },
-        update: { $set: sessionData },
-        upsert: true
-      }
-    }));
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      const operations = Object.entries(sessions).map(([userId, sessionData]) => ({
+        updateOne: {
+          filter: { userId },
+          update: { $set: sessionData },
+          upsert: true
+        }
+      }));
 
-    if (operations.length > 0) {
-      await UserSession.bulkWrite(operations);
-      console.log(`💾 Saved ${operations.length} user sessions to MongoDB`);
+      if (operations.length > 0) {
+        await UserSession.bulkWrite(operations);
+        console.log(`💾 Saved ${operations.length} user sessions to MongoDB`);
+      }
+    } else {
+      // Fallback to file storage
+      console.log(`⚠️ MongoDB not connected, saving user sessions to file`);
+      await writeJsonFile('./data/user_sessions.json', sessions);
+      console.log(`💾 Saved ${Object.keys(sessions).length} user sessions to file`);
     }
   } catch (error) {
-    console.error("❌ Error saving user sessions to MongoDB:", error?.message);
+    console.error("❌ Error saving user sessions:", error?.message);
     throw error;
   }
 };
@@ -417,39 +462,53 @@ const getUserCooldownStatus = async (userId) => {
   }
 };
 
-// Load daily stats from MongoDB (converts to old format for compatibility)
+// Load daily stats from MongoDB or file fallback
 const loadDailyStats = async () => {
   try {
-    const stats = await DailyStats.find({});
-    const statsMap = {};
-    
-    // Convert MongoDB format to old file format for compatibility
-    stats.forEach(stat => {
-      if (!statsMap[stat.userId]) {
-        statsMap[stat.userId] = {};
-      }
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      const stats = await DailyStats.find({});
+      const statsMap = {};
       
-      // Add date-based stats
-      if (stat.dateKey) {
-        statsMap[stat.userId][stat.dateKey] = (statsMap[stat.userId][stat.dateKey] || 0) + stat.count;
-      }
+      // Convert MongoDB format to old file format for compatibility
+      stats.forEach(stat => {
+        if (!statsMap[stat.userId]) {
+          statsMap[stat.userId] = {};
+        }
+        
+        // Add date-based stats
+        if (stat.dateKey) {
+          statsMap[stat.userId][stat.dateKey] = (statsMap[stat.userId][stat.dateKey] || 0) + stat.count;
+        }
+        
+        // Add hour-based stats  
+        if (stat.hourKey) {
+          statsMap[stat.userId][stat.hourKey] = (statsMap[stat.userId][stat.hourKey] || 0) + stat.count;
+        }
+        
+        // Add pattern-based stats
+        if (stat.patternKey) {
+          statsMap[stat.userId][stat.patternKey] = (statsMap[stat.userId][stat.patternKey] || 0) + stat.count;
+        }
+      });
       
-      // Add hour-based stats  
-      if (stat.hourKey) {
-        statsMap[stat.userId][stat.hourKey] = (statsMap[stat.userId][stat.hourKey] || 0) + stat.count;
-      }
-      
-      // Add pattern-based stats
-      if (stat.patternKey) {
-        statsMap[stat.userId][stat.patternKey] = (statsMap[stat.userId][stat.patternKey] || 0) + stat.count;
-      }
-    });
-    
-    console.log(`📊 Loaded daily stats for ${Object.keys(statsMap).length} users from MongoDB`);
-    return statsMap;
+      console.log(`📊 Loaded daily stats for ${Object.keys(statsMap).length} users from MongoDB`);
+      return statsMap;
+    } else {
+      // Fallback to file storage
+      console.log(`⚠️ MongoDB not connected, loading daily stats from file`);
+      return await readJsonFile('./data/daily_rate_limits.json');
+    }
   } catch (error) {
-    console.error("❌ Error loading daily stats from MongoDB:", error?.message);
-    return {};
+    console.error("❌ Error loading daily stats:", error?.message);
+    // Try file fallback on error
+    try {
+      console.log(`⚠️ Falling back to daily stats file`);
+      return await readJsonFile('./data/daily_rate_limits.json');
+    } catch (fileError) {
+      console.error("❌ Error loading daily stats from file:", fileError?.message);
+      return {};
+    }
   }
 };
 
@@ -464,60 +523,91 @@ const saveDailyStats = async (stats) => {
   }
 };
 
-// Update daily stats directly in MongoDB
+// Update daily stats in MongoDB or file fallback
 const updateDailyStats = async (userId, dateKey, hourKey, patternKey) => {
   try {
     const now = new Date();
-    const operations = [];
     
-    // Update daily count
-    if (dateKey) {
-      operations.push({
-        updateOne: {
-          filter: { userId, dateKey },
-          update: { 
-            $inc: { count: 1 },
-            $set: { updatedAt: now },
-            $setOnInsert: { userId, dateKey, createdAt: now }
-          },
-          upsert: true
-        }
-      });
-    }
-    
-    // Update hourly count
-    if (hourKey) {
-      operations.push({
-        updateOne: {
-          filter: { userId, hourKey },
-          update: { 
-            $inc: { count: 1 },
-            $set: { updatedAt: now },
-            $setOnInsert: { userId, hourKey, createdAt: now }
-          },
-          upsert: true
-        }
-      });
-    }
-    
-    // Update pattern count
-    if (patternKey) {
-      operations.push({
-        updateOne: {
-          filter: { userId, patternKey },
-          update: { 
-            $inc: { count: 1 },
-            $set: { updatedAt: now },
-            $setOnInsert: { userId, patternKey, createdAt: now }
-          },
-          upsert: true
-        }
-      });
-    }
-    
-    if (operations.length > 0) {
-      await DailyStats.bulkWrite(operations);
-      console.log(`📊 Updated daily stats for user ${userId}`);
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      const operations = [];
+      
+      // Update daily count
+      if (dateKey) {
+        operations.push({
+          updateOne: {
+            filter: { userId, dateKey },
+            update: { 
+              $inc: { count: 1 },
+              $set: { updatedAt: now },
+              $setOnInsert: { userId, dateKey, createdAt: now }
+            },
+            upsert: true
+          }
+        });
+      }
+      
+      // Update hourly count
+      if (hourKey) {
+        operations.push({
+          updateOne: {
+            filter: { userId, hourKey },
+            update: { 
+              $inc: { count: 1 },
+              $set: { updatedAt: now },
+              $setOnInsert: { userId, hourKey, createdAt: now }
+            },
+            upsert: true
+          }
+        });
+      }
+      
+      // Update pattern count
+      if (patternKey) {
+        operations.push({
+          updateOne: {
+            filter: { userId, patternKey },
+            update: { 
+              $inc: { count: 1 },
+              $set: { updatedAt: now },
+              $setOnInsert: { userId, patternKey, createdAt: now }
+            },
+            upsert: true
+          }
+        });
+      }
+      
+      if (operations.length > 0) {
+        await DailyStats.bulkWrite(operations);
+        console.log(`📊 Updated daily stats for user ${userId} in MongoDB`);
+      }
+    } else {
+      // Fallback to file storage
+      console.log(`⚠️ MongoDB not connected, updating daily stats in file for user ${userId}`);
+      const stats = await readJsonFile('./data/daily_rate_limits.json');
+      
+      if (!stats[userId]) {
+        stats[userId] = {};
+      }
+      
+      // Update counts in file format
+      if (dateKey) {
+        stats[userId][dateKey] = (stats[userId][dateKey] || 0) + 1;
+        console.log(`📊 Updated daily count for ${userId}: ${dateKey} = ${stats[userId][dateKey]}`);
+      }
+      
+      if (hourKey) {
+        stats[userId][hourKey] = (stats[userId][hourKey] || 0) + 1;
+        console.log(`📊 Updated hourly count for ${userId}: ${hourKey} = ${stats[userId][hourKey]}`);
+      }
+      
+      if (patternKey) {
+        stats[userId][patternKey] = (stats[userId][patternKey] || 0) + 1;
+        console.log(`📊 Updated pattern count for ${userId}: ${patternKey} = ${stats[userId][patternKey]}`);
+      }
+      
+      await writeJsonFile('./data/daily_rate_limits.json', stats);
+      console.log(`✅ Daily stats saved to /opt/render/project/src/data/daily_rate_limits.json`);
     }
   } catch (error) {
     console.error("❌ Error updating daily stats:", error?.message);
