@@ -2466,7 +2466,7 @@ app.get("/job-status/:jobId", async (req, res) => {
     console.log(`🔄 Synchronizing job stats for user ${job.userId} before returning status`);
     await synchronizeJobWithDailyStats(job.userId, job);
 
-    // AUTO-RESUME LOGIC: Check if paused job can be resumed and reset all limits after 1 hour
+    // AUTO-RESUME LOGIC: Check if paused job can be resumed
     if (job.status === "paused" && 
         (job.pauseReason === "hourly_limit_reached" || 
          job.pauseReason === "daily_limit_reached" || 
@@ -2482,7 +2482,53 @@ app.get("/job-status/:jobId", async (req, res) => {
         hoursSincePause: Math.round(hoursSincePause * 100) / 100
       });
       
-      if (hoursSincePause >= 1) {
+      // HOURLY LIMIT AUTO-RESUME: Check if hour has changed (hourly count naturally resets)
+      if (job.pauseReason === "hourly_limit_reached" && pausedAt) {
+        const pausedHour = pausedAt.getHours();
+        const currentHour = now.getHours();
+        const pausedDate = pausedAt.toISOString().split("T")[0];
+        const currentDate = now.toISOString().split("T")[0];
+        
+        // Resume if it's a different hour or different day
+        if (currentHour !== pausedHour || currentDate !== pausedDate) {
+          console.log(`🔄 Auto-resuming job ${jobId} - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
+          
+          // Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
+          job.status = "processing";
+          delete job.pauseReason;
+          delete job.pausedAt;
+          delete job.estimatedResumeTime;
+          job.resumedAt = new Date().toISOString();
+          job.lastProcessedAt = new Date().toISOString();
+          
+          // Add automatic resume event to history
+          const resumeEvent = {
+            type: "resume",
+            timestamp: new Date().toISOString(),
+            reason: "automatic_hourly_reset",
+            icon: "⏰",
+            message: `Automatically resumed - new hour started (${pausedHour}:xx → ${currentHour}:xx)`,
+            details: {
+              waitedMinutes: Math.round(hoursSincePause * 60),
+              pausedHour: pausedHour,
+              currentHour: currentHour,
+              resumeType: "natural_hourly_reset"
+            }
+          };
+          
+          if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
+          job.pauseResumeHistory.push(resumeEvent);
+          console.log(`📝 Automatic hourly resume event logged:`, resumeEvent);
+          
+          await saveJobs({ ...jobs, [jobId]: job });
+          
+          // Restart background processing
+          console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} after hourly reset`);
+          setImmediate(() => processJobInBackground(jobId));
+        }
+      }
+      // FULL RESET AUTO-RESUME: After 1 hour, reset ALL limits (for daily/pattern limits or as fallback)
+      else if (hoursSincePause >= 1) {
         console.log(`🔄 Auto-resuming job ${jobId} - 1+ hours passed, resetting ALL limits`);
         
         // Reset ALL user stats to 0
@@ -2792,7 +2838,7 @@ app.get("/user-job/:userId", async (req, res) => {
 
     const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
 
-    // AUTO-RESUME LOGIC: Check if paused job can be resumed and reset all limits after 1 hour
+    // AUTO-RESUME LOGIC: Check if paused job can be resumed
     if (job.status === "paused" && 
         (job.pauseReason === "hourly_limit_reached" || 
          job.pauseReason === "daily_limit_reached" || 
@@ -2808,7 +2854,53 @@ app.get("/user-job/:userId", async (req, res) => {
         hoursSincePause: Math.round(hoursSincePause * 100) / 100
       });
       
-      if (hoursSincePause >= 1) {
+      // HOURLY LIMIT AUTO-RESUME: Check if hour has changed (hourly count naturally resets)
+      if (job.pauseReason === "hourly_limit_reached" && pausedAt) {
+        const pausedHour = pausedAt.getHours();
+        const currentHour = now.getHours();
+        const pausedDate = pausedAt.toISOString().split("T")[0];
+        const currentDate = now.toISOString().split("T")[0];
+        
+        // Resume if it's a different hour or different day
+        if (currentHour !== pausedHour || currentDate !== pausedDate) {
+          console.log(`🔄 Auto-resuming job ${jobId} in user-job - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
+          
+          // Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
+          job.status = "processing";
+          delete job.pauseReason;
+          delete job.pausedAt;
+          delete job.estimatedResumeTime;
+          job.resumedAt = new Date().toISOString();
+          job.lastProcessedAt = new Date().toISOString();
+          
+          // Add automatic resume event to history
+          const resumeEvent = {
+            type: "resume",
+            timestamp: new Date().toISOString(),
+            reason: "automatic_hourly_reset",
+            icon: "⏰",
+            message: `Automatically resumed - new hour started (${pausedHour}:xx → ${currentHour}:xx)`,
+            details: {
+              waitedMinutes: Math.round(hoursSincePause * 60),
+              pausedHour: pausedHour,
+              currentHour: currentHour,
+              resumeType: "natural_hourly_reset"
+            }
+          };
+          
+          if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
+          job.pauseResumeHistory.push(resumeEvent);
+          console.log(`📝 Automatic hourly resume event logged in user-job:`, resumeEvent);
+          
+          await saveJobs({ ...jobs, [jobId]: job });
+          
+          // Restart background processing
+          console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} from user-job after hourly reset`);
+          setImmediate(() => processJobInBackground(jobId));
+        }
+      }
+      // FULL RESET AUTO-RESUME: After 1 hour, reset ALL limits (for daily/pattern limits or as fallback)
+      else if (hoursSincePause >= 1) {
         console.log(`🔄 Auto-resuming job ${jobId} in user-job - 1+ hours passed, resetting ALL limits`);
         
         // Reset ALL user stats to 0
