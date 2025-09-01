@@ -22,9 +22,9 @@ const {
   loadDailyStats,
   saveDailyStats,
   updateDailyStats,
-  setDailyStats,
   cleanOldDailyStats,
-  getUserCooldownStatus
+  getUserCooldownStatus,
+  clearUserDailyStats
 } = require("../helpers/db");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const {
@@ -4294,6 +4294,20 @@ app.post("/restart-processing/:userId", async (req, res) => {
 
     console.log(`🔧 Resetting job ${currentJob.jobId} counts to 0 and disabling cooldown`);
 
+    // **CLEAR DAILY AND HOURLY STATS** - Reset all counters to 0
+    console.log(`🧹 Clearing daily and hourly stats for user ${userId}`);
+    try {
+      const clearResult = await clearUserDailyStats(userId);
+      if (clearResult.success) {
+        console.log(`✅ Successfully cleared ${clearResult.deletedCount} stats entries (${clearResult.source})`);
+      } else {
+        console.error(`⚠️ Failed to clear daily stats: ${clearResult.error}`);
+      }
+    } catch (statsError) {
+      console.error(`❌ Error clearing daily stats: ${statsError.message}`);
+      // Continue anyway - don't fail the restart for stats clearing issues
+    }
+
     // Get user session for CRM access
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
@@ -4590,10 +4604,11 @@ app.post("/restart-processing/:userId", async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Job resetlendi ve yeniden başlatıldı.",
+      message: "Job resetlendi ve yeniden başlatıldı. Daily ve hourly stats temizlendi.",
       restarted: true,
       processingStarted: true,
       readyForNewJob: false,
+      statsCleared: true,
       jobStatus: {
         totalContacts: currentJob.totalContacts,
         contactsInArray: currentJob.contacts ? currentJob.contacts.length : 0,
@@ -4640,3 +4655,57 @@ app.post("/restart-processing/:userId", async (req, res) => {
     process.exit(1);
   }
 })();
+
+// Debug endpoint to check and clear stats
+app.get("/debug/stats", async (req, res) => {
+  try {
+    const { DailyStats } = require("./helpers/db");
+    
+    // Get all stats
+    const allStats = await DailyStats.find({}).lean();
+    
+    // Group by userId
+    const statsByUser = {};
+    allStats.forEach(stat => {
+      if (!statsByUser[stat.userId]) {
+        statsByUser[stat.userId] = [];
+      }
+      statsByUser[stat.userId].push({
+        dateKey: stat.dateKey,
+        hourKey: stat.hourKey,
+        patternKey: stat.patternKey,
+        count: stat.count,
+        createdAt: stat.createdAt
+      });
+    });
+    
+    res.json({
+      totalDocuments: allStats.length,
+      statsByUser,
+      summary: Object.keys(statsByUser).map(userId => ({
+        userId,
+        documentCount: statsByUser[userId].length,
+        totalCount: statsByUser[userId].reduce((sum, stat) => sum + (stat.count || 1), 0)
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Debug endpoint to clear all stats
+app.post("/debug/clear-stats", async (req, res) => {
+  try {
+    const { DailyStats } = require("./helpers/db");
+    
+    const result = await DailyStats.deleteMany({});
+    
+    res.json({
+      success: true,
+      deletedCount: result.deletedCount,
+      message: "All stats cleared"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});

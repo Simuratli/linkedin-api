@@ -824,3 +824,89 @@ module.exports = {
   updateDirectSessionStats,
   cleanExpiredDirectSessions
 };
+
+// Clear daily stats for a user (used when restarting processing)
+const clearUserDailyStats = async (userId) => {
+  try {
+    console.log(`🧹 Clearing daily stats for user: ${userId}`);
+    
+    // Get today's date keys to know what to clear
+    const today = new Date().toISOString().split("T")[0];
+    const currentHour = new Date().getHours();
+    const hourKey = `${today}-${currentHour}`;
+    
+    console.log(`🧹 Clearing stats for date: ${today}, hour: ${hourKey}`);
+    
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      // Delete all stats for this user for today (daily, hourly, and pattern stats)
+      const deleteResult = await DailyStats.deleteMany({
+        userId: userId,
+        $or: [
+          { dateKey: today },
+          { hourKey: { $regex: `^${today}-` } },
+          { patternKey: { $regex: `^${today}-` } }
+        ]
+      });
+      
+      console.log(`🧹 MongoDB: Deleted ${deleteResult.deletedCount} stats documents for user ${userId}`);
+      return { success: true, deletedCount: deleteResult.deletedCount, source: 'mongodb' };
+    } else {
+      // Fallback to legacy file system
+      const stats = await loadDailyStats();
+      let deletedCount = 0;
+      
+      if (stats[userId]) {
+        const userStats = stats[userId];
+        const keysToDelete = Object.keys(userStats).filter(key => 
+          key.startsWith(today)
+        );
+        
+        keysToDelete.forEach(key => {
+          delete userStats[key];
+          deletedCount++;
+        });
+        
+        // If no stats left for user, remove user entirely
+        if (Object.keys(userStats).length === 0) {
+          delete stats[userId];
+        }
+        
+        await saveDailyStats(stats);
+        console.log(`🧹 File system: Deleted ${deletedCount} stats keys for user ${userId}`);
+      }
+      
+      return { success: true, deletedCount, source: 'filesystem' };
+    }
+  } catch (error) {
+    console.error(`❌ Error clearing daily stats for user ${userId}:`, error);
+    return { success: false, error: error.message };
+  }
+};
+
+module.exports = {
+  Job,
+  UserSession,
+  UserCooldown,
+  DailyStats,
+  DirectSession,
+  ensureDataDir,
+  loadJobs,
+  saveJobs,
+  loadUserSessions,
+  saveUserSessions,
+  initializeDB,
+  checkAndSetUserCooldown,
+  processUserCooldowns,
+  getUserCooldownStatus,
+  loadDailyStats,
+  saveDailyStats,
+  updateDailyStats,
+  setDailyStats,
+  cleanOldDailyStats,
+  loadDirectSessions,
+  saveDirectSessions,
+  updateDirectSessionStats,
+  cleanExpiredDirectSessions,
+  clearUserDailyStats
+};
