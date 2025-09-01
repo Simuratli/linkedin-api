@@ -291,32 +291,17 @@ const getEstimatedResumeTime = () => {
 const updateCrmDailyStats = async (crmUrl) => {
   try {
     const normalizedCrm = normalizeCrmUrl(crmUrl);
-    const today = new Date().toISOString().split("T")[0];
-    const hour = `${today}-${new Date().getHours()}`;
-    const currentPattern = getCurrentHumanPattern();
-    const pattern = `${today}-${currentPattern.name}`;
-    
-    // Use the normalized CRM as userId, and standard date keys
-    await updateDailyStats(normalizedCrm, today, hour, pattern);
-    
-    console.log(`📊 Updated CRM daily stats for ${normalizedCrm}: day=${today}, hour=${hour}, pattern=${pattern}`);
+    console.log(`📊 CRM stats update skipped - stats only update when contacts are saved to database`);
   } catch (error) {
-    console.error("❌ Error updating CRM daily stats:", error?.message);
+    console.error("❌ Error in updateCrmDailyStats:", error?.message);
   }
 };
 
 const updateUserDailyStats = async (userId, crmUrl) => {
   try {
-    // Always use CRM-based stats when available
-    const statsKey = crmUrl ? normalizeCrmUrl(crmUrl) : userId;
-    const today = getTodayKey();
-    const hourKey = getHourKey();
-    const patternKey = getPatternKey();
-    
-    await updateDailyStats(statsKey, today, hourKey, patternKey);
-    console.log(`📊 Updated daily stats for ${statsKey}: day=${today}, hour=${hourKey}, pattern=${patternKey}`);
+    console.log(`📊 User stats update skipped - stats only update when contacts are saved to database`);
   } catch (error) {
-    console.error("❌ Error updating daily stats:", error?.message);
+    console.error("❌ Error in updateUserDailyStats:", error?.message);
   }
 };
 
