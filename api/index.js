@@ -3610,13 +3610,17 @@ app.post("/override-cooldown/:userId", async (req, res) => {
       const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const now = new Date();
       
-      // Get contacts from the previous job and reset them
+      // Get contacts from the previous job and FULLY reset them
       const previousContacts = lastCompletedJob.contacts || [];
       const freshContacts = previousContacts.map(contact => ({
         contactId: contact.contactId,
         linkedinUrl: contact.linkedinUrl,
-        status: 'pending',  // Reset all to pending
-        error: null
+        fullName: contact.fullName,
+        status: 'pending',  // Reset ALL contacts to pending (0/12 restart)
+        error: null,
+        processedAt: null,
+        attempts: 0,
+        linkedinData: null
       }));
       
       if (freshContacts.length === 0) {
@@ -3636,19 +3640,20 @@ app.post("/override-cooldown/:userId", async (req, res) => {
         });
       }
       
-      // Create new job
+      // Create new job with COMPLETE RESET (0/12 start)
       const newJob = {
         jobId: newJobId,
         userId: userId,
-        status: 'pending',
+        status: 'processing',  // Start processing immediately
         contacts: freshContacts,
         totalContacts: freshContacts.length,
-        processedCount: 0,
-        successCount: 0,
-        failureCount: 0,
-        currentBatchIndex: 0,
+        processedCount: 0,       // RESET: Start from 0
+        successCount: 0,         // RESET: Start from 0
+        failureCount: 0,         // RESET: Start from 0
+        currentBatchIndex: 0,    // RESET: Start from beginning
         createdAt: now.toISOString(),
         startTime: now.toISOString(),
+        lastProcessedAt: now.toISOString(),
         errors: [],
         humanPatterns: {
           startPattern: null,
@@ -3659,7 +3664,11 @@ app.post("/override-cooldown/:userId", async (req, res) => {
           startDate: now.toISOString().split('T')[0],
           processedToday: 0,
           patternBreakdown: {}
-        }
+        },
+        // Override job metadata
+        isOverrideJob: true,
+        originalJobId: lastCompletedJob.jobId,
+        overrideReason: reason
       };
       
       // Save the new job
@@ -3671,17 +3680,17 @@ app.post("/override-cooldown/:userId", async (req, res) => {
       userSession.currentJobId = newJobId;
       await saveUserSessions(userSessions);
       
-      console.log(`✅ New job ${newJobId} created automatically with ${freshContacts.length} contacts reset to pending`);
+      console.log(`✅ New job ${newJobId} created automatically with ${freshContacts.length} contacts FULLY RESET to pending (0/${freshContacts.length})`);
       
-      // Start background processing for the new job
+      // Start background processing for the new job IMMEDIATELY
       setImmediate(() => {
-        console.log(`🔄 Starting background processing for new job ${newJobId}`);
+        console.log(`🔄 Starting background processing for RESET job ${newJobId} - processing from 0/${freshContacts.length}`);
         processJobInBackground(newJobId);
       });
       
       res.status(200).json({
         success: true,
-        message: `Cooldown overridden and new job started automatically`,
+        message: `Cooldown overridden and new job started from 0/${freshContacts.length}`,
         overriddenJob: {
           jobId: lastCompletedJob.jobId,
           completedAt: lastCompletedJob.completedAt,
@@ -3690,18 +3699,25 @@ app.post("/override-cooldown/:userId", async (req, res) => {
         },
         newJob: {
           jobId: newJobId,
-          status: 'pending',
+          status: 'processing',
           totalContacts: freshContacts.length,
-          processedCount: 0
+          processedCount: 0,  // Start from 0
+          successCount: 0,    // Start from 0
+          failureCount: 0,    // Start from 0
+          isOverrideJob: true,
+          originalJobId: lastCompletedJob.jobId
         },
         autoStarted: true,
         canStartNewJob: true,
+        resetToZero: true,  // Flag indicating complete reset
         contactSummary: {
           totalFromCRM: freshContacts.length,
           validLinkedInContacts: freshContacts.length,
+          allContactsResetToPending: true,
           contactDetails: freshContacts.map(c => ({
             name: c.fullName,
-            hasLinkedIn: !!c.linkedinUrl
+            hasLinkedIn: !!c.linkedinUrl,
+            status: 'pending'  // All contacts are pending
           }))
         }
       });
