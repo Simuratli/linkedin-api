@@ -4150,7 +4150,347 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     });
   }
 });
+// Simple restart endpoint - reset counts to 0 and disable cooldown
+app.post("/restart-processing/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason = "Manual restart", updateContacts = true } = req.body;
 
+    console.log(`🔄 Restart processing requested for user ${userId}`);
+
+    // Load jobs
+    const jobs = await loadJobs();
+    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
+
+    if (userJobs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No jobs found for this user"
+      });
+    }
+
+    // Find the most recent job (completed or not)
+    const sortedJobs = userJobs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const currentJob = sortedJobs[0];
+
+    console.log(`🔧 Resetting job ${currentJob.jobId} counts to 0 and disabling cooldown`);
+
+    // Get user session for CRM access
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+
+    // Update contacts from CRM if requested and session exists
+    if (updateContacts && userSession && userSession.crmUrl && userSession.accessToken) {
+      try {
+        console.log(`📥 Fetching updated contacts from CRM for user ${userId}`);
+        console.log(`🔗 CRM URL: ${userSession.crmUrl}`);
+
+        // Import the function to fetch contacts from CRM
+        const { fetchContactsFromDataverse } = require('../helpers/dynamics');
+
+        // Fetch fresh contacts from CRM
+        const freshContactsFromCRM = await fetchContactsFromDataverse(
+          userSession.accessToken,
+          userSession.crmUrl,
+          userSession.tenantId
+        );
+
+        console.log(freshContactsFromCRM,'freshContactsFromCRM')
+
+        if (freshContactsFromCRM && freshContactsFromCRM.length > 0) {
+          console.log(`📋 Raw contacts from CRM: ${freshContactsFromCRM.length}`);
+
+          // Log sample contact structure for debugging
+          if (freshContactsFromCRM.length > 0) {
+            console.log(`📝 Sample contact structure:`, Object.keys(freshContactsFromCRM[0]));
+            console.log(`📝 Sample contact data:`, JSON.stringify(freshContactsFromCRM[0], null, 2));
+          }
+
+          // Convert CRM contacts to job format with detailed logging
+          const updatedContacts = freshContactsFromCRM.map((contact, index) => {
+            const contactId = contact.contactid || contact.id;
+            const fullName = contact.fullname || `${contact.firstname || ''} ${contact.lastname || ''}`.trim();
+
+            // Try multiple possible field names for LinkedIn URL with priority order
+            const linkedinUrl = contact.uds_linkedin || 
+                               contact.linkedinurl || 
+                               contact.linkedin_url || 
+                               contact.linkedinprofileurl ||
+                               contact.uds_linkedinprofileurl ||
+                               contact.uds_linkedinurl ||
+                               contact.websiteurl; // websiteurl as last resort
+
+            // Get all LinkedIn-related fields for debugging
+            const linkedinFields = Object.keys(contact).filter(key => 
+              key.toLowerCase().includes('linkedin') || 
+              key.toLowerCase().includes('website') ||
+              key.includes('uds_')
+            ).reduce((obj, field) => {
+              obj[field] = contact[field];
+              return obj;
+            }, {});
+
+            console.log(`Contact ${index + 1}/${freshContactsFromCRM.length} - ${fullName}:`, {
+              contactId,
+              fullName,
+              linkedinUrl: linkedinUrl || 'NOT_FOUND',
+              hasLinkedIn: !!linkedinUrl,
+              linkedinFields,
+              email: contact.emailaddress1
+            });
+
+            return {
+              contactId,
+              fullName,
+              linkedinUrl,
+              email: contact.emailaddress1,
+              status: 'pending',
+              error: null
+            };
+          });
+
+          // More flexible filtering - include contacts with any LinkedIn-like URL or include all contacts for manual processing
+          const contactsWithLinkedIn = updatedContacts.filter(contact => {
+            // Include contacts with any non-empty LinkedIn URL
+            const hasLinkedInUrl = contact.linkedinUrl && 
+                                  contact.linkedinUrl.trim() !== '' && 
+                                  contact.linkedinUrl !== 'null' &&
+                                  contact.linkedinUrl !== 'undefined';
+
+            // Also include contacts that have email but no LinkedIn (they might be processed manually)
+            const hasEmail = contact.email && contact.email.trim() !== '';
+
+            // Accept if has LinkedIn URL or if has email (more flexible approach)
+            const shouldInclude = hasLinkedInUrl || hasEmail;
+
+            if (!shouldInclude) {
+              console.log(`⚠️ Filtering out contact ${contact.contactId} (${contact.fullName}): no LinkedIn URL and no email`);
+            } else if (hasLinkedInUrl) {
+              console.log(`✅ Valid contact ${contact.contactId} (${contact.fullName}): LinkedIn URL: "${contact.linkedinUrl}"`);
+            } else {
+              console.log(`📧 Including contact ${contact.contactId} (${contact.fullName}): Email only: "${contact.email}"`);
+            }
+
+            return shouldInclude;
+          });
+
+          const oldContactCount = currentJob.contacts ? currentJob.contacts.length : 0;
+          const totalFromCRM = freshContactsFromCRM.length;
+          const validContactCount = contactsWithLinkedIn.length;
+
+          console.log(`📊 Contact processing summary:`, {
+            totalFromCRM,
+            validContacts: validContactCount,
+            filteredOut: totalFromCRM - validContactCount,
+            oldCount: oldContactCount,
+            updateType: 'CRM_REFRESH'
+          });
+
+
+          if (contactsWithLinkedIn.length > 0) {
+            // Update job with fresh contacts
+            currentJob.contacts = contactsWithLinkedIn;
+            currentJob.totalContacts = validContactCount;
+
+            console.log(`✅ Updated job contacts: ${oldContactCount} → ${validContactCount} contacts from CRM`);
+          } else {
+            console.log(`⚠️ No valid LinkedIn URLs found in ${totalFromCRM} CRM contacts, keeping existing contacts`);
+
+            // Reset existing contacts to pending
+            if (currentJob.contacts) {
+              currentJob.contacts.forEach(contact => {
+                contact.status = 'pending';
+                contact.error = null;
+              });
+              currentJob.totalContacts = currentJob.contacts.length;
+              currentJob.status = 'processing'; // Ensure job status is pending
+            } else {
+              currentJob.contacts = [];
+              currentJob.totalContacts = 0;
+            }
+          }
+
+        } else {
+          console.log(`⚠️ No contacts returned from CRM API for user ${userId}, keeping existing contacts`);
+          console.log(currentJob,'currentjhob')
+
+          // Reset existing contacts to pending
+          if (currentJob.contacts && currentJob.contacts.length > 0) {
+            currentJob.contacts.forEach(contact => {
+              contact.status = 'pending';
+              contact.error = null;
+            });
+            // Keep the existing contact count - DON'T set to 0
+            currentJob.totalContacts = currentJob.contacts.length;
+            currentJob.status = 'processing'; 
+            currentJob.successCount = 0; 
+            currentJob.processedCount = 0; 
+            currentJob.currentBatchIndex = 0; 
+            currentJob.cooldownOverridden = false;
+
+            console.log(`✅ Reset ${currentJob.contacts.length} existing contacts to pending status`);
+          } else {
+            currentJob.contacts = [];
+            currentJob.totalContacts = 0;
+            console.log(`⚠️ No existing contacts found to reset`);
+          }
+        }
+
+      } catch (crmError) {
+        console.error(`❌ Error fetching contacts from CRM: ${crmError.message}`);
+        console.log(`⚠️ CRM Error details:`, crmError);
+        console.log(`⚠️ Falling back to resetting existing contacts to pending`);
+
+        // Fallback: Reset existing contacts to pending
+        if (currentJob.contacts && currentJob.contacts.length > 0) {
+          currentJob.contacts.forEach(contact => {
+            contact.status = 'pending';
+            contact.error = null;
+          });
+          // Keep the existing contact count - DON'T set to 0
+          currentJob.totalContacts = currentJob.contacts.length;
+          currentJob.status = 'processing';
+          currentJob.successCount = 0; 
+          currentJob.processedCount = 0; 
+          currentJob.currentBatchIndex = 0;
+
+          console.log(`✅ Fallback: Reset ${currentJob.contacts.length} existing contacts to pending status`);
+        } else {
+          currentJob.contacts = [];
+          currentJob.totalContacts = 0;
+          console.log(`⚠️ Fallback: No existing contacts found to reset`);
+        }
+      }
+    } else {
+      console.log(`📝 Resetting existing contacts to pending (updateContacts: ${updateContacts})`);
+
+      // Reset existing contacts to pending and update total count
+      if (currentJob.contacts && currentJob.contacts.length > 0) {
+        currentJob.contacts.forEach(contact => {
+          contact.status = 'pending';
+          contact.error = null;
+        });
+
+        // Update total contacts count based on actual contacts array
+        const actualContactCount = currentJob.contacts.length;
+        if (currentJob.totalContacts !== actualContactCount) {
+          console.log(`📊 Updating totalContacts from ${currentJob.totalContacts} to ${actualContactCount}`);
+          currentJob.totalContacts = actualContactCount;
+        }
+
+        // Reset other job counters
+        currentJob.successCount = 0; 
+        currentJob.processedCount = 0; 
+        currentJob.currentBatchIndex = 0;
+        currentJob.status = 'processing';
+
+        console.log(`✅ Reset ${actualContactCount} existing contacts to pending status`);
+      } else {
+        console.log(`⚠️ No contacts array found in job ${currentJob.jobId}`);
+        currentJob.contacts = [];
+        currentJob.totalContacts = 0;
+      }
+    }
+
+    // **CLEAR COOLDOWN AND MARK AS OVERRIDDEN**
+    if (userSession) {
+      // Clear cooldown settings and mark as overridden
+      userSession.cooldownActive = false;
+      userSession.cooldownEndDate = null;
+      userSession.lastJobCompleted = null;
+      userSession.currentJobId = null; // Clear current job reference
+      userSession.cooldownOverridden = true; // Mark as overridden
+      userSession.overriddenAt = new Date().toISOString();
+
+      userSessions[userId] = userSession;
+      await saveUserSessions(userSessions);
+      console.log(`✅ Cooldown cleared and marked as overridden for user ${userId} - ready for new processing`);
+    }
+
+    // **ALSO MARK ALL COMPLETED JOBS AS OVERRIDDEN** - This prevents reload restart
+    const allUserJobs = Object.values(jobs).filter(job => job.userId === userId);
+    let markedJobs = 0;
+
+    for (const job of allUserJobs) {
+      if (job.status === "completed") {
+        job.cooldownOverridden = true;
+        job.overriddenAt = new Date().toISOString();
+        jobs[job.jobId] = job;
+        markedJobs++;
+        console.log(`🔓 Marked job ${job.jobId} as cooldown overridden`);
+      }
+    }
+
+    // Mevcut job'ı tamamen sıfırla ve yeniden başlat
+    currentJob.currentBatchIndex = 0;
+    currentJob.cooldownOverridden = false;
+    currentJob.successCount = 0;
+    currentJob.processedCount = 0;
+    currentJob.failureCount = 0;
+    currentJob.status = 'processing';
+    currentJob.lastProcessedAt = null;
+    currentJob.completedAt = null;
+    currentJob.overriddenAt = null;
+    currentJob.overrideReason = null;
+    if (currentJob.contacts && currentJob.contacts.length > 0) {
+      currentJob.contacts.forEach(contact => {
+        contact.status = 'pending';
+        contact.error = null;
+        contact.completedAt = null;
+      });
+    }
+    // Pattern breakdown ve dailyStats da sıfırlansın
+    if (currentJob.dailyStats && currentJob.dailyStats.patternBreakdown) {
+      Object.keys(currentJob.dailyStats.patternBreakdown).forEach(key => {
+        currentJob.dailyStats.patternBreakdown[key] = 0;
+      });
+      currentJob.dailyStats.processedToday = 0;
+    }
+    jobs[currentJob.jobId] = currentJob;
+    await saveJobs(jobs);
+
+    // User session'da currentJobId'yi güncelle
+    if (userSession) {
+      userSession.currentJobId = currentJob.jobId;
+      await saveUserSessions(userSessions);
+      console.log(`✅ User session currentJobId güncellendi: ${currentJob.jobId}`);
+    }
+
+    if (markedJobs > 0) {
+      console.log(`✅ Marked ${markedJobs} completed jobs as overridden to prevent reload restart`);
+    }
+
+    console.log(`✅ Job resetlendi ve yeniden başlatıldı: ${currentJob.jobId}`);
+    console.log(`📊 Final job state: ${currentJob.totalContacts} total contacts, ${currentJob.contacts ? currentJob.contacts.length : 0} contacts in array`);
+
+    // **ADD MISSING BACKGROUND PROCESSING START**
+    console.log(`🚀 Starting background processing for restarted job: ${currentJob.jobId}`);
+    processJobInBackground(currentJob.jobId).catch(error => {
+      console.error(`❌ Background processing failed for job ${currentJob.jobId}:`, error);
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Job resetlendi ve yeniden başlatıldı.",
+      restarted: true,
+      processingStarted: true,
+      readyForNewJob: false,
+      jobStatus: {
+        totalContacts: currentJob.totalContacts,
+        contactsInArray: currentJob.contacts ? currentJob.contacts.length : 0,
+        status: currentJob.status
+      }
+    });
+
+  } catch (error) {
+    console.error(`❌ Error restarting processing: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error restarting processing",
+      error: error.message
+    });
+  }
+});
 
 // Initialize data directory, MongoDB and start server
 (async () => {
