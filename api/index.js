@@ -24,7 +24,7 @@ const {
   updateDailyStats,
   cleanOldDailyStats,
   getUserCooldownStatus,
-  clearUserDailyStats
+  resetUserStats
 } = require("../helpers/db");
 const { transformToCreateUserRequest } = require("../helpers/transform");
 const {
@@ -4164,6 +4164,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     
     console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason });
     
+    // Reset daily/hourly/pattern counts to 0
+    await resetUserStats(userId);
+    
     // Load jobs and find active jobs for this user
     const jobs = await loadJobs();
     const userActiveJobs = Object.values(jobs).filter(job => 
@@ -4293,20 +4296,6 @@ app.post("/restart-processing/:userId", async (req, res) => {
     const currentJob = sortedJobs[0];
 
     console.log(`🔧 Resetting job ${currentJob.jobId} counts to 0 and disabling cooldown`);
-
-    // **CLEAR DAILY AND HOURLY STATS** - Reset all counters to 0
-    console.log(`🧹 Clearing daily and hourly stats for user ${userId}`);
-    try {
-      const clearResult = await clearUserDailyStats(userId);
-      if (clearResult.success) {
-        console.log(`✅ Successfully cleared ${clearResult.deletedCount} stats entries (${clearResult.source})`);
-      } else {
-        console.error(`⚠️ Failed to clear daily stats: ${clearResult.error}`);
-      }
-    } catch (statsError) {
-      console.error(`❌ Error clearing daily stats: ${statsError.message}`);
-      // Continue anyway - don't fail the restart for stats clearing issues
-    }
 
     // Get user session for CRM access
     const userSessions = await loadUserSessions();
@@ -4604,11 +4593,10 @@ app.post("/restart-processing/:userId", async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Job resetlendi ve yeniden başlatıldı. Daily ve hourly stats temizlendi.",
+      message: "Job resetlendi ve yeniden başlatıldı.",
       restarted: true,
       processingStarted: true,
       readyForNewJob: false,
-      statsCleared: true,
       jobStatus: {
         totalContacts: currentJob.totalContacts,
         contactsInArray: currentJob.contacts ? currentJob.contacts.length : 0,

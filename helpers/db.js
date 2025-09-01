@@ -825,22 +825,14 @@ module.exports = {
   cleanExpiredDirectSessions
 };
 
-// Clear daily stats for a user (used when restarting processing)
-const clearUserDailyStats = async (userId) => {
+// Simple function to reset daily/hourly/pattern counts to 0
+const resetUserStats = async (userId) => {
   try {
-    console.log(`🧹 Clearing daily stats for user: ${userId}`);
-    
-    // Get today's date keys to know what to clear
     const today = new Date().toISOString().split("T")[0];
-    const currentHour = new Date().getHours();
-    const hourKey = `${today}-${currentHour}`;
     
-    console.log(`🧹 Clearing stats for date: ${today}, hour: ${hourKey}`);
-    
-    // Try MongoDB first
     if (mongoose.connection.readyState === 1) {
-      // Delete all stats for this user for today (daily, hourly, and pattern stats)
-      const deleteResult = await DailyStats.deleteMany({
+      // MongoDB: Delete all today's stats for this user
+      await DailyStats.deleteMany({
         userId: userId,
         $or: [
           { dateKey: today },
@@ -848,39 +840,26 @@ const clearUserDailyStats = async (userId) => {
           { patternKey: { $regex: `^${today}-` } }
         ]
       });
-      
-      console.log(`🧹 MongoDB: Deleted ${deleteResult.deletedCount} stats documents for user ${userId}`);
-      return { success: true, deletedCount: deleteResult.deletedCount, source: 'mongodb' };
+      console.log(`🔄 Reset stats for user ${userId} (MongoDB)`);
     } else {
-      // Fallback to legacy file system
+      // File system fallback
       const stats = await loadDailyStats();
-      let deletedCount = 0;
-      
       if (stats[userId]) {
         const userStats = stats[userId];
-        const keysToDelete = Object.keys(userStats).filter(key => 
-          key.startsWith(today)
-        );
-        
-        keysToDelete.forEach(key => {
-          delete userStats[key];
-          deletedCount++;
+        Object.keys(userStats).forEach(key => {
+          if (key.startsWith(today)) {
+            delete userStats[key];
+          }
         });
-        
-        // If no stats left for user, remove user entirely
         if (Object.keys(userStats).length === 0) {
           delete stats[userId];
         }
-        
         await saveDailyStats(stats);
-        console.log(`🧹 File system: Deleted ${deletedCount} stats keys for user ${userId}`);
       }
-      
-      return { success: true, deletedCount, source: 'filesystem' };
+      console.log(`🔄 Reset stats for user ${userId} (File system)`);
     }
   } catch (error) {
-    console.error(`❌ Error clearing daily stats for user ${userId}:`, error);
-    return { success: false, error: error.message };
+    console.error(`❌ Error resetting stats: ${error.message}`);
   }
 };
 
@@ -908,5 +887,5 @@ module.exports = {
   saveDirectSessions,
   updateDirectSessionStats,
   cleanExpiredDirectSessions,
-  clearUserDailyStats
+  resetUserStats
 };
