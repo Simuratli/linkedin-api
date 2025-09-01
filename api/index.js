@@ -32,6 +32,7 @@ const {
   getCurrentHumanPattern,
   isDuringPause,
   HUMAN_PATTERNS,
+  requestQueue,
 } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
@@ -1989,6 +1990,9 @@ const processJobInBackground = async (jobId) => {
               contact.humanPattern = profileData.humanPattern || currentPatternName;
               job.successCount++;
               processedInSession++;
+
+              // INCREMENT PATTERN COUNT - This should match processedCount 1:1
+              requestQueue.incrementPatternCount();
 
               // Update job count
               job.processedCount = job.successCount + job.failureCount;

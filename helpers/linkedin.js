@@ -280,6 +280,14 @@ class SimpleQueue {
     return { shouldWait: false };
   }
 
+  incrementPatternCount() {
+    this.currentPatternCount++;
+    const currentPattern = getCurrentHumanPattern();
+    console.log(
+      `✅ Pattern count incremented: ${this.currentPatternCount}/${currentPattern.maxProfiles} for ${currentPattern.name}`
+    );
+  }
+
   async add(requestFn) {
     const now = Date.now();
     this.resetDailyCountIfNeeded();
@@ -331,8 +339,9 @@ class SimpleQueue {
 
     this.lastRequest = Date.now();
     this.requestCount++;
-    this.currentPatternCount++;
     this.dailyCount++;
+
+    // Note: currentPatternCount will be incremented separately when contact is successfully processed
 
     const currentPattern = getCurrentHumanPattern();
     console.log(
@@ -505,4 +514,5 @@ module.exports = {
   getCurrentHumanPattern,
   isDuringPause,
   HUMAN_PATTERNS,
+  requestQueue, // Export the requestQueue so we can increment pattern count manually
 };
