@@ -18,7 +18,8 @@ const jobSchema = new mongoose.Schema({
       required: true,
       enum: ['pending', 'processing', 'completed', 'failed']
     },
-    error: String
+    error: String,
+    statsRecorded: { type: Boolean, default: false }
   }],
   processedCount: { type: Number, default: 0 },
   successCount: { type: Number, default: 0 },

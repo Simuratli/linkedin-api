@@ -1993,21 +1993,23 @@ const processJobInBackground = async (jobId) => {
               // Update job count
               job.processedCount = job.successCount + job.failureCount;
               
-              // Update daily stats ONLY for newly processed contacts - PREVENT DUPLICATES
+              // Update daily stats ONLY for newly completed contacts - PREVENT DUPLICATES
               const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
               const today = new Date().toISOString().split("T")[0];
               const hour = `${today}-${new Date().getHours()}`;
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
-              // CRITICAL: Only increment stats if this contact was just completed
-              // Check if this contact already has statsRecorded flag
-              if (!contact.statsRecorded) {
+              // CRITICAL: Only increment stats if this contact was just marked as completed
+              // Check both: contact status is completed AND statsRecorded is false
+              if (contact.status === "completed" && !contact.statsRecorded) {
                 await updateDailyStats(statsKey, today, hour, pattern);
                 contact.statsRecorded = true; // Mark as recorded to prevent duplicates
                 console.log(`📊 Stats incremented for NEW completion: ${contact.contactId} (hourly count +1)`);
-              } else {
+              } else if (contact.statsRecorded) {
                 console.log(`⚠️ Contact ${contact.contactId} stats already recorded, skipping increment`);
+              } else {
+                console.log(`⚠️ Contact ${contact.contactId} not in completed status, skipping stats`);
               }
               
               // Update pattern-specific stats in job object only
@@ -4594,6 +4596,48 @@ app.post("/restart-processing/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error restarting processing",
+      error: error.message
+    });
+  }
+});
+
+// Debug endpoint to clear daily stats (for fixing inflated counts)
+app.post("/debug/clear-stats", async (req, res) => {
+  try {
+    // Clear all daily stats from MongoDB
+    const result = await DailyStats.deleteMany({});
+    console.log(`🗑️ Cleared ${result.deletedCount} daily stats documents`);
+    
+    res.json({
+      success: true,
+      message: `Cleared ${result.deletedCount} daily stats documents`,
+      note: "Stats will start fresh from 0 for new processing"
+    });
+  } catch (error) {
+    console.error("❌ Error clearing daily stats:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Debug endpoint to view current stats
+app.get("/debug/stats", async (req, res) => {
+  try {
+    const stats = await loadDailyStats();
+    const totalDocs = await DailyStats.countDocuments();
+    
+    res.json({
+      success: true,
+      totalDocuments: totalDocs,
+      statsStructure: stats,
+      note: "This shows the current daily stats structure"
+    });
+  } catch (error) {
+    console.error("❌ Error loading daily stats:", error);
+    res.status(500).json({
+      success: false,
       error: error.message
     });
   }
