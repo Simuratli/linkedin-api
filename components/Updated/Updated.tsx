@@ -533,6 +533,11 @@ export function JobStatusPopover({
     const patternStatus = getCurrentPatternStatus();
     if (!patternStatus) return null;
 
+    // Get the actual pattern count from job status (this should match processedCount 1:1)
+    const actualPatternCount = jobStatus?.processedCount || 0;
+    const patternLimit = patternStatus.limit || 0;
+    const patternPercentage = patternLimit > 0 ? Math.round((actualPatternCount / patternLimit) * 100) : 0;
+
     return (
       <div className="pattern-section">
         <div className="section-header">
@@ -546,16 +551,25 @@ export function JobStatusPopover({
             </span>
           </div>
           <div className="pattern-time">{patternStatus.time}</div>
-          {patternStatus.limit > 0 && (
+          {patternLimit > 0 && (
             <div className="pattern-progress">
               <div className="progress-text">
-                {patternStatus.processed}/{patternStatus.limit} profiles ({patternStatus.percentage}%)
+                Pattern Count: {actualPatternCount}/{patternLimit} contacts ({patternPercentage}%)
               </div>
               <div className="progress-bar">
                 <div 
                   className="progress-fill"
-                  style={{ width: `${Math.min(patternStatus.percentage, 100)}%` }}
+                  style={{ width: `${Math.min(patternPercentage, 100)}%` }}
                 />
+              </div>
+              <div className="pattern-breakdown-detail" style={{ 
+                fontSize: '11px', 
+                color: '#6B7280', 
+                marginTop: '4px' 
+              }}>
+                <div>✅ Processed: {jobStatus?.processedCount || 0}</div>
+                <div>📊 Pattern Limit: {patternLimit}</div>
+                <div>🎯 Pattern Count: {actualPatternCount} (should match processed)</div>
               </div>
             </div>
           )}
@@ -567,56 +581,61 @@ export function JobStatusPopover({
   const renderLimitsInfo = () => {
     const limits = dailyLimitInfo || jobStatus?.dailyLimitInfo;
     const hourlyInfo = jobStatus?.hourlyLimitInfo;
-    if (!limits) return null;
+    if (!limits || !hourlyInfo) return null;
+
+    // Only show if hourly limit is reached and wait time is needed
+    if (!hourlyInfo.hourlyLimitReached && !hourlyInfo.waitInfo?.needsWait) {
+      return null;
+    }
 
     return (
       <div className="limits-section">
-        <div className="section-header">
-          <strong>Today's Limits:</strong>
-        </div>
-        <div className="limits-grid">
-          <div className="limit-item">
-            <span className="limit-label">Daily:</span>
-            <span className="limit-value">
-              {limits.dailyCount}/{limits.dailyLimit}
+        {/* Only show hourly limit reached indicator */}
+        {hourlyInfo.hourlyLimitReached && (
+          <div className="limit-reached-alert" style={{
+            padding: '8px',
+            backgroundColor: '#fef2f2',
+            border: '1px solid #fecaca',
+            borderRadius: '4px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            marginBottom: '8px'
+          }}>
+            <span style={{ color: '#ef4444', fontSize: '14px' }}>🚫</span>
+            <span style={{ color: '#ef4444', fontSize: '12px', fontWeight: 'bold' }}>
+              HOURLY LIMIT REACHED
             </span>
           </div>
-          <div className="limit-item">
-            <span className="limit-label">Hourly:</span>
-            <span className="limit-value">
-              {hourlyInfo ? `${hourlyInfo.hourlyCount}/${hourlyInfo.hourlyLimit}` : `${limits.hourlyCount}/${limits.hourlyLimit}`}
-              {hourlyInfo?.hourlyLimitReached && (
-                <span className="limit-reached" style={{ 
-                  color: '#ef4444', 
-                  fontSize: '11px', 
-                  fontWeight: 'bold',
-                  marginLeft: '6px'
-                }}> (LIMIT REACHED)</span>
-              )}
-            </span>
-            {hourlyInfo?.waitInfo?.needsWait && (
-              <div className="wait-time" style={{ 
-                marginTop: '4px', 
+        )}
+
+        {/* Only show wait time if needed */}
+        {hourlyInfo.waitInfo?.needsWait && (
+          <div className="wait-time-alert" style={{
+            padding: '8px',
+            backgroundColor: '#fffbeb',
+            border: '1px solid #fed7aa',
+            borderRadius: '4px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span style={{ fontSize: '16px' }}>⏳</span>
+            <div>
+              <div style={{ 
+                color: '#f59e0b', 
                 fontSize: '12px', 
-                color: '#f59e0b',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px'
+                fontWeight: 'bold' 
               }}>
-                <span className="wait-icon">⏳</span>
-                <span className="wait-message">
-                  Wait {hourlyInfo.waitInfo.waitMinutes} min until next hour
-                </span>
+                Wait {hourlyInfo.waitInfo.waitMinutes} minutes
               </div>
-            )}
-          </div>
-        </div>
-        {limits.estimatedResumeTime && (
-          <div className="resume-info">
-            <strong>Next Resume:</strong> {formatTime(limits.estimatedResumeTime)}
-            {limits.nextActivePattern && (
-              <span className="next-pattern"> ({limits.nextActivePattern.name})</span>
-            )}
+              <div style={{ 
+                color: '#92400e', 
+                fontSize: '10px' 
+              }}>
+                Until next hour begins
+              </div>
+            </div>
           </div>
         )}
       </div>

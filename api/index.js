@@ -4221,22 +4221,29 @@ app.post("/cancel-processing/:userId", async (req, res) => {
             contact.status = "completed";
             contact.completedAt = now;
             contact.error = null;
+            contact.processedAt = now;
+            contact.humanPattern = getCurrentHumanPattern().name;
             newlyCompletedCount++;
+            
+            // INCREMENT PATTERN COUNT for each manually completed contact
+            if (requestQueue && requestQueue.incrementPatternCount) {
+              requestQueue.incrementPatternCount();
+            }
           }
         });
       }
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
-      // Mark job as complet
+      // Mark job as completed
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
-      // Mark cooldown as overridden to prevent unwanted restart
-      job.cooldownOverridden = true;
-      job.overriddenAt = now;
+      // FIXED: Do NOT set cooldownOverridden - allow normal cooldown period
+      // job.cooldownOverridden = true;  // REMOVED - this was preventing normal cooldown
+      // job.overriddenAt = now;         // REMOVED - this was preventing normal cooldown
       jobs[job.jobId] = job;
       cancelledJobs.push({
         jobId: job.jobId,
@@ -4245,38 +4252,40 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, normal cooldown applied`);
     }
     await saveJobs(jobs);
 
-    // Clear current job ID from user session and set cooldownOverridden
+    // Clear current job ID from user session - allow normal cooldown
     const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
-      userSessions[userId].cooldownOverridden = true;
-      userSessions[userId].overriddenAt = now;
+      // FIXED: Do NOT override cooldown in user session - allow normal cooldown period
+      // userSessions[userId].cooldownOverridden = true;  // REMOVED
+      // userSessions[userId].overriddenAt = now;         // REMOVED
     }
     await saveUserSessions(userSessions);
 
-    // Cancelled jobları completed yaptıktan sonra cooldown kaydını oluştur
+    // Set normal cooldown after completing jobs
     try {
       const { checkAndSetUserCooldown } = require("../helpers/db");
       await checkAndSetUserCooldown(userId);
-      console.log(`✅ checkAndSetUserCooldown çağrıldı: ${userId}`);
+      console.log(`✅ Normal cooldown set for user: ${userId}`);
     } catch (cooldownError) {
-      console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
+      console.error(`❌ checkAndSetUserCooldown error: ${cooldownError.message}`);
     }
 
     res.status(200).json({
       success: true,
-      message: "Processing completed successfully. All remaining contacts marked as successful.",
+      message: "Processing completed successfully. All remaining contacts marked as successful with normal 30-day cooldown.",
       completedJobs: cancelledJobs,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
-        cooldownOverridden: true,
+        cooldownOverridden: false,  // FIXED: Normal cooldown applies
+        normalCooldownSet: true,
         userSessionUpdated: !!userSessions[userId],
-        nextStep: "Reload the extension to see updated status"
+        nextStep: "30-day cooldown period is now active. Reload to see updated status."
       }
     });
     
