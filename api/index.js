@@ -2376,9 +2376,9 @@ app.get("/job-status/:jobId", async (req, res) => {
       await saveJobs({ ...jobs, [jobId]: job });
     }
 
-    // ENSURE synchronization happens BEFORE checking limits
-    console.log(`🔄 Synchronizing job stats for user ${job.userId} before returning status`);
-    await synchronizeJobWithDailyStats(job.userId, job);
+    // ENSURE synchronization happens BEFORE checking limits - REMOVED!
+    // This was causing duplicate stats updates on every job status request
+    // await synchronizeJobWithDailyStats(job.userId, job);
 
     // CHECK FOR COMPLETION - Fix for jobs that finished but status wasn't updated
     if (job.status === "processing") {
