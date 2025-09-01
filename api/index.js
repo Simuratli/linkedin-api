@@ -1970,8 +1970,8 @@ const processJobInBackground = async (jobId) => {
               // Update job count
               job.processedCount = job.successCount + job.failureCount;
               
-              // REMOVE THE updateUserDailyStats CALL TO PREVENT DOUBLE COUNTING
-              // The synchronizeJobWithDailyStats function will handle this properly
+              // Update daily stats immediately during processing
+              await updateUserDailyStats(job.userId, job.crmUrl);
               
               // Update pattern-specific stats in job object only
               if (!job.dailyStats) {
@@ -2022,6 +2022,9 @@ const processJobInBackground = async (jobId) => {
 
             // Update processed count even for failed contacts
             job.processedCount = job.successCount + job.failureCount;
+            
+            // Update daily stats for failed contacts too
+            await updateUserDailyStats(job.userId, job.crmUrl);
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
               console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
