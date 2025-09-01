@@ -3401,6 +3401,81 @@ app.post("/refresh-token", async (req, res) => {
   }
 });
 
+// Enhanced refresh session endpoint for frontend
+app.post("/refresh-session", async (req, res) => {
+  try {
+    const { jobId, userId } = req.body;
+    console.log(`🔄 Frontend refresh request for job ${jobId}, user ${userId}`);
+
+    // Get job and find the actual user
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found",
+      });
+    }
+
+    const actualUserId = job.userId;
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[actualUserId];
+    
+    if (!userSession || !userSession.refreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: "No session data found for token refresh",
+        needsReauth: true,
+      });
+    }
+
+    // Refresh the token
+    const newTokenData = await refreshAccessToken(
+      userSession.refreshToken,
+      userSession.clientId,
+      userSession.tenantId,
+      userSession.crmUrl,
+      userSession.verifier
+    );
+
+    // Update user session
+    userSessions[actualUserId].accessToken = newTokenData.access_token;
+    if (newTokenData.refresh_token) {
+      userSessions[actualUserId].refreshToken = newTokenData.refresh_token;
+    }
+    await saveUserSessions(userSessions);
+
+    // Clear job pause status
+    if (job.pauseReason === 'token_refresh_failed') {
+      job.status = 'processing';
+      delete job.pauseReason;
+      delete job.pausedAt;
+      delete job.lastError;
+      await saveJobs({ ...jobs, [jobId]: job });
+      
+      // Restart background processing
+      console.log(`🚀 Restarting background processing for job ${jobId} after token refresh`);
+      setImmediate(() => processJobInBackground(jobId));
+    }
+
+    console.log(`✅ Token refreshed successfully for user ${actualUserId}, job ${jobId}`);
+    
+    res.status(200).json({
+      success: true,
+      message: "Token refreshed and job resumed successfully",
+    });
+  } catch (error) {
+    console.error("❌ Session refresh failed:", error);
+    res.status(401).json({
+      success: false,
+      message: "Token refresh failed",
+      error: error.message,
+      needsReauth: true,
+    });
+  }
+});
+
 // Test route with pattern info
 app.get("/simuratli", async (req, res) => {
   const profileId = "simuratli";

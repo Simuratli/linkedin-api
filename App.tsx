@@ -1560,6 +1560,7 @@ const handleOverrideCooldown = async () => {
                 allHumanPatterns={allHumanPatterns}
                 cooldownInfo={cooldownInfo}
                 authError={authError}
+                needsTokenRefresh={jobStatus?.needsTokenRefresh}
                 onOverrideCooldown={handleOverrideCooldown}
                 onStopProcessing={handleStopProcessing}
               />

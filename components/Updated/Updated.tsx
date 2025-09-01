@@ -158,6 +158,7 @@ interface JobStatusPopoverProps {
     overrideReason?: string;
   } | null;
   authError?: string | null;
+  needsTokenRefresh?: boolean;
   onOverrideCooldown?: () => Promise<boolean>;
   onCleanOverride?: () => Promise<boolean>;
   onStopProcessing?: () => Promise<boolean>;
@@ -173,6 +174,7 @@ export function JobStatusPopover({
   allHumanPatterns,
   cooldownInfo,
   authError,
+  needsTokenRefresh,
   onOverrideCooldown,
   onCleanOverride,
   onStopProcessing,
@@ -183,6 +185,7 @@ export function JobStatusPopover({
   const [showRestartOptions, setShowRestartOptions] = useState(false);
   // Fix: Move restartLoading state to top-level to avoid hook order issues
   const [restartLoading, setRestartLoading] = useState(false);
+  const [refreshingToken, setRefreshingToken] = useState(false);
 
   // Defensive: If jobStatus is not fully populated, try to map/fill missing fields for failed jobs
   let normalizedJobStatus = jobStatus;
@@ -298,6 +301,56 @@ export function JobStatusPopover({
     }
   };
 
+  const handleRefreshToken = async () => {
+    if (!needsTokenRefresh || normalizedJobStatus?.pauseReason !== 'token_refresh_failed') return;
+    
+    setRefreshingToken(true);
+    try {
+      // Show user message
+      const proceed = window.confirm(
+        "🔄 Token Refresh Required\n\n" +
+        "Your authentication token has expired. Click OK to refresh it automatically.\n\n" +
+        "• Job processing will resume after successful refresh\n" +
+        "• This may take a few seconds\n" +
+        "• Make sure you're connected to the internet"
+      );
+
+      if (!proceed) {
+        setRefreshingToken(false);
+        return;
+      }
+
+      // Call refresh endpoint (backend handles the token refresh logic)
+      const refreshResponse = await fetch('http://localhost:5678/refresh-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: normalizedJobStatus?.jobId || '',
+          userId: 'default' // Backend will find the correct user from job
+        })
+      });
+      
+      const result = await refreshResponse.json();
+      
+      if (result.success) {
+        alert('✅ Token refreshed successfully!\n\nJob processing will resume automatically.');
+        // Trigger page refresh to update job status
+        window.location.reload();
+      } else {
+        if (result.needsReauth) {
+          alert('❌ Token refresh failed - manual reconnection required.\n\nPlease reconnect through LinkedIn extension.');
+        } else {
+          alert('❌ Token refresh failed: ' + (result.message || 'Unknown error'));
+        }
+      }
+    } catch (error) {
+      console.error('❌ Token refresh error:', error);
+      alert('❌ Token refresh failed due to network error.\n\nPlease check your connection and try again.');
+    } finally {
+      setRefreshingToken(false);
+    }
+  };
+
   const getStatusColor = (status?: string) => {
     switch (status) {
       case "completed": return "#10B981"; // green
@@ -389,7 +442,29 @@ export function JobStatusPopover({
       return <span className="status-badge auth-error">Dataverse Auth Error</span>;
     }
     if (normalizedJobStatus.pauseReason === 'token_refresh_failed') {
-      return <span className="status-badge auth-error">Auth Refresh Failed</span>;
+      return (
+        <div className="auth-error-container">
+          <span className="status-badge auth-error">Auth Refresh Failed</span>
+          <button 
+            className="control-button refresh-token-button"
+            onClick={handleRefreshToken}
+            disabled={refreshingToken}
+            title="Refresh authentication token to continue processing"
+            style={{ 
+              backgroundColor: refreshingToken ? '#DC2626' : '#EF4444', 
+              color: 'white',
+              border: 'none',
+              opacity: refreshingToken ? 0.7 : 1,
+              cursor: refreshingToken ? 'not-allowed' : 'pointer'
+            }}
+          >
+            {refreshingToken ? '🔄 Refreshing...' : '🔄 Refresh Token'}
+          </button>
+          <small style={{ color: '#DC2626', fontSize: '10px', marginTop: '4px', display: 'block' }}>
+            Token expired - click to refresh and resume processing
+          </small>
+        </div>
+      );
     }
 
     return (
