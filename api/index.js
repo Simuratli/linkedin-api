@@ -37,6 +37,9 @@ const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
 const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
 
+// Track running background processes to prevent duplicates
+const runningProcesses = new Map();
+
 // Professional logging system for debugging background processing
 const createProcessingLogger = (jobId) => {
   const logContext = `[JOB:${jobId.slice(-8)}]`;
@@ -1472,6 +1475,17 @@ app.get("/debug-job-state/:jobId", async (req, res) => {
 // Enhanced background processing with human patterns
 const processJobInBackground = async (jobId) => {
   const logger = createProcessingLogger(jobId);
+  
+  // CRITICAL: Prevent multiple instances for the same job
+  if (runningProcesses.has(jobId)) {
+    console.log(`🛑 Process already running for job ${jobId}, skipping duplicate`);
+    return;
+  }
+  
+  // Mark this job as being processed
+  runningProcesses.set(jobId, { startTime: new Date(), processId: Date.now() });
+  console.log(`🚀 Starting process for job ${jobId}`);
+  
   logger.checkpoint("BACKGROUND_PROCESSING_STARTED");
   
   try {
@@ -2375,6 +2389,10 @@ const processJobInBackground = async (jobId) => {
       errorJobs[jobId] = job;
       await saveJobs(errorJobs);
     }
+  } finally {
+    // CRITICAL: Always cleanup the running process tracker
+    runningProcesses.delete(jobId);
+    console.log(`🧹 Cleaned up process tracker for job ${jobId}`);
   }
 };
 // Enhanced job status endpoint with human pattern info and synchronized stats
