@@ -487,15 +487,23 @@ const callDataverseWithRefresh = async (
         const userSessions = await loadUserSessions();
         if (userSessions[refreshData.userId]) {
           userSessions[refreshData.userId].accessToken = newTokenData.access_token;
-          userSessions[refreshData.userId].lastActivity = new Date().toISOString();
+          if (newTokenData.refresh_token) {
+            userSessions[refreshData.userId].refreshToken = newTokenData.refresh_token;
+          }
           await saveUserSessions(userSessions);
+          console.log("✅ User session updated with new token");
         }
 
         console.log("🔄 Retrying API call with refreshed token...");
         if (method === "GET") {
           return await getDataverse(url, newTokenData.access_token);
         } else {
-          return await createDataverse(url, newTokenData.access_token, body, method);
+          return await createDataverse(
+            url,
+            newTokenData.access_token,
+            body,
+            method
+          );
         }
       } catch (refreshError) {
         console.error("❌ Token refresh failed:", refreshError.message);
@@ -668,7 +676,6 @@ app.post("/start-processing", async (req, res) => {
             job.processedCount < job.totalContacts
         )) {
           hasPendingContacts = true;
-          break;
         }
       }
       if (!hasPendingContacts && lastCompletedJob) {
@@ -687,15 +694,20 @@ app.post("/start-processing", async (req, res) => {
         });
         
         if (diffDays < 30 && !cooldownOverridden) {
-          return res.status(403).json({
+          return res.status(200).json({
             success: false,
-            message: "You have already completed all contacts. Please wait 1 month before starting a new job or contact admin for override.",
+            message: `All contacts were already processed. Please wait ${Math.ceil(30 - diffDays)} more day(s) before running again.`,
+            lastCompleted: lastCompletedJob.completedAt,
+            jobId: lastCompletedJob.jobId,
+            processedCount: lastCompletedJob.processedCount,
+            totalContacts: lastCompletedJob.totalContacts,
+            canResume: false,
             cooldownActive: true,
-            daysSinceCompletion: Math.round(diffDays),
-            daysRemaining: Math.ceil(30 - diffDays),
-            completedJobId: lastCompletedJob.jobId,
-            completedAt: lastCompletedJob.completedAt,
-            cooldownEndDate: new Date(completedAt.getTime() + (30 * 24 * 60 * 60 * 1000)).toISOString()
+            cooldownDaysLeft: Math.ceil(30 - diffDays),
+            canOverrideCooldown: true, // Add this flag
+            overrideEndpoint: `/override-cooldown/${userId}`, // Provide override endpoint
+            currentPattern: limitCheck.currentPattern,
+            limitInfo: limitCheck,
           });
         } else if (cooldownOverridden) {
           console.log(`✅ Cooldown was overridden for user ${userId} on ${lastCompletedJob.overriddenAt}, allowing new job`);
@@ -709,13 +721,14 @@ app.post("/start-processing", async (req, res) => {
         message += `Currently in ${limitCheck.currentPattern} (${currentPattern.time}). `;
         if (limitCheck.estimatedResumeTime) {
           const resumeTime = new Date(limitCheck.estimatedResumeTime);
-          const waitMinutes = Math.ceil((resumeTime.getTime() - new Date().getTime()) / (1000 * 60));
-          message += `Will resume at ${resumeTime.toLocaleTimeString()} (${waitMinutes} minutes).`;
+          message += `Will resume at ${resumeTime.toLocaleTimeString()} during ${limitCheck.nextActivePattern.name}.`;
         }
       } else if (limitCheck.patternCount >= limitCheck.patternLimit) {
-        message += `${limitCheck.currentPattern} pattern limit reached (${limitCheck.patternCount}/${limitCheck.patternLimit}). `;
-      } else {
-        message += `Daily limit reached (${limitCheck.dailyCount}/${limitCheck.dailyLimit}). `;
+        message += `Pattern limit reached: ${limitCheck.patternCount}/${limitCheck.patternLimit} for ${limitCheck.currentPattern}. `;
+      } else if (limitCheck.dailyCount >= limitCheck.dailyLimit) {
+        message += `Daily limit reached: ${limitCheck.dailyCount}/${limitCheck.dailyLimit}. `;
+      } else if (limitCheck.hourlyCount >= limitCheck.hourlyLimit) {
+        message += `Hourly limit reached: ${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}. `;
       }
 
       return res.status(429).json({
@@ -895,10 +908,17 @@ app.post("/start-processing", async (req, res) => {
         };
         
         return res.status(200).json({
-          type: "job_cancelled",
-          message: `Your previous job was ${existingJob.status}`,
-          jobId: existingJob.jobId,
-          ...cancelInfo
+          success: false,
+          message: `Previous job was ${existingJob.status}. You can restart processing with your previous contacts.`,
+          jobCancelled: true,
+          jobStatus: existingJob.status,
+          cancelInfo,
+          canRestart: true,
+          restartEndpoint: `/restart-after-cancel/${userId}`,
+          processingBlocked: true,
+          hasCancellationInfo,
+          currentPattern: limitCheck.currentPattern,
+          limitInfo: limitCheck
         });
       }
       
