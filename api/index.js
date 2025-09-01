@@ -1970,8 +1970,14 @@ const processJobInBackground = async (jobId) => {
               // Update job count
               job.processedCount = job.successCount + job.failureCount;
               
-              // Update daily stats immediately during processing
-              await updateUserDailyStats(job.userId, job.crmUrl);
+              // Update daily stats using CRM-based key if available
+              const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
+              const today = new Date().toISOString().split("T")[0];
+              const hour = `${today}-${new Date().getHours()}`;
+              const currentPattern = getCurrentHumanPattern();
+              const pattern = `${today}-${currentPattern.name}`;
+              
+              await updateDailyStats(statsKey, today, hour, pattern);
               
               // Update pattern-specific stats in job object only
               if (!job.dailyStats) {
@@ -2023,8 +2029,14 @@ const processJobInBackground = async (jobId) => {
             // Update processed count even for failed contacts
             job.processedCount = job.successCount + job.failureCount;
             
-            // Update daily stats for failed contacts too
-            await updateUserDailyStats(job.userId, job.crmUrl);
+            // Update daily stats using CRM-based key for failed contacts too
+            const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
+            const today = new Date().toISOString().split("T")[0];
+            const hour = `${today}-${new Date().getHours()}`;
+            const currentPattern = getCurrentHumanPattern();
+            const pattern = `${today}-${currentPattern.name}`;
+            
+            await updateDailyStats(statsKey, today, hour, pattern);
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
               console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
