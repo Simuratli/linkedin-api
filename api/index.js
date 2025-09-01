@@ -2429,8 +2429,34 @@ app.get("/job-status/:jobId", async (req, res) => {
     const userSessions = await loadUserSessions();
     const userSession = userSessions[job.userId];
     const jobCrmUrl = userSession?.crmUrl;
-    const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
+    
+    // Use job's actual stats instead of potentially stale MongoDB stats
     const currentPattern = getCurrentHumanPattern();
+    const jobProcessedToday = job.dailyStats?.processedToday || job.successCount || 0;
+    const jobPatternCount = job.dailyStats?.patternBreakdown?.[currentPattern.name] || job.successCount || 0;
+    
+    // Create accurate limit check based on job's actual stats
+    const limitCheck = {
+      canProcess: true, // We'll calculate this properly
+      dailyCount: jobProcessedToday,
+      hourlyCount: jobProcessedToday, // For now, use same as daily (can be refined)
+      patternCount: jobPatternCount,
+      dailyLimit: DAILY_PROFILE_LIMIT,
+      hourlyLimit: BURST_LIMIT,
+      patternLimit: currentPattern.maxProfiles || 35,
+      currentPattern: currentPattern.name,
+      inPause: isDuringPause(),
+      nextActivePattern: getNextActivePattern(),
+      estimatedResumeTime: getEstimatedResumeTime(),
+      crmUrl: jobCrmUrl ? normalizeCrmUrl(jobCrmUrl) : job.userId,
+      sharedLimits: jobCrmUrl ? `Shared with all users of ${normalizeCrmUrl(jobCrmUrl)}` : `User-specific limits`
+    };
+    
+    // Update canProcess based on actual limits
+    limitCheck.canProcess = !limitCheck.inPause &&
+                           limitCheck.dailyCount < limitCheck.dailyLimit &&
+                           limitCheck.hourlyCount < limitCheck.hourlyLimit &&
+                           limitCheck.patternCount < limitCheck.patternLimit;
     
     // Format dates properly
     const formatDate = (date) => {
