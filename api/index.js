@@ -2512,6 +2512,13 @@ app.get("/job-status/:jobId", async (req, res) => {
         failedAt: failedAt,
         errors: job.errors,
         pauseReason: job.pauseReason,
+        // NEW: Unauthorized status flag for frontend
+        needsTokenRefresh: job.pauseReason === 'token_refresh_failed',
+        authError: job.pauseReason === 'token_refresh_failed' ? {
+          type: 'TOKEN_REFRESH_FAILED',
+          message: 'Authentication token expired. Please refresh token to continue.',
+          lastError: job.lastError
+        } : null,
         estimatedResumeTime: job.estimatedResumeTime,
         humanPatterns: job.humanPatterns,
         dailyStats: job.dailyStats,
@@ -2710,6 +2717,13 @@ app.get("/user-job/:userId", async (req, res) => {
         completedAt: completedAt,
         failedAt: failedAt,
         pauseReason: job.pauseReason,
+        // NEW: Unauthorized status flag for frontend
+        needsTokenRefresh: job.pauseReason === 'token_refresh_failed',
+        authError: job.pauseReason === 'token_refresh_failed' ? {
+          type: 'TOKEN_REFRESH_FAILED',
+          message: 'Authentication token expired. Please refresh token to continue.',
+          lastError: job.lastError
+        } : null,
         lastError: job.lastError,
         dailyStats: job.dailyStats,
         humanPatterns: job.humanPatterns,
