@@ -89,25 +89,21 @@ const synchronizeJobWithDailyStats = async (userId, job) => {
     
     console.log(`📊 Job stats - Processed: ${processedCount}, Success: ${successCount}`);
     
-    // Update daily stats with the actual job counts
-    // Use the success count as the actual processed profiles
-    const actualProfilesProcessed = successCount;
+    // CRITICAL: Do NOT update daily stats here - stats should only be updated when contacts are actually processed
+    // The daily stats should already be up to date from when contacts were processed in the background loop
     
-    // Set the stats to match the job's actual counts
-    dailyStats[statsKey][today] = actualProfilesProcessed;
-    dailyStats[statsKey][hourKey] = actualProfilesProcessed;
+    // Just read the current stats for display purposes
+    const todayCount = dailyStats[statsKey][today] || 0;
+    const hourCount = dailyStats[statsKey][hourKey] || 0;
     
-    // Update pattern-specific stats from job data
+    console.log(`📊 Current stats for ${statsKey} - Today: ${todayCount}, Hour: ${hourCount}`);
+    
+    // Update pattern-specific stats from job data (read-only sync)
     if (job.dailyStats && job.dailyStats.patternBreakdown) {
-      console.log(`📊 Updating pattern breakdown:`, job.dailyStats.patternBreakdown);
-      for (const [patternName, count] of Object.entries(job.dailyStats.patternBreakdown)) {
-        const patternKey = getPatternKey(patternName);
-        dailyStats[statsKey][patternKey] = count || 0;
-        console.log(`📊 Pattern ${patternName}: ${count} profiles`);
-      }
+      console.log(`📊 Reading pattern breakdown:`, job.dailyStats.patternBreakdown);
     }
     
-    // Ensure job's dailyStats object is properly updated
+    // Ensure job's dailyStats object is properly updated (read-only)
     if (!job.dailyStats) {
       job.dailyStats = {
         startDate: today,
@@ -116,16 +112,14 @@ const synchronizeJobWithDailyStats = async (userId, job) => {
       };
     }
     
-    // Update job's dailyStats to match
-    job.dailyStats.processedToday = actualProfilesProcessed;
-    job.dailyStats.startDate = job.dailyStats.startDate || today;
+    // CRITICAL: Do NOT save daily stats here - this is read-only synchronization
+    // Stats are only updated in the background processing loop when contacts are actually processed
     
-    // DON'T automatically update stats here - stats should only be updated when contacts are actually processed
-    // The daily stats should already be up to date from when contacts were processed
-    
-    console.log(`✅ Synchronization completed for ${statsKey}:`, {
-      jobProcessed: actualProfilesProcessed,
+    console.log(`✅ Read-only synchronization completed for ${statsKey}:`, {
+      jobProcessed: processedCount,
       jobSuccess: successCount,
+      currentDailyCount: todayCount,
+      currentHourlyCount: hourCount,
       patterns: job.dailyStats.patternBreakdown || {}
     });
     

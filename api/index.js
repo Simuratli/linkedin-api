@@ -596,6 +596,24 @@ app.post("/start-processing", async (req, res) => {
           job.status !== "completed" && 
           job.contacts && 
           job.processedCount < job.totalContacts) {
+        
+        // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
+        const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+        const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+        
+        console.log(`🔍 Checking incomplete job ${job.jobId} for user ${userId}:`, {
+          jobId: job.jobId,
+          status: job.status,
+          ageInHours: Math.round(jobAgeInHours * 100) / 100,
+          isOld: jobAgeInHours > 24
+        });
+        
+        // Skip old jobs (older than 24 hours) to allow fresh starts
+        if (jobAgeInHours > 24) {
+          console.log(`⏭️ Ignoring old incomplete job ${job.jobId} (${Math.round(jobAgeInHours)}h old), allowing fresh start`);
+          continue;
+        }
+        
         currentIncompleteJob = job;
         break;
       }
@@ -725,20 +743,40 @@ app.post("/start-processing", async (req, res) => {
     // First, check if there are any incomplete jobs for this CRM (not just user)
     for (const job of Object.values(jobs)) {
       const jobCrmUrl = userSessions[job.userId]?.crmUrl;
+      
+      // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
+      const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+      const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+      
+      console.log(`🔍 Checking job ${job.jobId} for CRM sharing:`, {
+        jobId: job.jobId,
+        status: job.status,
+        ageInHours: Math.round(jobAgeInHours * 100) / 100,
+        isOld: jobAgeInHours > 24,
+        crmMatch: jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm
+      });
+      
+      // Skip old jobs (older than 24 hours) to avoid conflicts with fresh starts
+      if (jobAgeInHours > 24) {
+        console.log(`⏭️ Skipping old job ${job.jobId} (${Math.round(jobAgeInHours)}h old)`);
+        continue;
+      }
+      
       if (jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm && 
           job.status !== "completed" && 
           job.contacts && 
           job.processedCount < job.totalContacts) {
         existingJob = job;
         jobId = job.jobId;
-        console.log("📋 Found CRM-shared incomplete job:", {
+        console.log("📋 Found recent CRM-shared incomplete job:", {
           jobId: job.jobId,
           originalUserId: job.userId,
           currentUserId: userId,
           crmUrl: normalizedCrm,
           status: job.status,
           processed: job.processedCount,
-          total: job.totalContacts
+          total: job.totalContacts,
+          ageInHours: Math.round(jobAgeInHours * 100) / 100
         });
         break;
       }
@@ -838,13 +876,35 @@ app.post("/start-processing", async (req, res) => {
     if (userSessions[userId]?.currentJobId) {
       jobId = userSessions[userId].currentJobId;
       if (jobs[jobId]) {
-        existingJob = jobs[jobId];
-        console.log("📋 Found existing job via user session:", {
-          jobId: existingJob.jobId,
-          status: existingJob.status,
-          processed: existingJob.processedCount,
-          total: existingJob.totalContacts
+        const job = jobs[jobId];
+        
+        // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
+        const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+        const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+        
+        console.log(`� Checking user session job ${jobId}:`, {
+          jobId: job.jobId,
+          status: job.status,
+          ageInHours: Math.round(jobAgeInHours * 100) / 100,
+          isOld: jobAgeInHours > 24
         });
+        
+        // Skip old jobs (older than 24 hours) to avoid conflicts with fresh starts
+        if (jobAgeInHours > 24) {
+          console.log(`⏭️ Ignoring old user session job ${jobId} (${Math.round(jobAgeInHours)}h old), will create new job`);
+          // Clear old job from user session
+          delete userSessions[userId].currentJobId;
+          await saveUserSessions(userSessions);
+        } else {
+          existingJob = job;
+          console.log("📋 Found recent job via user session:", {
+            jobId: existingJob.jobId,
+            status: existingJob.status,
+            processed: existingJob.processedCount,
+            total: existingJob.totalContacts,
+            ageInHours: Math.round(jobAgeInHours * 100) / 100
+          });
+        }
       }
     }
 
@@ -2630,16 +2690,27 @@ app.get("/user-job/:userId", async (req, res) => {
         // Look for any job from same CRM
         for (const job of Object.values(jobs)) {
           const jobUserSession = userSessions[job.userId];
+          
+          // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
+          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+          
+          // Skip old jobs (older than 24 hours) to avoid conflicts with fresh starts
+          if (jobAgeInHours > 24) {
+            continue;
+          }
+          
           if (jobUserSession?.crmUrl && 
               normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrm &&
               job.status !== "completed" &&
               job.contacts && 
               job.processedCount < job.totalContacts) {
             sharedJobId = job.jobId;
-            console.log(`📋 Found CRM-shared job for user ${userId}:`, {
+            console.log(`📋 Found recent CRM-shared job for user ${userId}:`, {
               jobId: job.jobId,
               originalCreator: job.userId,
-              crmUrl: normalizedCrm
+              crmUrl: normalizedCrm,
+              ageInHours: Math.round(jobAgeInHours * 100) / 100
             });
             break;
           }
