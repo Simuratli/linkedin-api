@@ -68,15 +68,6 @@ const synchronizeJobWithDailyStats = async (userId, job) => {
       console.log(`📊 Using user-based stats key: ${statsKey}`);
     }
     
-    // Load daily stats from MongoDB
-    const dailyStats = await loadDailyStats();
-    
-    // Initialize stats for this key if not exist
-    if (!dailyStats[statsKey]) {
-      console.log(`📊 Creating new daily stats record for ${statsKey}`);
-      dailyStats[statsKey] = {};
-    }
-    
     // Get time-based keys
     const today = getTodayKey();
     const hourKey = getHourKey();
@@ -89,41 +80,25 @@ const synchronizeJobWithDailyStats = async (userId, job) => {
     
     console.log(`📊 Job stats - Processed: ${processedCount}, Success: ${successCount}`);
     
-    // Update daily stats with the actual job counts
-    // Use the success count as the actual processed profiles
+    // Clear existing stats for this key to avoid duplication
+    const { DailyStats } = require('./db');
+    
+    // Delete existing records for today and current hour to reset counts
+    await DailyStats.deleteMany({
+      userId: statsKey,
+      $or: [
+        { dateKey: today },
+        { hourKey: hourKey }
+      ]
+    });
+    
+    // Update stats based on actual job counts
     const actualProfilesProcessed = successCount;
     
-    // Set the stats to match the job's actual counts
-    dailyStats[statsKey][today] = actualProfilesProcessed;
-    dailyStats[statsKey][hourKey] = actualProfilesProcessed;
-    
-    // Update pattern-specific stats from job data
-    if (job.dailyStats && job.dailyStats.patternBreakdown) {
-      console.log(`📊 Updating pattern breakdown:`, job.dailyStats.patternBreakdown);
-      for (const [patternName, count] of Object.entries(job.dailyStats.patternBreakdown)) {
-        const patternKey = getPatternKey(patternName);
-        dailyStats[statsKey][patternKey] = count || 0;
-        console.log(`📊 Pattern ${patternName}: ${count} profiles`);
-      }
-    }
-    
-    // Ensure job's dailyStats object is properly updated
-    if (!job.dailyStats) {
-      job.dailyStats = {
-        startDate: today,
-        processedToday: 0,
-        patternBreakdown: {}
-      };
-    }
-    
-    // Update job's dailyStats to match
-    job.dailyStats.processedToday = actualProfilesProcessed;
-    job.dailyStats.startDate = job.dailyStats.startDate || today;
-    
-    // Save the updated daily stats to MongoDB using updateDailyStats
+    // Update daily and hourly stats with the correct count
     const { updateDailyStats } = require('./db');
     
-    // Update today's total count
+    // Update stats for each successfully processed contact
     for (let i = 0; i < actualProfilesProcessed; i++) {
       await updateDailyStats(statsKey, today, hourKey, null);
     }
@@ -132,6 +107,14 @@ const synchronizeJobWithDailyStats = async (userId, job) => {
     if (job.dailyStats && job.dailyStats.patternBreakdown) {
       for (const [patternName, count] of Object.entries(job.dailyStats.patternBreakdown)) {
         const patternKey = getPatternKey(patternName);
+        
+        // Delete existing pattern records to reset
+        await DailyStats.deleteMany({
+          userId: statsKey,
+          patternKey: patternKey
+        });
+        
+        // Update pattern count
         for (let i = 0; i < count; i++) {
           await updateDailyStats(statsKey, null, null, patternKey);
         }
@@ -139,12 +122,12 @@ const synchronizeJobWithDailyStats = async (userId, job) => {
     }
     
     console.log(`✅ Synchronization completed for ${statsKey}:`, {
-      today: dailyStats[statsKey][today],
-      hour: dailyStats[statsKey][hourKey],
-      patterns: job.dailyStats.patternBreakdown || {}
+      today: actualProfilesProcessed,
+      hour: actualProfilesProcessed,
+      patterns: job.dailyStats?.patternBreakdown || {}
     });
     
-    return dailyStats;
+    return true;
   } catch (error) {
     console.error(`❌ Sync error for user ${userId}:`, error.message);
     return null;

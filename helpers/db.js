@@ -485,95 +485,60 @@ const saveDailyStats = async (stats) => {
   }
 };
 
-// Update daily stats directly in MongoDB
-const updateDailyStats = async (userId, dateKey, hourKey, patternKey) => {
+// Enhanced update daily stats with proper hour tracking
+const updateDailyStats = async (statsKey, dateKey, hourKey, patternKey) => {
   try {
     const now = new Date();
     
-    // Try MongoDB first
-    if (mongoose.connection.readyState === 1) {
-      const operations = [];
-      
-      // Update daily count
-      if (dateKey) {
-        operations.push({
-          updateOne: {
-            filter: { userId, dateKey },
-            update: { 
-              $inc: { count: 1 },
-              $set: { updatedAt: now },
-              $setOnInsert: { userId, dateKey, createdAt: now }
-            },
-            upsert: true
-          }
-        });
-      }
-      
-      // Update hourly count
-      if (hourKey) {
-        operations.push({
-          updateOne: {
-            filter: { userId, hourKey },
-            update: { 
-              $inc: { count: 1 },
-              $set: { updatedAt: now },
-              $setOnInsert: { userId, hourKey, createdAt: now }
-            },
-            upsert: true
-          }
-        });
-      }
-      
-      // Update pattern count
-      if (patternKey) {
-        operations.push({
-          updateOne: {
-            filter: { userId, patternKey },
-            update: { 
-              $inc: { count: 1 },
-              $set: { updatedAt: now },
-              $setOnInsert: { userId, patternKey, createdAt: now }
-            },
-            upsert: true
-          }
-        });
-      }
-      
-      if (operations.length > 0) {
-        await DailyStats.bulkWrite(operations);
-        console.log(`📊 Updated daily stats for user ${userId} in MongoDB`);
-      }
-    } else {
-      // Fallback to file storage
-      console.log(`⚠️ MongoDB not connected, updating daily stats in file for user ${userId}`);
-      const { readJsonFile, writeJsonFile } = require('./fileLock');
-      const stats = await readJsonFile('./data/daily_rate_limits.json');
-      
-      if (!stats[userId]) {
-        stats[userId] = {};
-      }
-      
-      // Update counts in file format
-      if (dateKey) {
-        stats[userId][dateKey] = (stats[userId][dateKey] || 0) + 1;
-        console.log(`📊 Updated daily count for ${userId}: ${dateKey} = ${stats[userId][dateKey]}`);
-      }
-      
-      if (hourKey) {
-        stats[userId][hourKey] = (stats[userId][hourKey] || 0) + 1;
-        console.log(`📊 Updated hourly count for ${userId}: ${hourKey} = ${stats[userId][hourKey]}`);
-      }
-      
-      if (patternKey) {
-        stats[userId][patternKey] = (stats[userId][patternKey] || 0) + 1;
-        console.log(`📊 Updated pattern count for ${userId}: ${patternKey} = ${stats[userId][patternKey]}`);
-      }
-      
-      await writeJsonFile('./data/daily_rate_limits.json', stats);
-      console.log(`✅ Daily stats saved to file`);
+    // If keys are not provided, generate them
+    if (!dateKey) {
+      dateKey = now.toISOString().split("T")[0]; // YYYY-MM-DD
     }
+    if (!hourKey) {
+      hourKey = `${dateKey}-${now.getHours()}`; // YYYY-MM-DD-HH
+    }
+    
+    console.log(`📊 updateDailyStats called with:`, { statsKey, dateKey, hourKey, patternKey });
+    
+    // Update date total
+    if (dateKey) {
+      await DailyStats.findOneAndUpdate(
+        { userId: statsKey, dateKey: dateKey },
+        { 
+          $inc: { count: 1 },
+          $set: { updatedAt: now }
+        },
+        { upsert: true, new: true }
+      );
+    }
+    
+    // Update hour total
+    if (hourKey) {
+      await DailyStats.findOneAndUpdate(
+        { userId: statsKey, hourKey: hourKey },
+        { 
+          $inc: { count: 1 },
+          $set: { updatedAt: now }
+        },
+        { upsert: true, new: true }
+      );
+    }
+    
+    // Update pattern total
+    if (patternKey) {
+      await DailyStats.findOneAndUpdate(
+        { userId: statsKey, patternKey: patternKey },
+        { 
+          $inc: { count: 1 },
+          $set: { updatedAt: now }
+        },
+        { upsert: true, new: true }
+      );
+    }
+    
+    console.log(`✅ Daily stats updated for ${statsKey}:`, { dateKey, hourKey, patternKey });
   } catch (error) {
-    console.error("❌ Error updating daily stats:", error?.message);
+    console.error(`❌ Error updating daily stats: ${error.message}`);
   }
 };
 
