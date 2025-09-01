@@ -869,7 +869,6 @@ module.exports = {
   UserCooldown,
   DailyStats,
   DirectSession,
-  ensureDataDir,
   loadJobs,
   saveJobs,
   loadUserSessions,
