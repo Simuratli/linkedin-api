@@ -1970,14 +1970,21 @@ const processJobInBackground = async (jobId) => {
               // Update job count
               job.processedCount = job.successCount + job.failureCount;
               
-              // Update daily stats using CRM-based key if available
+              // Update daily stats using CRM-based key if available - PREVENT DUPLICATES
               const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
               const today = new Date().toISOString().split("T")[0];
               const hour = `${today}-${new Date().getHours()}`;
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
-              await updateDailyStats(statsKey, today, hour, pattern);
+              // CRITICAL: Only update stats if contact wasn't already counted
+              if (!contact.statsRecorded) {
+                await updateDailyStats(statsKey, today, hour, pattern);
+                contact.statsRecorded = true; // Mark as recorded to prevent duplicates
+                console.log(`📊 Stats updated for contact ${contact.contactId}`);
+              } else {
+                console.log(`⚠️ Stats already recorded for contact ${contact.contactId}, skipping`);
+              }
               
               // Update pattern-specific stats in job object only
               if (!job.dailyStats) {
@@ -2029,14 +2036,21 @@ const processJobInBackground = async (jobId) => {
             // Update processed count even for failed contacts
             job.processedCount = job.successCount + job.failureCount;
             
-            // Update daily stats using CRM-based key for failed contacts too
+            // Update daily stats using CRM-based key for failed contacts too - PREVENT DUPLICATES
             const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
             const today = new Date().toISOString().split("T")[0];
             const hour = `${today}-${new Date().getHours()}`;
             const currentPattern = getCurrentHumanPattern();
             const pattern = `${today}-${currentPattern.name}`;
             
-            await updateDailyStats(statsKey, today, hour, pattern);
+            // CRITICAL: Only update stats if contact wasn't already counted
+            if (!contact.statsRecorded) {
+              await updateDailyStats(statsKey, today, hour, pattern);
+              contact.statsRecorded = true; // Mark as recorded to prevent duplicates
+              console.log(`📊 Stats updated for failed contact ${contact.contactId}`);
+            } else {
+              console.log(`⚠️ Stats already recorded for failed contact ${contact.contactId}, skipping`);
+            }
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
               console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
