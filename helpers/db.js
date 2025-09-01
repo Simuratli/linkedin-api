@@ -420,44 +420,53 @@ const getUserCooldownStatus = async (userId) => {
 // Load daily stats from MongoDB (converts to old format for compatibility)
 const loadDailyStats = async () => {
   try {
-    // Use MongoDB aggregation to get proper counts
-    const pipeline = [
-      {
-        $group: {
-          _id: {
-            userId: "$userId",
-            key: {
-              $cond: [
-                { $ne: ["$dateKey", null] }, "$dateKey",
-                { $cond: [
-                  { $ne: ["$hourKey", null] }, "$hourKey",
-                  "$patternKey"
-                ]}
-              ]
-            }
-          },
-          count: { $sum: 1 }
-        }
-      }
-    ];
-    
-    const aggregatedStats = await DailyStats.aggregate(pipeline);
+    // Get all stats documents
+    const stats = await DailyStats.find({});
     const statsMap = {};
     
-    // Convert aggregated results to the expected format
-    aggregatedStats.forEach(stat => {
-      const userId = stat._id.userId;
-      const key = stat._id.key;
-      const count = stat.count;
-      
-      if (!statsMap[userId]) {
-        statsMap[userId] = {};
+    // Process each document and count occurrences per key
+    stats.forEach(stat => {
+      if (!statsMap[stat.userId]) {
+        statsMap[stat.userId] = {};
       }
       
-      statsMap[userId][key] = count;
+      // Count daily stats
+      if (stat.dateKey) {
+        statsMap[stat.userId][stat.dateKey] = (statsMap[stat.userId][stat.dateKey] || 0) + 1;
+      }
+      
+      // Count hourly stats
+      if (stat.hourKey) {
+        statsMap[stat.userId][stat.hourKey] = (statsMap[stat.userId][stat.hourKey] || 0) + 1;
+      }
+      
+      // Count pattern stats
+      if (stat.patternKey) {
+        statsMap[stat.userId][stat.patternKey] = (statsMap[stat.userId][stat.patternKey] || 0) + 1;
+      }
     });
     
-    console.log(`📊 Loaded daily stats for ${Object.keys(statsMap).length} users from MongoDB (aggregated)`);
+    console.log(`📊 Loaded daily stats for ${Object.keys(statsMap).length} users from MongoDB`);
+    
+    // Debug: Log stats structure for the current CRM
+    const crmKey = "24-09-2025_crm_dynamics_com";
+    if (statsMap[crmKey]) {
+      console.log(`🔍 Debug stats for ${crmKey}:`, statsMap[crmKey]);
+      
+      // Show what keys exist for debugging
+      const allKeys = Object.keys(statsMap[crmKey]);
+      const dateKeys = allKeys.filter(k => k.match(/^\d{4}-\d{2}-\d{2}$/));
+      const hourKeys = allKeys.filter(k => k.match(/^\d{4}-\d{2}-\d{2}-\d+$/));
+      const patternKeys = allKeys.filter(k => k.includes('-afternoonWork') || k.includes('-weekendAfternoon'));
+      
+      console.log(`📊 Key breakdown for ${crmKey}:`, {
+        dateKeys,
+        hourKeys, 
+        patternKeys,
+        totalKeys: allKeys.length
+      });
+    }
+    
     return statsMap;
   } catch (error) {
     console.error("❌ Error loading daily stats from MongoDB:", error?.message);

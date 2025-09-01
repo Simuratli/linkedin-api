@@ -213,8 +213,14 @@ const checkDailyLimit = async (userId, crmUrl) => {
     patternCount = stats[statsKey][pattern] || 0;
     console.log(`📊 Stats found for ${statsKey}:`, { todayCount, hourCount, patternCount });
     console.log(`📊 All stats for ${statsKey}:`, stats[statsKey]);
+    console.log(`🔍 Looking for specific keys:`, { 
+      today: `${today} = ${stats[statsKey][today] || 0}`,
+      hour: `${hour} = ${stats[statsKey][hour] || 0}`, 
+      pattern: `${pattern} = ${stats[statsKey][pattern] || 0}`
+    });
   } else {
     console.log(`⚠️ No stats found for key: ${statsKey}`);
+    console.log(`📊 Available stats keys:`, Object.keys(stats));
     
     // If using CRM key failed, try user-specific as fallback
     if (crmUrl && stats[userId]) {
