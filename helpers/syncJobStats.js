@@ -120,27 +120,12 @@ const synchronizeJobWithDailyStats = async (userId, job) => {
     job.dailyStats.processedToday = actualProfilesProcessed;
     job.dailyStats.startDate = job.dailyStats.startDate || today;
     
-    // Save the updated daily stats to MongoDB using updateDailyStats
-    const { updateDailyStats } = require('./db');
-    
-    // Update today's total count
-    for (let i = 0; i < actualProfilesProcessed; i++) {
-      await updateDailyStats(statsKey, today, hourKey, null);
-    }
-    
-    // Update pattern-specific counts
-    if (job.dailyStats && job.dailyStats.patternBreakdown) {
-      for (const [patternName, count] of Object.entries(job.dailyStats.patternBreakdown)) {
-        const patternKey = getPatternKey(patternName);
-        for (let i = 0; i < count; i++) {
-          await updateDailyStats(statsKey, null, null, patternKey);
-        }
-      }
-    }
+    // DON'T automatically update stats here - stats should only be updated when contacts are actually processed
+    // The daily stats should already be up to date from when contacts were processed
     
     console.log(`✅ Synchronization completed for ${statsKey}:`, {
-      today: dailyStats[statsKey][today],
-      hour: dailyStats[statsKey][hourKey],
+      jobProcessed: actualProfilesProcessed,
+      jobSuccess: successCount,
       patterns: job.dailyStats.patternBreakdown || {}
     });
     
