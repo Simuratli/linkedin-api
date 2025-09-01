@@ -1101,6 +1101,7 @@ app.post("/start-processing", async (req, res) => {
         lastProcessedAt: null,
         cancelToken: uuidv4(), // Initialize with a cancelToken for proper cancellation tracking
         errors: [],
+        crmUrl: crmUrl, // CRITICAL: Add crmUrl to job for proper stats key generation
         humanPatterns: {
           startPattern: currentPattern.name,
           startTime: new Date().toISOString(),
@@ -4068,6 +4069,7 @@ app.post("/override-cooldown/:userId", async (req, res) => {
         startTime: now.toISOString(),
         lastProcessedAt: now.toISOString(),
         errors: [],
+        crmUrl: userSession.crmUrl, // CRITICAL: Add crmUrl to job for proper stats key generation
         humanPatterns: {
           startPattern: null,
           startTime: now.toISOString(),
