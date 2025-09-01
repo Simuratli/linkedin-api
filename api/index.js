@@ -32,7 +32,6 @@ const {
   getCurrentHumanPattern,
   isDuringPause,
   HUMAN_PATTERNS,
-  requestQueue,
 } = require("../helpers/linkedin");
 const { createDataverse, getDataverse } = require("../helpers/dynamics");
 const { sleep, chunkArray, getRandomDelay } = require("../helpers/delay");
@@ -1991,29 +1990,24 @@ const processJobInBackground = async (jobId) => {
               job.successCount++;
               processedInSession++;
 
-              // INCREMENT PATTERN COUNT - This should match processedCount 1:1
-              requestQueue.incrementPatternCount();
-
               // Update job count
               job.processedCount = job.successCount + job.failureCount;
               
-              // Update daily stats ONLY for newly completed contacts - PREVENT DUPLICATES
+              // Update daily stats using CRM-based key if available - PREVENT DUPLICATES
               const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
               const today = new Date().toISOString().split("T")[0];
               const hour = `${today}-${new Date().getHours()}`;
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
-              // CRITICAL: Only increment stats if this contact was just marked as completed
-              // Check both: contact status is completed AND statsRecorded is false
-              if (contact.status === "completed" && !contact.statsRecorded) {
+              // CRITICAL: Only update stats if contact hasn't been recorded yet
+              // Check if this contact already has statsRecorded flag
+              if (!contact.statsRecorded) {
                 await updateDailyStats(statsKey, today, hour, pattern);
                 contact.statsRecorded = true; // Mark as recorded to prevent duplicates
-                console.log(`📊 Stats incremented for NEW completion: ${contact.contactId} (hourly count +1)`);
-              } else if (contact.statsRecorded) {
-                console.log(`⚠️ Contact ${contact.contactId} stats already recorded, skipping increment`);
+                console.log(`📊 Stats updated for NEW completion: ${contact.contactId}`);
               } else {
-                console.log(`⚠️ Contact ${contact.contactId} not in completed status, skipping stats`);
+                console.log(`⚠️ Contact ${contact.contactId} stats already recorded, skipping update`);
               }
               
               // Update pattern-specific stats in job object only
@@ -2066,9 +2060,21 @@ const processJobInBackground = async (jobId) => {
             // Update processed count even for failed contacts
             job.processedCount = job.successCount + job.failureCount;
             
-            // Failed contacts should NOT increment daily stats since they don't consume API calls
-            // We only count successful LinkedIn profile fetches toward limits
-            console.log(`📊 Failed contact ${contact.contactId} does not count toward daily/hourly limits`);
+            // Update daily stats using CRM-based key for failed contacts too - PREVENT DUPLICATES
+            const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
+            const today = new Date().toISOString().split("T")[0];
+            const hour = `${today}-${new Date().getHours()}`;
+            const currentPattern = getCurrentHumanPattern();
+            const pattern = `${today}-${currentPattern.name}`;
+            
+            // CRITICAL: Only update stats if contact wasn't already counted
+            if (!contact.statsRecorded) {
+              await updateDailyStats(statsKey, today, hour, pattern);
+              contact.statsRecorded = true; // Mark as recorded to prevent duplicates
+              console.log(`📊 Stats updated for failed contact ${contact.contactId}`);
+            } else {
+              console.log(`⚠️ Stats already recorded for failed contact ${contact.contactId}, skipping`);
+            }
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
               console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
@@ -2380,9 +2386,9 @@ app.get("/job-status/:jobId", async (req, res) => {
       await saveJobs({ ...jobs, [jobId]: job });
     }
 
-    // ENSURE synchronization happens BEFORE checking limits - REMOVED!
-    // This was causing duplicate stats updates on every job status request
-    // await synchronizeJobWithDailyStats(job.userId, job);
+    // ENSURE synchronization happens BEFORE checking limits
+    console.log(`🔄 Synchronizing job stats for user ${job.userId} before returning status`);
+    await synchronizeJobWithDailyStats(job.userId, job);
 
     // CHECK FOR COMPLETION - Fix for jobs that finished but status wasn't updated
     if (job.status === "processing") {
@@ -2433,34 +2439,8 @@ app.get("/job-status/:jobId", async (req, res) => {
     const userSessions = await loadUserSessions();
     const userSession = userSessions[job.userId];
     const jobCrmUrl = userSession?.crmUrl;
-    
-    // Use job's actual stats instead of potentially stale MongoDB stats
+    const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
     const currentPattern = getCurrentHumanPattern();
-    const jobProcessedToday = job.dailyStats?.processedToday || job.successCount || 0;
-    const jobPatternCount = job.dailyStats?.patternBreakdown?.[currentPattern.name] || job.successCount || 0;
-    
-    // Create accurate limit check based on job's actual stats
-    const limitCheck = {
-      canProcess: true, // We'll calculate this properly
-      dailyCount: jobProcessedToday,
-      hourlyCount: jobProcessedToday, // For now, use same as daily (can be refined)
-      patternCount: jobPatternCount,
-      dailyLimit: DAILY_PROFILE_LIMIT,
-      hourlyLimit: BURST_LIMIT,
-      patternLimit: currentPattern.maxProfiles || 35,
-      currentPattern: currentPattern.name,
-      inPause: isDuringPause(),
-      nextActivePattern: getNextActivePattern(),
-      estimatedResumeTime: getEstimatedResumeTime(),
-      crmUrl: jobCrmUrl ? normalizeCrmUrl(jobCrmUrl) : job.userId,
-      sharedLimits: jobCrmUrl ? `Shared with all users of ${normalizeCrmUrl(jobCrmUrl)}` : `User-specific limits`
-    };
-    
-    // Update canProcess based on actual limits
-    limitCheck.canProcess = !limitCheck.inPause &&
-                           limitCheck.dailyCount < limitCheck.dailyLimit &&
-                           limitCheck.hourlyCount < limitCheck.hourlyLimit &&
-                           limitCheck.patternCount < limitCheck.patternLimit;
     
     // Format dates properly
     const formatDate = (date) => {
@@ -4221,29 +4201,22 @@ app.post("/cancel-processing/:userId", async (req, res) => {
             contact.status = "completed";
             contact.completedAt = now;
             contact.error = null;
-            contact.processedAt = now;
-            contact.humanPattern = getCurrentHumanPattern().name;
             newlyCompletedCount++;
-            
-            // INCREMENT PATTERN COUNT for each manually completed contact
-            if (requestQueue && requestQueue.incrementPatternCount) {
-              requestQueue.incrementPatternCount();
-            }
           }
         });
       }
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
-      // Mark job as completed
+      // Mark job as complet
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
-      // FIXED: Do NOT set cooldownOverridden - allow normal cooldown period
-      // job.cooldownOverridden = true;  // REMOVED - this was preventing normal cooldown
-      // job.overriddenAt = now;         // REMOVED - this was preventing normal cooldown
+      // Mark cooldown as overridden to prevent unwanted restart
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
       jobs[job.jobId] = job;
       cancelledJobs.push({
         jobId: job.jobId,
@@ -4252,40 +4225,38 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, normal cooldown applied`);
+      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
     }
     await saveJobs(jobs);
 
-    // Clear current job ID from user session - allow normal cooldown
+    // Clear current job ID from user session and set cooldownOverridden
     const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
-      // FIXED: Do NOT override cooldown in user session - allow normal cooldown period
-      // userSessions[userId].cooldownOverridden = true;  // REMOVED
-      // userSessions[userId].overriddenAt = now;         // REMOVED
+      userSessions[userId].cooldownOverridden = true;
+      userSessions[userId].overriddenAt = now;
     }
     await saveUserSessions(userSessions);
 
-    // Set normal cooldown after completing jobs
+    // Cancelled jobları completed yaptıktan sonra cooldown kaydını oluştur
     try {
       const { checkAndSetUserCooldown } = require("../helpers/db");
       await checkAndSetUserCooldown(userId);
-      console.log(`✅ Normal cooldown set for user: ${userId}`);
+      console.log(`✅ checkAndSetUserCooldown çağrıldı: ${userId}`);
     } catch (cooldownError) {
-      console.error(`❌ checkAndSetUserCooldown error: ${cooldownError.message}`);
+      console.error(`❌ checkAndSetUserCooldown hatası: ${cooldownError.message}`);
     }
 
     res.status(200).json({
       success: true,
-      message: "Processing completed successfully. All remaining contacts marked as successful with normal 30-day cooldown.",
+      message: "Processing completed successfully. All remaining contacts marked as successful.",
       completedJobs: cancelledJobs,
       debugInfo: {
         jobsCompleted: cancelledJobs.length,
-        cooldownOverridden: false,  // FIXED: Normal cooldown applies
-        normalCooldownSet: true,
+        cooldownOverridden: true,
         userSessionUpdated: !!userSessions[userId],
-        nextStep: "30-day cooldown period is now active. Reload to see updated status."
+        nextStep: "Reload the extension to see updated status"
       }
     });
     
@@ -4635,48 +4606,6 @@ app.post("/restart-processing/:userId", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error restarting processing",
-      error: error.message
-    });
-  }
-});
-
-// Debug endpoint to clear daily stats (for fixing inflated counts)
-app.post("/debug/clear-stats", async (req, res) => {
-  try {
-    // Clear all daily stats from MongoDB
-    const result = await DailyStats.deleteMany({});
-    console.log(`🗑️ Cleared ${result.deletedCount} daily stats documents`);
-    
-    res.json({
-      success: true,
-      message: `Cleared ${result.deletedCount} daily stats documents`,
-      note: "Stats will start fresh from 0 for new processing"
-    });
-  } catch (error) {
-    console.error("❌ Error clearing daily stats:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Debug endpoint to view current stats
-app.get("/debug/stats", async (req, res) => {
-  try {
-    const stats = await loadDailyStats();
-    const totalDocs = await DailyStats.countDocuments();
-    
-    res.json({
-      success: true,
-      totalDocuments: totalDocs,
-      statsStructure: stats,
-      note: "This shows the current daily stats structure"
-    });
-  } catch (error) {
-    console.error("❌ Error loading daily stats:", error);
-    res.status(500).json({
-      success: false,
       error: error.message
     });
   }
