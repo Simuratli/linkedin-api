@@ -1076,8 +1076,14 @@ const renderErrors = () => {
         </div>
       );
     }
-    // Show completion message for completed jobs (normal)
+    // Show completion message for completed jobs (normal) with immediate override button if in cooldown
     if (jobStatus.status === "completed") {
+      // Check if cooldown is active and job was NOT manually overridden
+      const isInCooldown = jobStatus.completedAt && !jobStatus.cooldownOverridden;
+      const completedAt = jobStatus.completedAt ? new Date(jobStatus.completedAt) : null;
+      const daysSinceCompletion = isInCooldown && completedAt ? (Date.now() - completedAt.getTime()) / (1000 * 60 * 60 * 24) : 0;
+      const cooldownActive = isInCooldown && daysSinceCompletion < 30;
+
       return (
         <div className="job-controls-section">
           <div className="section-header">
@@ -1087,6 +1093,30 @@ const renderErrors = () => {
             🎉 Processing completed successfully! All {jobStatus.totalContacts} contacts processed.
             <small>You can start a new job when ready.</small>
           </div>
+          {cooldownActive && onOverrideCooldown && (
+            <div style={{ marginTop: 8 }}>
+              <div className="processing-stopped-message" style={{ color: '#d35400', marginBottom: 8 }}>
+                ⏳ Cooldown period active ({Math.ceil(30 - daysSinceCompletion)} days remaining).
+              </div>
+              <button
+                className="control-button override-button"
+                onClick={onOverrideCooldown}
+                style={{
+                  background: "linear-gradient(45deg, #3B82F6, #2563EB)",
+                  color: "white",
+                  border: "1px solid #2563EB",
+                  borderRadius: "6px",
+                  padding: "8px 12px",
+                  fontSize: "12px",
+                  fontWeight: "bold",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease"
+                }}
+              >
+                🔓 Override Cooldown
+              </button>
+            </div>
+          )}
         </div>
       );
     }

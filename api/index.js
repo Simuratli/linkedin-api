@@ -1201,6 +1201,109 @@ app.post("/restart-job/:jobId", async (req, res) => {
   }
 });
 
+// Force completion endpoint for stuck jobs
+app.post("/force-complete-job/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    console.log(`🔧 Force completing job ${jobId}...`);
+    
+    const jobs = await loadJobs();
+    const job = jobs[jobId];
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found"
+      });
+    }
+    
+    // Check if all contacts are actually completed
+    const completedContacts = job.contacts ? job.contacts.filter(c => c.status === "completed").length : 0;
+    const failedContacts = job.contacts ? job.contacts.filter(c => c.status === "failed").length : 0;
+    const totalProcessed = completedContacts + failedContacts;
+    
+    console.log(`📊 Job ${jobId} analysis:`, {
+      totalContacts: job.totalContacts,
+      completedContacts,
+      failedContacts,
+      totalProcessed,
+      processedCount: job.processedCount,
+      allContactsDone: totalProcessed >= job.totalContacts
+    });
+    
+    if (totalProcessed >= job.totalContacts || job.processedCount >= job.totalContacts) {
+      // Force complete the job
+      const now = new Date().toISOString();
+      
+      job.status = "completed";
+      job.completedAt = now;
+      job.currentBatchIndex = 0;
+      job.completionReason = "force_completed_admin";
+      job.lastProcessedAt = now;
+      
+      // Ensure cooldownOverridden is NOT set for natural completion
+      if (!job.cooldownOverridden) {
+        job.cooldownOverridden = false; // Explicitly set to false for natural completion
+      }
+      
+      console.log(`🔧 Force completing job ${jobId} with cooldownOverridden: ${job.cooldownOverridden}`);
+      
+      // Save to memory
+      jobs[jobId] = job;
+      await saveJobs(jobs);
+      
+      // Also update MongoDB directly
+      try {
+        await Job.findOneAndUpdate(
+          { jobId: jobId },
+          { 
+            status: "completed",
+            completedAt: new Date(),
+            currentBatchIndex: 0,
+            completionReason: "force_completed_admin",
+            lastProcessedAt: new Date(),
+            cooldownOverridden: job.cooldownOverridden || false
+          },
+          { new: true }
+        );
+        console.log(`✅ Job ${jobId} force completed in both memory and MongoDB`);
+      } catch (mongoError) {
+        console.error(`❌ Error updating MongoDB for job ${jobId}:`, mongoError);
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: "Job force completed successfully",
+        jobId,
+        status: "completed",
+        completedAt: now,
+        cooldownOverridden: job.cooldownOverridden || false,
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        completedContacts,
+        failedContacts
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Job cannot be completed - not all contacts are processed",
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        completedContacts,
+        failedContacts,
+        totalProcessed
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error force completing job:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error force completing job",
+      error: error.message
+    });
+  }
+});
+
 // Debug endpoint to get detailed job processing state
 app.get("/debug-job-state/:jobId", async (req, res) => {
   try {
