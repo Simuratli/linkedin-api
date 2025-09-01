@@ -1993,17 +1993,22 @@ const processJobInBackground = async (jobId) => {
               // Update job count
               job.processedCount = job.successCount + job.failureCount;
               
-              // Sync daily stats to match job's actual success count - PREVENT OVER-COUNTING
+              // Update daily stats ONLY for newly processed contacts - PREVENT DUPLICATES
               const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
               const today = new Date().toISOString().split("T")[0];
               const hour = `${today}-${new Date().getHours()}`;
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
-              // CRITICAL: Set stats to match job's actual success count
-              // This ensures hourlyCount = job.successCount, not inflated numbers
-              await setDailyStats(statsKey, today, hour, pattern, job.successCount);
-              console.log(`📊 Stats synchronized with job progress: ${job.successCount} successful contacts`);
+              // CRITICAL: Only increment stats if this contact was just completed
+              // Check if this contact already has statsRecorded flag
+              if (!contact.statsRecorded) {
+                await updateDailyStats(statsKey, today, hour, pattern);
+                contact.statsRecorded = true; // Mark as recorded to prevent duplicates
+                console.log(`📊 Stats incremented for NEW completion: ${contact.contactId} (hourly count +1)`);
+              } else {
+                console.log(`⚠️ Contact ${contact.contactId} stats already recorded, skipping increment`);
+              }
               
               // Update pattern-specific stats in job object only
               if (!job.dailyStats) {
@@ -2055,17 +2060,9 @@ const processJobInBackground = async (jobId) => {
             // Update processed count even for failed contacts
             job.processedCount = job.successCount + job.failureCount;
             
-            // For failed contacts, sync stats to actual success count (not total processed)
-            // Failed contacts shouldn't count toward limits since they didn't consume API calls
-            const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
-            const today = new Date().toISOString().split("T")[0];
-            const hour = `${today}-${new Date().getHours()}`;
-            const currentPattern = getCurrentHumanPattern();
-            const pattern = `${today}-${currentPattern.name}`;
-            
-            // Set stats to match only successful contacts (not failed ones)
-            await setDailyStats(statsKey, today, hour, pattern, job.successCount);
-            console.log(`📊 Stats synchronized after failure: ${job.successCount} successful contacts (failed contacts don't count toward limits)`);
+            // Failed contacts should NOT increment daily stats since they don't consume API calls
+            // We only count successful LinkedIn profile fetches toward limits
+            console.log(`📊 Failed contact ${contact.contactId} does not count toward daily/hourly limits`);
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
               console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);
