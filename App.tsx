@@ -84,6 +84,17 @@ interface JobStatus {
   pauseReason?: string;
   estimatedResumeTime?: string;
   dailyLimitInfo?: DailyLimitInfo;
+  hourlyLimitInfo?: {
+    hourlyCount: number;
+    hourlyLimit: number;
+    hourlyLimitReached: boolean;
+    waitInfo: {
+      needsWait: boolean;
+      waitMinutes: number;
+      waitUntil?: string;
+      waitMessage?: string;
+    };
+  };
   jobAge?: {
     days: number;
     hours: number;

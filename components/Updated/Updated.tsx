@@ -103,6 +103,17 @@ interface JobStatus {
   pauseReason?: string;
   estimatedResumeTime?: string;
   dailyLimitInfo?: DailyLimitInfo;
+  hourlyLimitInfo?: {
+    hourlyCount: number;
+    hourlyLimit: number;
+    hourlyLimitReached: boolean;
+    waitInfo: {
+      needsWait: boolean;
+      waitMinutes: number;
+      waitUntil?: string;
+      waitMessage?: string;
+    };
+  };
   errors?: JobError[];
   error?: string; // Job-level error
   lastError?: LastError; // Added this property
@@ -555,6 +566,7 @@ export function JobStatusPopover({
 
   const renderLimitsInfo = () => {
     const limits = dailyLimitInfo || jobStatus?.dailyLimitInfo;
+    const hourlyInfo = jobStatus?.hourlyLimitInfo;
     if (!limits) return null;
 
     return (
@@ -572,8 +584,31 @@ export function JobStatusPopover({
           <div className="limit-item">
             <span className="limit-label">Hourly:</span>
             <span className="limit-value">
-              {limits.hourlyCount}/{limits.hourlyLimit}
+              {hourlyInfo ? `${hourlyInfo.hourlyCount}/${hourlyInfo.hourlyLimit}` : `${limits.hourlyCount}/${limits.hourlyLimit}`}
+              {hourlyInfo?.hourlyLimitReached && (
+                <span className="limit-reached" style={{ 
+                  color: '#ef4444', 
+                  fontSize: '11px', 
+                  fontWeight: 'bold',
+                  marginLeft: '6px'
+                }}> (LIMIT REACHED)</span>
+              )}
             </span>
+            {hourlyInfo?.waitInfo?.needsWait && (
+              <div className="wait-time" style={{ 
+                marginTop: '4px', 
+                fontSize: '12px', 
+                color: '#f59e0b',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}>
+                <span className="wait-icon">⏳</span>
+                <span className="wait-message">
+                  Wait {hourlyInfo.waitInfo.waitMinutes} min until next hour
+                </span>
+              </div>
+            )}
           </div>
         </div>
         {limits.estimatedResumeTime && (

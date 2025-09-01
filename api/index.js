@@ -2409,13 +2409,42 @@ app.get("/job-status/:jobId", async (req, res) => {
     const completedAt = formatDate(job.completedAt) || null;
     const failedAt = formatDate(job.failedAt) || null;
 
+    // Calculate hourly wait time if limit is reached
+    const calculateHourlyWaitTime = () => {
+      if (!limitCheck || limitCheck.hourlyCount < limitCheck.hourlyLimit) {
+        return { needsWait: false, waitMinutes: 0, waitUntil: null };
+      }
+      
+      const now = new Date();
+      const nextHour = new Date(now);
+      nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0); // Next hour at :00 minutes
+      
+      const waitTimeMs = nextHour.getTime() - now.getTime();
+      const waitMinutes = Math.ceil(waitTimeMs / (1000 * 60));
+      
+      return {
+        needsWait: true,
+        waitMinutes: waitMinutes,
+        waitUntil: nextHour.toISOString(),
+        waitMessage: `${waitMinutes} minutes until next hour`
+      };
+    };
+    
+    const hourlyWaitInfo = calculateHourlyWaitTime();
+
     console.log(`✅ Returning job status for ${jobId}:`, {
       status: job.status,
       processed: job.processedCount,
       total: job.totalContacts,
       timestamps: { createdAt, lastProcessedAt, completedAt },
       stalled: isStalled,
-      timeSinceLastProcess: Math.round(timeSinceLastProcess)
+      timeSinceLastProcess: Math.round(timeSinceLastProcess),
+      hourlyLimits: limitCheck ? { 
+        current: limitCheck.hourlyCount, 
+        limit: limitCheck.hourlyLimit,
+        needsWait: hourlyWaitInfo.needsWait,
+        waitMinutes: hourlyWaitInfo.waitMinutes
+      } : null
     });
 
     res.status(200).json({
@@ -2439,6 +2468,13 @@ app.get("/job-status/:jobId", async (req, res) => {
         currentPattern: currentPattern.name,
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
+        // NEW: Hourly limit information
+        hourlyLimitInfo: limitCheck ? {
+          hourlyCount: limitCheck.hourlyCount,
+          hourlyLimit: limitCheck.hourlyLimit,
+          hourlyLimitReached: limitCheck.hourlyCount >= limitCheck.hourlyLimit,
+          waitInfo: hourlyWaitInfo
+        } : null,
         isStalled: isStalled,
         restartCount: job.restartCount || 0,
         timeSinceLastProcess: Math.round(timeSinceLastProcess)
@@ -2552,6 +2588,29 @@ app.get("/user-job/:userId", async (req, res) => {
     const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
     const currentPattern = getCurrentHumanPattern();
 
+    // Calculate hourly wait time if limit is reached
+    const calculateHourlyWaitTime = () => {
+      if (!limitCheck || limitCheck.hourlyCount < limitCheck.hourlyLimit) {
+        return { needsWait: false, waitMinutes: 0, waitUntil: null };
+      }
+      
+      const now = new Date();
+      const nextHour = new Date(now);
+      nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0); // Next hour at :00 minutes
+      
+      const waitTimeMs = nextHour.getTime() - now.getTime();
+      const waitMinutes = Math.ceil(waitTimeMs / (1000 * 60));
+      
+      return {
+        needsWait: true,
+        waitMinutes: waitMinutes,
+        waitUntil: nextHour.toISOString(),
+        waitMessage: `${waitMinutes} minutes until next hour`
+      };
+    };
+    
+    const hourlyWaitInfo = calculateHourlyWaitTime();
+
     // Format dates properly
     const formatDate = (date) => {
       if (!date) return null;
@@ -2607,6 +2666,13 @@ app.get("/user-job/:userId", async (req, res) => {
         currentPattern: currentPattern.name,
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
+        // NEW: Hourly limit information
+        hourlyLimitInfo: limitCheck ? {
+          hourlyCount: limitCheck.hourlyCount,
+          hourlyLimit: limitCheck.hourlyLimit,
+          hourlyLimitReached: limitCheck.hourlyCount >= limitCheck.hourlyLimit,
+          waitInfo: hourlyWaitInfo
+        } : null,
         // Enhanced job age tracking
         jobAge: {
           days: jobAgeInDays,
