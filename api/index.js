@@ -114,7 +114,6 @@ const normalizeCrmUrl = (crmUrl) => {
   }
 };
 
-
 const debugJobState = (job, context) => {
   console.log(`🔍 DEBUG ${context} for job ${job.jobId}:`);
   console.log(`  Status: ${job.status}`);
@@ -136,25 +135,6 @@ const debugJobState = (job, context) => {
       status: c.status
     })));
   }
-};
-
-// CRM-based key generation functions for shared limits
-const getTodayCrmKey = (crmUrl) => {
-  const normalizedCrm = normalizeCrmUrl(crmUrl);
-  return `${normalizedCrm}_${new Date().toISOString().split("T")[0]}`; // crm_YYYY-MM-DD
-};
-
-const getHourCrmKey = (crmUrl) => {
-  const normalizedCrm = normalizeCrmUrl(crmUrl);
-  const now = new Date();
-  return `${normalizedCrm}_${now.toISOString().split("T")[0]}-${now.getHours()}`; // crm_YYYY-MM-DD-HH
-};
-
-const getPatternCrmKey = (crmUrl) => {
-  const normalizedCrm = normalizeCrmUrl(crmUrl);
-  const now = new Date();
-  const currentPattern = getCurrentHumanPattern();
-  return `${normalizedCrm}_${new Date().toISOString().split("T")[0]}-${currentPattern.name}`; // crm_YYYY-MM-DD-patternName
 };
 
 // Ensure data directory exists (keep for backwards compatibility)
@@ -309,15 +289,16 @@ const getEstimatedResumeTime = () => {
 
 const updateCrmDailyStats = async (crmUrl) => {
   try {
-    const todayKey = getTodayCrmKey(crmUrl);
-    const hourKey = getHourCrmKey(crmUrl);
-    const patternKey = getPatternCrmKey(crmUrl);
     const normalizedCrm = normalizeCrmUrl(crmUrl);
+    const today = new Date().toISOString().split("T")[0];
+    const hour = `${today}-${new Date().getHours()}`;
+    const currentPattern = getCurrentHumanPattern();
+    const pattern = `${today}-${currentPattern.name}`;
     
-    // Use CRM-based keys instead of user-based keys
-    await updateDailyStats(normalizedCrm, todayKey, hourKey, patternKey);
+    // Use the normalized CRM as userId, and standard date keys
+    await updateDailyStats(normalizedCrm, today, hour, pattern);
     
-    console.log(`📊 Updated CRM daily stats for ${normalizedCrm}: day=${todayKey}, hour=${hourKey}, pattern=${patternKey}`);
+    console.log(`📊 Updated CRM daily stats for ${normalizedCrm}: day=${today}, hour=${hour}, pattern=${pattern}`);
   } catch (error) {
     console.error("❌ Error updating CRM daily stats:", error?.message);
   }
@@ -2018,15 +1999,14 @@ const processJobInBackground = async (jobId) => {
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
-              // CRITICAL: Only update stats if contact wasn't already completed before
-              // Check if this contact was already in completed status before this processing
-              const wasAlreadyCompleted = contact.status === "completed" && contact.processedAt;
-              
-              if (!wasAlreadyCompleted) {
+              // CRITICAL: Only update stats if contact hasn't been recorded yet
+              // Check if this contact already has statsRecorded flag
+              if (!contact.statsRecorded) {
                 await updateDailyStats(statsKey, today, hour, pattern);
+                contact.statsRecorded = true; // Mark as recorded to prevent duplicates
                 console.log(`📊 Stats updated for NEW completion: ${contact.contactId}`);
               } else {
-                console.log(`⚠️ Contact ${contact.contactId} was already completed, skipping stats update`);
+                console.log(`⚠️ Contact ${contact.contactId} stats already recorded, skipping update`);
               }
               
               // Update pattern-specific stats in job object only

@@ -424,25 +424,28 @@ const loadDailyStats = async () => {
     const stats = await DailyStats.find({});
     const statsMap = {};
     
-    // Process each document and count occurrences per key
+    // Process each document and use the count field instead of counting documents
     stats.forEach(stat => {
       if (!statsMap[stat.userId]) {
         statsMap[stat.userId] = {};
       }
       
-      // Count daily stats
+      // Use the count field from the document, not document count
+      const count = stat.count || 1;
+      
+      // Set daily stats
       if (stat.dateKey) {
-        statsMap[stat.userId][stat.dateKey] = (statsMap[stat.userId][stat.dateKey] || 0) + 1;
+        statsMap[stat.userId][stat.dateKey] = count;
       }
       
-      // Count hourly stats
+      // Set hourly stats
       if (stat.hourKey) {
-        statsMap[stat.userId][stat.hourKey] = (statsMap[stat.userId][stat.hourKey] || 0) + 1;
+        statsMap[stat.userId][stat.hourKey] = count;
       }
       
-      // Count pattern stats
+      // Set pattern stats
       if (stat.patternKey) {
-        statsMap[stat.userId][stat.patternKey] = (statsMap[stat.userId][stat.patternKey] || 0) + 1;
+        statsMap[stat.userId][stat.patternKey] = count;
       }
     });
     
