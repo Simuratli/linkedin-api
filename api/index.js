@@ -1241,10 +1241,10 @@ app.post("/force-complete-job/:jobId", async (req, res) => {
       job.completionReason = "force_completed_admin";
       job.lastProcessedAt = now;
       
-      // Ensure cooldownOverridden is NOT set for natural completion
-      if (!job.cooldownOverridden) {
-        job.cooldownOverridden = false; // Explicitly set to false for natural completion
-      }
+      // Ensure cooldownOverridden is set to true for natural completion
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
+      job.overrideReason = "force_completed_admin";
       
       console.log(`🔧 Force completing job ${jobId} with cooldownOverridden: ${job.cooldownOverridden}`);
       
@@ -1262,7 +1262,9 @@ app.post("/force-complete-job/:jobId", async (req, res) => {
             currentBatchIndex: 0,
             completionReason: "force_completed_admin",
             lastProcessedAt: new Date(),
-            cooldownOverridden: job.cooldownOverridden || false
+            cooldownOverridden: true,
+            overriddenAt: new Date(),
+            overrideReason: "force_completed_admin"
           },
           { new: true }
         );
@@ -2166,6 +2168,11 @@ const processJobInBackground = async (jobId) => {
       job.currentBatchIndex = 0;
       job.completionReason = allContactsProcessed ? "all_contacts_processed" : "background_processing_completed";
       job.lastProcessedAt = now;
+      
+      // FIX: Set cooldownOverridden = true for natural completion (background processing)
+      job.cooldownOverridden = true;
+      job.overriddenAt = now;
+      job.overrideReason = "natural_completion_background_processing";
 
       // Final pattern history entry
       if (!job.humanPatterns.patternHistory)
@@ -2176,7 +2183,7 @@ const processJobInBackground = async (jobId) => {
         profilesProcessed: processedInSession,
       });
 
-      console.log(`🎉 Job ${jobId} completed by background processing! Reason: ${job.completionReason}, Final pattern breakdown:`, job.dailyStats.patternBreakdown);
+      console.log(`🎉 Job ${jobId} completed by background processing! Reason: ${job.completionReason}, cooldownOverridden: ${job.cooldownOverridden}, Final pattern breakdown:`, job.dailyStats.patternBreakdown);
       
       // CRITICAL: Also update MongoDB to ensure consistency
       try {
@@ -2189,11 +2196,14 @@ const processJobInBackground = async (jobId) => {
             completionReason: job.completionReason,
             humanPatterns: job.humanPatterns,
             dailyStats: job.dailyStats,
-            lastProcessedAt: new Date()
+            lastProcessedAt: new Date(),
+            cooldownOverridden: true,
+            overriddenAt: new Date(),
+            overrideReason: "natural_completion_background_processing"
           },
           { new: true }
         );
-        console.log(`✅ Job ${jobId} completion also saved to MongoDB`);
+        console.log(`✅ Job ${jobId} completion also saved to MongoDB with cooldownOverridden: true`);
       } catch (mongoError) {
         console.error(`❌ Error updating MongoDB completion for job ${jobId}:`, mongoError);
       }
@@ -2334,10 +2344,17 @@ app.get("/job-status/:jobId", async (req, res) => {
       
       if (remainingPending === 0 && allContactsProcessed) {
         console.log(`🔧 Auto-completing job ${jobId} - all contacts are done but status was still processing`);
+        const now = new Date().toISOString();
+        
         job.status = "completed";
-        job.completedAt = new Date().toISOString();
+        job.completedAt = now;
         job.currentBatchIndex = 0;
         job.completionReason = "auto_completed_by_status_check";
+        
+        // FIX: Set cooldownOverridden = true for auto-completion as well
+        job.cooldownOverridden = true;
+        job.overriddenAt = now;
+        job.overrideReason = "auto_completion_status_check";
         
         // Save the updated job to both memory and MongoDB
         jobs[jobId] = job;
@@ -2351,11 +2368,14 @@ app.get("/job-status/:jobId", async (req, res) => {
               status: "completed",
               completedAt: new Date(),
               currentBatchIndex: 0,
-              completionReason: "auto_completed_by_status_check"
+              completionReason: "auto_completed_by_status_check",
+              cooldownOverridden: true,
+              overriddenAt: new Date(),
+              overrideReason: "auto_completion_status_check"
             },
             { new: true }
           );
-          console.log(`✅ Job ${jobId} auto-completed successfully in both memory and MongoDB`);
+          console.log(`✅ Job ${jobId} auto-completed successfully in both memory and MongoDB with cooldownOverridden: true`);
         } catch (mongoError) {
           console.error(`❌ Error updating MongoDB for job ${jobId}:`, mongoError);
         }
