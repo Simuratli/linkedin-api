@@ -508,8 +508,27 @@ const callDataverseWithRefresh = async (
   }
 };
 
-// CORS setup
-app.use(cors());
+// Enhanced CORS setup for production
+const corsOptions = {
+  origin: true, // Allow all origins
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
+    'Accept', 
+    'Origin',
+    'Access-Control-Allow-Origin',
+    'Access-Control-Allow-Headers',
+    'Access-Control-Allow-Methods'
+  ],
+  credentials: true,
+  maxAge: 86400 // 24 hours
+};
+
+app.use(cors(corsOptions));
+
+// Additional CORS headers for compatibility
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header(
@@ -518,11 +537,13 @@ app.use((req, res, next) => {
   );
   res.header(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, Origin"
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Access-Control-Allow-Methods"
   );
   res.header("Access-Control-Max-Age", "86400");
 
+  // Handle preflight requests
   if (req.method === "OPTIONS") {
+    console.log(`✅ CORS preflight handled for ${req.url}`);
     return res.status(200).end();
   } else {
     next();
@@ -534,6 +555,11 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Enhanced endpoint with human pattern awareness
 app.post("/start-processing", async (req, res) => {
+  // Ensure CORS headers are set
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  
   try {
     const {
       li_at,
@@ -547,6 +573,17 @@ app.post("/start-processing", async (req, res) => {
       userId,
       resume = false,
     } = req.body;
+
+    console.log("🔍 START-PROCESSING Request received:");
+    console.log("📄 Full request body:", JSON.stringify(req.body, null, 2));
+    console.log("🔑 Extracted params:", {
+      userId,
+      hasLiAt: !!li_at,
+      hasAccessToken: !!accessToken,
+      crmUrl,
+      hasJsessionid: !!jsessionid,
+      resume
+    });
 
     if (!userId || !jsessionid || !accessToken || !crmUrl || !li_at) {
       return res.status(400).json({
