@@ -312,19 +312,6 @@ class SimpleQueue {
       }
     }
 
-    if (this.requestCount >= 15) {
-      const waitUntilNextHour = 3600000 - (now - this.hourStart);
-      if (waitUntilNextHour > 0) {
-        console.log(
-          `⏳ Hourly rate limit reached. Waiting ${Math.round(waitUntilNextHour / 1000 / 60)} minutes...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, waitUntilNextHour));
-        this.requestCount = 0;
-        this.currentPatternCount = 0;
-        this.hourStart = Date.now();
-      }
-    }
-
     const patternDelay = getHumanPatternDelay();
     const timeSinceLastRequest = now - this.lastRequest;
 
