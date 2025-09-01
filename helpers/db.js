@@ -420,32 +420,44 @@ const getUserCooldownStatus = async (userId) => {
 // Load daily stats from MongoDB (converts to old format for compatibility)
 const loadDailyStats = async () => {
   try {
-    const stats = await DailyStats.find({});
+    // Use MongoDB aggregation to get proper counts
+    const pipeline = [
+      {
+        $group: {
+          _id: {
+            userId: "$userId",
+            key: {
+              $cond: [
+                { $ne: ["$dateKey", null] }, "$dateKey",
+                { $cond: [
+                  { $ne: ["$hourKey", null] }, "$hourKey",
+                  "$patternKey"
+                ]}
+              ]
+            }
+          },
+          count: { $sum: 1 }
+        }
+      }
+    ];
+    
+    const aggregatedStats = await DailyStats.aggregate(pipeline);
     const statsMap = {};
     
-    // Convert MongoDB format to old file format for compatibility
-    stats.forEach(stat => {
-      if (!statsMap[stat.userId]) {
-        statsMap[stat.userId] = {};
+    // Convert aggregated results to the expected format
+    aggregatedStats.forEach(stat => {
+      const userId = stat._id.userId;
+      const key = stat._id.key;
+      const count = stat.count;
+      
+      if (!statsMap[userId]) {
+        statsMap[userId] = {};
       }
       
-      // Add date-based stats
-      if (stat.dateKey) {
-        statsMap[stat.userId][stat.dateKey] = (statsMap[stat.userId][stat.dateKey] || 0) + stat.count;
-      }
-      
-      // Add hour-based stats  
-      if (stat.hourKey) {
-        statsMap[stat.userId][stat.hourKey] = (statsMap[stat.userId][stat.hourKey] || 0) + stat.count;
-      }
-      
-      // Add pattern-based stats
-      if (stat.patternKey) {
-        statsMap[stat.userId][stat.patternKey] = (statsMap[stat.userId][stat.patternKey] || 0) + stat.count;
-      }
+      statsMap[userId][key] = count;
     });
     
-    console.log(`📊 Loaded daily stats for ${Object.keys(statsMap).length} users from MongoDB`);
+    console.log(`📊 Loaded daily stats for ${Object.keys(statsMap).length} users from MongoDB (aggregated)`);
     return statsMap;
   } catch (error) {
     console.error("❌ Error loading daily stats from MongoDB:", error?.message);
