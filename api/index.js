@@ -2387,13 +2387,31 @@ app.get("/job-status/:jobId", async (req, res) => {
     console.log(`🔄 Synchronizing job stats for user ${job.userId} before returning status`);
     await synchronizeJobWithDailyStats(job.userId, job);
 
-    // AUTO-RESUME LOGIC: Check if paused job can be resumed due to hourly limit reset
-    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached") {
-      const limitCheck = await checkDailyLimit(job.userId, job.crmUrl);
+    // AUTO-RESUME LOGIC: Check if paused job can be resumed and reset all limits after 1 hour
+    if (job.status === "paused" && 
+        (job.pauseReason === "hourly_limit_reached" || 
+         job.pauseReason === "daily_limit_reached" || 
+         job.pauseReason === "pattern_limit_reached")) {
       
-      if (limitCheck && limitCheck.hourlyCount < limitCheck.hourlyLimit) {
-        console.log(`🔄 Auto-resuming job ${jobId} - hourly limit reset (${limitCheck.hourlyCount}/${limitCheck.hourlyLimit})`);
+      const pausedAt = job.pausedAt ? new Date(job.pausedAt) : null;
+      const now = new Date();
+      const hoursSincePause = pausedAt ? (now - pausedAt) / (1000 * 60 * 60) : 0;
+      
+      console.log(`🔍 Checking auto-resume for job ${jobId}:`, {
+        pauseReason: job.pauseReason,
+        pausedAt: job.pausedAt,
+        hoursSincePause: Math.round(hoursSincePause * 100) / 100
+      });
+      
+      if (hoursSincePause >= 1) {
+        console.log(`🔄 Auto-resuming job ${jobId} - 1+ hours passed, resetting ALL limits`);
         
+        // Reset ALL user stats to 0
+        const { clearUserDailyStats } = require('./helpers/db');
+        await clearUserDailyStats(job.userId);
+        console.log(`🧹 Cleared all daily stats for user ${job.userId}`);
+        
+        // Resume the job
         job.status = "processing";
         delete job.pauseReason;
         delete job.pausedAt;
@@ -2405,27 +2423,24 @@ app.get("/job-status/:jobId", async (req, res) => {
         const resumeEvent = {
           type: "resume",
           timestamp: new Date().toISOString(),
-          reason: "automatic_hourly_limits_reset",
+          reason: "automatic_limits_reset_1hour",
           icon: "🔄",
-          message: "Automatically resumed - hourly limits reset",
+          message: "Automatically resumed - all limits reset after 1 hour",
           details: {
-            limits: {
-              hourly: `${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
-              daily: `${limitCheck.dailyCount}/${limitCheck.dailyLimit}`,
-              pattern: `${limitCheck.patternCount}/${limitCheck.patternLimit}`
-            },
-            pattern: limitCheck.currentPattern
+            waitedHours: Math.round(hoursSincePause * 100) / 100,
+            resetLimits: "daily, hourly, pattern counts all reset to 0",
+            previousPauseReason: job.pauseReason
           }
         };
         
         if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
         job.pauseResumeHistory.push(resumeEvent);
-        console.log(`📝 Automatic hourly resume event logged:`, resumeEvent);
+        console.log(`📝 Automatic 1-hour resume event logged:`, resumeEvent);
         
         await saveJobs({ ...jobs, [jobId]: job });
         
         // Restart background processing
-        console.log(`🚀 Restarting background processing for auto-resumed job ${jobId}`);
+        console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} after limit reset`);
         setImmediate(() => processJobInBackground(jobId));
       }
     }
@@ -2687,11 +2702,31 @@ app.get("/user-job/:userId", async (req, res) => {
 
     const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
 
-    // AUTO-RESUME LOGIC: Check if paused job can be resumed due to hourly limit reset
-    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached") {
-      if (limitCheck && limitCheck.hourlyCount < limitCheck.hourlyLimit) {
-        console.log(`🔄 Auto-resuming job ${jobId} in user-job endpoint - hourly limit reset (${limitCheck.hourlyCount}/${limitCheck.hourlyLimit})`);
+    // AUTO-RESUME LOGIC: Check if paused job can be resumed and reset all limits after 1 hour
+    if (job.status === "paused" && 
+        (job.pauseReason === "hourly_limit_reached" || 
+         job.pauseReason === "daily_limit_reached" || 
+         job.pauseReason === "pattern_limit_reached")) {
+      
+      const pausedAt = job.pausedAt ? new Date(job.pausedAt) : null;
+      const now = new Date();
+      const hoursSincePause = pausedAt ? (now - pausedAt) / (1000 * 60 * 60) : 0;
+      
+      console.log(`🔍 Checking auto-resume for job ${jobId} in user-job endpoint:`, {
+        pauseReason: job.pauseReason,
+        pausedAt: job.pausedAt,
+        hoursSincePause: Math.round(hoursSincePause * 100) / 100
+      });
+      
+      if (hoursSincePause >= 1) {
+        console.log(`🔄 Auto-resuming job ${jobId} in user-job - 1+ hours passed, resetting ALL limits`);
         
+        // Reset ALL user stats to 0
+        const { clearUserDailyStats } = require('./helpers/db');
+        await clearUserDailyStats(userId);
+        console.log(`🧹 Cleared all daily stats for user ${userId} in user-job endpoint`);
+        
+        // Resume the job
         job.status = "processing";
         delete job.pauseReason;
         delete job.pausedAt;
@@ -2703,27 +2738,24 @@ app.get("/user-job/:userId", async (req, res) => {
         const resumeEvent = {
           type: "resume",
           timestamp: new Date().toISOString(),
-          reason: "automatic_hourly_limits_reset",
+          reason: "automatic_limits_reset_1hour",
           icon: "🔄",
-          message: "Automatically resumed - hourly limits reset",
+          message: "Automatically resumed - all limits reset after 1 hour",
           details: {
-            limits: {
-              hourly: `${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
-              daily: `${limitCheck.dailyCount}/${limitCheck.dailyLimit}`,
-              pattern: `${limitCheck.patternCount}/${limitCheck.patternLimit}`
-            },
-            pattern: limitCheck.currentPattern
+            waitedHours: Math.round(hoursSincePause * 100) / 100,
+            resetLimits: "daily, hourly, pattern counts all reset to 0",
+            previousPauseReason: job.pauseReason
           }
         };
         
         if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
         job.pauseResumeHistory.push(resumeEvent);
-        console.log(`📝 Automatic hourly resume event logged in user-job:`, resumeEvent);
+        console.log(`📝 Automatic 1-hour resume event logged in user-job:`, resumeEvent);
         
         await saveJobs({ ...jobs, [jobId]: job });
         
         // Restart background processing
-        console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} from user-job`);
+        console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} from user-job after limit reset`);
         setImmediate(() => processJobInBackground(jobId));
       }
     }
@@ -3232,6 +3264,8 @@ app.get("/job-poll/:userId", async (req, res) => {
       switch (resume.reason) {
         case "automatic_limits_reset":
           return `✅ ${duration} minutes break completed`;
+        case "automatic_limits_reset_1hour":
+          return `🔄 1+ hour break completed - all limits reset`;
         case "user_reconnected":
           return `🔄 ${duration} minutes break completed`;
         case "session_restored":
