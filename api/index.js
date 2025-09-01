@@ -2387,6 +2387,49 @@ app.get("/job-status/:jobId", async (req, res) => {
     console.log(`🔄 Synchronizing job stats for user ${job.userId} before returning status`);
     await synchronizeJobWithDailyStats(job.userId, job);
 
+    // AUTO-RESUME LOGIC: Check if paused job can be resumed due to hourly limit reset
+    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached") {
+      const limitCheck = await checkDailyLimit(job.userId, job.crmUrl);
+      
+      if (limitCheck && limitCheck.hourlyCount < limitCheck.hourlyLimit) {
+        console.log(`🔄 Auto-resuming job ${jobId} - hourly limit reset (${limitCheck.hourlyCount}/${limitCheck.hourlyLimit})`);
+        
+        job.status = "processing";
+        delete job.pauseReason;
+        delete job.pausedAt;
+        delete job.estimatedResumeTime;
+        job.resumedAt = new Date().toISOString();
+        job.lastProcessedAt = new Date().toISOString();
+        
+        // Add automatic resume event to history
+        const resumeEvent = {
+          type: "resume",
+          timestamp: new Date().toISOString(),
+          reason: "automatic_hourly_limits_reset",
+          icon: "🔄",
+          message: "Automatically resumed - hourly limits reset",
+          details: {
+            limits: {
+              hourly: `${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
+              daily: `${limitCheck.dailyCount}/${limitCheck.dailyLimit}`,
+              pattern: `${limitCheck.patternCount}/${limitCheck.patternLimit}`
+            },
+            pattern: limitCheck.currentPattern
+          }
+        };
+        
+        if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
+        job.pauseResumeHistory.push(resumeEvent);
+        console.log(`📝 Automatic hourly resume event logged:`, resumeEvent);
+        
+        await saveJobs({ ...jobs, [jobId]: job });
+        
+        // Restart background processing
+        console.log(`🚀 Restarting background processing for auto-resumed job ${jobId}`);
+        setImmediate(() => processJobInBackground(jobId));
+      }
+    }
+
     // CHECK FOR COMPLETION - Fix for jobs that finished but status wasn't updated
     if (job.status === "processing") {
       const remainingPending = job.contacts ? job.contacts.filter(c => c.status === "pending").length : 0;
@@ -2643,6 +2686,48 @@ app.get("/user-job/:userId", async (req, res) => {
     await synchronizeJobWithDailyStats(userId, job);
 
     const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
+
+    // AUTO-RESUME LOGIC: Check if paused job can be resumed due to hourly limit reset
+    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached") {
+      if (limitCheck && limitCheck.hourlyCount < limitCheck.hourlyLimit) {
+        console.log(`🔄 Auto-resuming job ${jobId} in user-job endpoint - hourly limit reset (${limitCheck.hourlyCount}/${limitCheck.hourlyLimit})`);
+        
+        job.status = "processing";
+        delete job.pauseReason;
+        delete job.pausedAt;
+        delete job.estimatedResumeTime;
+        job.resumedAt = new Date().toISOString();
+        job.lastProcessedAt = new Date().toISOString();
+        
+        // Add automatic resume event to history
+        const resumeEvent = {
+          type: "resume",
+          timestamp: new Date().toISOString(),
+          reason: "automatic_hourly_limits_reset",
+          icon: "🔄",
+          message: "Automatically resumed - hourly limits reset",
+          details: {
+            limits: {
+              hourly: `${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
+              daily: `${limitCheck.dailyCount}/${limitCheck.dailyLimit}`,
+              pattern: `${limitCheck.patternCount}/${limitCheck.patternLimit}`
+            },
+            pattern: limitCheck.currentPattern
+          }
+        };
+        
+        if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
+        job.pauseResumeHistory.push(resumeEvent);
+        console.log(`📝 Automatic hourly resume event logged in user-job:`, resumeEvent);
+        
+        await saveJobs({ ...jobs, [jobId]: job });
+        
+        // Restart background processing
+        console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} from user-job`);
+        setImmediate(() => processJobInBackground(jobId));
+      }
+    }
+
     const currentPattern = getCurrentHumanPattern();
 
     // Calculate hourly wait time if limit is reached
