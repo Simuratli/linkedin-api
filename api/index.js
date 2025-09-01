@@ -2493,13 +2493,15 @@ app.get("/job-status/:jobId", async (req, res) => {
         if (currentHour !== pausedHour || currentDate !== pausedDate) {
           console.log(`🔄 Auto-resuming job ${jobId} - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
           
-          // Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
+          // CRITICAL: Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
+          console.log(`📝 BEFORE RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
           job.status = "processing";
           delete job.pauseReason;
           delete job.pausedAt;
           delete job.estimatedResumeTime;
           job.resumedAt = new Date().toISOString();
           job.lastProcessedAt = new Date().toISOString();
+          console.log(`📝 AFTER RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
           
           // Add automatic resume event to history
           const resumeEvent = {
@@ -2512,7 +2514,8 @@ app.get("/job-status/:jobId", async (req, res) => {
               waitedMinutes: Math.round(hoursSincePause * 60),
               pausedHour: pausedHour,
               currentHour: currentHour,
-              resumeType: "natural_hourly_reset"
+              resumeType: "natural_hourly_reset",
+              statusChanged: "paused → processing"
             }
           };
           
@@ -2520,7 +2523,9 @@ app.get("/job-status/:jobId", async (req, res) => {
           job.pauseResumeHistory.push(resumeEvent);
           console.log(`📝 Automatic hourly resume event logged:`, resumeEvent);
           
+          // CRITICAL: Save the job with updated status IMMEDIATELY
           await saveJobs({ ...jobs, [jobId]: job });
+          console.log(`💾 Job ${jobId} saved with status: ${job.status}`);
           
           // Restart background processing
           console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} after hourly reset`);
@@ -2536,13 +2541,15 @@ app.get("/job-status/:jobId", async (req, res) => {
         await clearUserDailyStats(job.userId);
         console.log(`🧹 Cleared all daily stats for user ${job.userId}`);
         
-        // Resume the job
+        // CRITICAL: Resume the job with explicit status change
+        console.log(`📝 BEFORE FULL RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
         job.status = "processing";
         delete job.pauseReason;
         delete job.pausedAt;
         delete job.estimatedResumeTime;
         job.resumedAt = new Date().toISOString();
         job.lastProcessedAt = new Date().toISOString();
+        console.log(`📝 AFTER FULL RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
         
         // Add automatic resume event to history
         const resumeEvent = {
@@ -2554,7 +2561,8 @@ app.get("/job-status/:jobId", async (req, res) => {
           details: {
             waitedHours: Math.round(hoursSincePause * 100) / 100,
             resetLimits: "daily, hourly, pattern counts all reset to 0",
-            previousPauseReason: job.pauseReason
+            previousPauseReason: job.pauseReason,
+            statusChanged: "paused → processing"
           }
         };
         
@@ -2562,7 +2570,9 @@ app.get("/job-status/:jobId", async (req, res) => {
         job.pauseResumeHistory.push(resumeEvent);
         console.log(`📝 Automatic 1-hour resume event logged:`, resumeEvent);
         
+        // CRITICAL: Save the job with updated status IMMEDIATELY
         await saveJobs({ ...jobs, [jobId]: job });
+        console.log(`💾 Job ${jobId} saved with status: ${job.status} after full reset`);
         
         // Restart background processing
         console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} after limit reset`);
@@ -2620,6 +2630,19 @@ app.get("/job-status/:jobId", async (req, res) => {
     const userSession = userSessions[job.userId];
     const jobCrmUrl = userSession?.crmUrl;
     const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
+    
+    // SIMPLE HOURLY RESUME: If job is paused due to hourly limit but hourly count is now 0, resume it
+    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached" && limitCheck && limitCheck.hourlyCount === 0) {
+      console.log(`🔄 SIMPLE HOURLY RESUME: Job ${jobId} - hourly count is 0, setting status to processing`);
+      job.status = "processing";
+      delete job.pauseReason;
+      delete job.pausedAt;
+      job.resumedAt = new Date().toISOString();
+      await saveJobs({ ...jobs, [jobId]: job });
+      console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+      setImmediate(() => processJobInBackground(jobId));
+    }
+    
     const currentPattern = getCurrentHumanPattern();
     
     // Format dates properly
@@ -2838,6 +2861,18 @@ app.get("/user-job/:userId", async (req, res) => {
 
     const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
 
+    // SIMPLE HOURLY RESUME: If job is paused due to hourly limit but hourly count is now 0, resume it
+    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached" && limitCheck && limitCheck.hourlyCount === 0) {
+      console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${jobId} - hourly count is 0, setting status to processing`);
+      job.status = "processing";
+      delete job.pauseReason;
+      delete job.pausedAt;
+      job.resumedAt = new Date().toISOString();
+      await saveJobs({ ...jobs, [jobId]: job });
+      console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+      setImmediate(() => processJobInBackground(jobId));
+    }
+
     // AUTO-RESUME LOGIC: Check if paused job can be resumed
     if (job.status === "paused" && 
         (job.pauseReason === "hourly_limit_reached" || 
@@ -2865,13 +2900,15 @@ app.get("/user-job/:userId", async (req, res) => {
         if (currentHour !== pausedHour || currentDate !== pausedDate) {
           console.log(`🔄 Auto-resuming job ${jobId} in user-job - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
           
-          // Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
+          // CRITICAL: Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
+          console.log(`📝 USER-JOB BEFORE RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
           job.status = "processing";
           delete job.pauseReason;
           delete job.pausedAt;
           delete job.estimatedResumeTime;
           job.resumedAt = new Date().toISOString();
           job.lastProcessedAt = new Date().toISOString();
+          console.log(`📝 USER-JOB AFTER RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
           
           // Add automatic resume event to history
           const resumeEvent = {
@@ -2884,7 +2921,9 @@ app.get("/user-job/:userId", async (req, res) => {
               waitedMinutes: Math.round(hoursSincePause * 60),
               pausedHour: pausedHour,
               currentHour: currentHour,
-              resumeType: "natural_hourly_reset"
+              resumeType: "natural_hourly_reset",
+              statusChanged: "paused → processing",
+              endpoint: "user-job"
             }
           };
           
@@ -2892,7 +2931,9 @@ app.get("/user-job/:userId", async (req, res) => {
           job.pauseResumeHistory.push(resumeEvent);
           console.log(`📝 Automatic hourly resume event logged in user-job:`, resumeEvent);
           
+          // CRITICAL: Save the job with updated status IMMEDIATELY
           await saveJobs({ ...jobs, [jobId]: job });
+          console.log(`💾 USER-JOB: Job ${jobId} saved with status: ${job.status}`);
           
           // Restart background processing
           console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} from user-job after hourly reset`);
