@@ -1891,6 +1891,10 @@ const processJobInBackground = async (jobId) => {
               throw new Error("User session not found");
             }
 
+            // Store initial contact status to prevent duplicate stats updates
+            const initialContactStatus = contact.status;
+            console.log(`📊 [CONTACT ${contactIndex + 1}] Initial status: ${initialContactStatus}`);
+
             // Extract LinkedIn profile ID from URL
             const match = contact.linkedinUrl ? contact.linkedinUrl.match(/\/in\/([^\/]+)/) : null;
             const profileId = match ? match[1] : null;
@@ -2014,13 +2018,13 @@ const processJobInBackground = async (jobId) => {
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
-              // CRITICAL: Only update stats if contact wasn't already counted
-              if (!contact.statsRecorded) {
+              // CRITICAL: Only update stats if contact wasn't already completed before
+              // Check initial status that we stored at the beginning of processing
+              if (initialContactStatus !== "completed") {
                 await updateDailyStats(statsKey, today, hour, pattern);
-                contact.statsRecorded = true; // Mark as recorded to prevent duplicates
-                console.log(`📊 Stats updated for contact ${contact.contactId}`);
+                console.log(`📊 Stats updated for NEW completion: ${contact.contactId} (was ${initialContactStatus})`);
               } else {
-                console.log(`⚠️ Stats already recorded for contact ${contact.contactId}, skipping`);
+                console.log(`⚠️ Contact ${contact.contactId} was already completed initially, skipping stats update`);
               }
               
               // Update pattern-specific stats in job object only
@@ -2080,13 +2084,13 @@ const processJobInBackground = async (jobId) => {
             const currentPattern = getCurrentHumanPattern();
             const pattern = `${today}-${currentPattern.name}`;
             
-            // CRITICAL: Only update stats if contact wasn't already counted
-            if (!contact.statsRecorded) {
+            // CRITICAL: Only update stats if contact wasn't already processed before
+            // Check initial status that we stored at the beginning of processing
+            if (initialContactStatus !== "completed" && initialContactStatus !== "failed") {
               await updateDailyStats(statsKey, today, hour, pattern);
-              contact.statsRecorded = true; // Mark as recorded to prevent duplicates
-              console.log(`📊 Stats updated for failed contact ${contact.contactId}`);
+              console.log(`📊 Stats updated for NEW failure: ${contact.contactId} (was ${initialContactStatus})`);
             } else {
-              console.log(`⚠️ Stats already recorded for failed contact ${contact.contactId}, skipping`);
+              console.log(`⚠️ Contact ${contact.contactId} was already processed initially (${initialContactStatus}), skipping stats update`);
             }
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
