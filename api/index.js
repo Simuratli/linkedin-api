@@ -1991,6 +1991,12 @@ const processJobInBackground = async (jobId) => {
                 await updateDailyStats(statsKey, today, hour, pattern);
                 contact.statsRecorded = true; // Mark as recorded to prevent duplicates
                 console.log(`📊 Stats updated for NEW completion: ${contact.contactId}`);
+                
+                // IMMEDIATE SAVE to prevent race conditions
+                const immediateJobs = await loadJobs();
+                immediateJobs[jobId] = job;
+                await saveJobs(immediateJobs);
+                console.log(`💾 Immediately saved statsRecorded flag for ${contact.contactId}`);
               } else {
                 console.log(`⚠️ Contact ${contact.contactId} stats already recorded, skipping update`);
               }
@@ -2057,6 +2063,12 @@ const processJobInBackground = async (jobId) => {
               await updateDailyStats(statsKey, today, hour, pattern);
               contact.statsRecorded = true; // Mark as recorded to prevent duplicates
               console.log(`📊 Stats updated for failed contact ${contact.contactId}`);
+              
+              // IMMEDIATE SAVE to prevent race conditions
+              const immediateJobs = await loadJobs();
+              immediateJobs[jobId] = job;
+              await saveJobs(immediateJobs);
+              console.log(`💾 Immediately saved statsRecorded flag for failed ${contact.contactId}`);
             } else {
               console.log(`⚠️ Stats already recorded for failed contact ${contact.contactId}, skipping`);
             }
