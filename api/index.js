@@ -22,6 +22,7 @@ const {
   loadDailyStats,
   saveDailyStats,
   updateDailyStats,
+  setDailyStats,
   cleanOldDailyStats,
   getUserCooldownStatus
 } = require("../helpers/db");
@@ -1992,22 +1993,17 @@ const processJobInBackground = async (jobId) => {
               // Update job count
               job.processedCount = job.successCount + job.failureCount;
               
-              // Update daily stats using CRM-based key if available - PREVENT DUPLICATES
+              // Sync daily stats to match job's actual success count - PREVENT OVER-COUNTING
               const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
               const today = new Date().toISOString().split("T")[0];
               const hour = `${today}-${new Date().getHours()}`;
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
-              // CRITICAL: Only update stats if contact hasn't been recorded yet
-              // Check if this contact already has statsRecorded flag
-              if (!contact.statsRecorded) {
-                await updateDailyStats(statsKey, today, hour, pattern);
-                contact.statsRecorded = true; // Mark as recorded to prevent duplicates
-                console.log(`📊 Stats updated for NEW completion: ${contact.contactId}`);
-              } else {
-                console.log(`⚠️ Contact ${contact.contactId} stats already recorded, skipping update`);
-              }
+              // CRITICAL: Set stats to match job's actual success count
+              // This ensures hourlyCount = job.successCount, not inflated numbers
+              await setDailyStats(statsKey, today, hour, pattern, job.successCount);
+              console.log(`📊 Stats synchronized with job progress: ${job.successCount} successful contacts`);
               
               // Update pattern-specific stats in job object only
               if (!job.dailyStats) {
@@ -2059,21 +2055,17 @@ const processJobInBackground = async (jobId) => {
             // Update processed count even for failed contacts
             job.processedCount = job.successCount + job.failureCount;
             
-            // Update daily stats using CRM-based key for failed contacts too - PREVENT DUPLICATES
+            // For failed contacts, sync stats to actual success count (not total processed)
+            // Failed contacts shouldn't count toward limits since they didn't consume API calls
             const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
             const today = new Date().toISOString().split("T")[0];
             const hour = `${today}-${new Date().getHours()}`;
             const currentPattern = getCurrentHumanPattern();
             const pattern = `${today}-${currentPattern.name}`;
             
-            // CRITICAL: Only update stats if contact wasn't already counted
-            if (!contact.statsRecorded) {
-              await updateDailyStats(statsKey, today, hour, pattern);
-              contact.statsRecorded = true; // Mark as recorded to prevent duplicates
-              console.log(`📊 Stats updated for failed contact ${contact.contactId}`);
-            } else {
-              console.log(`⚠️ Stats already recorded for failed contact ${contact.contactId}, skipping`);
-            }
+            // Set stats to match only successful contacts (not failed ones)
+            await setDailyStats(statsKey, today, hour, pattern, job.successCount);
+            console.log(`📊 Stats synchronized after failure: ${job.successCount} successful contacts (failed contacts don't count toward limits)`);
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
               console.log(`⏸️ Pausing job ${jobId} - token refresh failed, waiting for frontend reconnection`);

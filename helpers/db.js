@@ -548,35 +548,97 @@ const updateDailyStats = async (userId, dateKey, hourKey, patternKey) => {
       }
     } else {
       // Fallback to file storage
-      console.log(`⚠️ MongoDB not connected, updating daily stats in file for user ${userId}`);
-      const { readJsonFile, writeJsonFile } = require('./fileLock');
-      const stats = await readJsonFile('./data/daily_rate_limits.json');
+      console.log('📄 MongoDB not available, using file storage for stats');
+      const filePath = path.join(process.cwd(), 'data', 'daily_rate_limits.json');
       
+      // Load existing stats
+      let stats = {};
+      try {
+        const data = await fs.readFile(filePath, 'utf8');
+        stats = JSON.parse(data);
+      } catch (error) {
+        // File doesn't exist or is corrupted, start fresh
+      }
+      
+      // Initialize user stats if not exists
       if (!stats[userId]) {
         stats[userId] = {};
       }
       
-      // Update counts in file format
-      if (dateKey) {
-        stats[userId][dateKey] = (stats[userId][dateKey] || 0) + 1;
-        console.log(`📊 Updated daily count for ${userId}: ${dateKey} = ${stats[userId][dateKey]}`);
-      }
+      // Update counts
+      if (dateKey) stats[userId][dateKey] = (stats[userId][dateKey] || 0) + 1;
+      if (hourKey) stats[userId][hourKey] = (stats[userId][hourKey] || 0) + 1;
+      if (patternKey) stats[userId][patternKey] = (stats[userId][patternKey] || 0) + 1;
       
-      if (hourKey) {
-        stats[userId][hourKey] = (stats[userId][hourKey] || 0) + 1;
-        console.log(`📊 Updated hourly count for ${userId}: ${hourKey} = ${stats[userId][hourKey]}`);
-      }
-      
-      if (patternKey) {
-        stats[userId][patternKey] = (stats[userId][patternKey] || 0) + 1;
-        console.log(`📊 Updated pattern count for ${userId}: ${patternKey} = ${stats[userId][patternKey]}`);
-      }
-      
-      await writeJsonFile('./data/daily_rate_limits.json', stats);
-      console.log(`✅ Daily stats saved to file`);
+      // Save back to file
+      await fs.writeFile(filePath, JSON.stringify(stats, null, 2));
+      console.log(`📊 Updated daily stats for user ${userId} in file`);
     }
   } catch (error) {
     console.error("❌ Error updating daily stats:", error?.message);
+  }
+};
+
+// New function: Set daily stats to specific counts (instead of incrementing)
+const setDailyStats = async (userId, dateKey, hourKey, patternKey, count) => {
+  try {
+    const now = new Date();
+    
+    // Try MongoDB first
+    if (mongoose.connection.readyState === 1) {
+      const operations = [];
+      
+      // Set daily count
+      if (dateKey) {
+        operations.push({
+          updateOne: {
+            filter: { userId, dateKey },
+            update: { 
+              $set: { count, updatedAt: now },
+              $setOnInsert: { userId, dateKey, createdAt: now }
+            },
+            upsert: true
+          }
+        });
+      }
+      
+      // Set hourly count
+      if (hourKey) {
+        operations.push({
+          updateOne: {
+            filter: { userId, hourKey },
+            update: { 
+              $set: { count, updatedAt: now },
+              $setOnInsert: { userId, hourKey, createdAt: now }
+            },
+            upsert: true
+          }
+        });
+      }
+      
+      // Set pattern count
+      if (patternKey) {
+        operations.push({
+          updateOne: {
+            filter: { userId, patternKey },
+            update: { 
+              $set: { count, updatedAt: now },
+              $setOnInsert: { userId, patternKey, createdAt: now }
+            },
+            upsert: true
+          }
+        });
+      }
+      
+      if (operations.length > 0) {
+        await DailyStats.bulkWrite(operations);
+        console.log(`📊 Set daily stats for user ${userId} to count ${count} in MongoDB`);
+      }
+    } else {
+      console.log('📄 MongoDB not available, stats not updated');
+    }
+  } catch (error) {
+    console.error("❌ Error setting daily stats:", error?.message);
   }
 };
 
@@ -754,6 +816,7 @@ module.exports = {
   loadDailyStats,
   saveDailyStats,
   updateDailyStats,
+  setDailyStats,
   cleanOldDailyStats,
   loadDirectSessions,
   saveDirectSessions,
