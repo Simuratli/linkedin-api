@@ -183,6 +183,8 @@ const getPatternKey = () => {
 
 // Enhanced limit checking with CRM-based sharing
 const checkDailyLimit = async (userId, crmUrl) => {
+  const stats = await loadDailyStats();
+  
   console.log(`🔍 checkDailyLimit called with userId: ${userId}, crmUrl: ${crmUrl}`);
   
   // Get current time-based keys
@@ -204,31 +206,22 @@ const checkDailyLimit = async (userId, crmUrl) => {
     console.log(`🔍 Using CRM-based key: ${statsKey}`);
   }
   
-  try {
-    // Load stats from MongoDB using DailyStats model
-    const { DailyStats } = require("../helpers/db");
+  // Load stats using the appropriate key
+  if (stats[statsKey]) {
+    todayCount = stats[statsKey][today] || 0;
+    hourCount = stats[statsKey][hour] || 0;
+    patternCount = stats[statsKey][pattern] || 0;
+    console.log(`📊 Stats found for ${statsKey}:`, { todayCount, hourCount, patternCount });
+    console.log(`📊 All stats for ${statsKey}:`, stats[statsKey]);
+  } else {
+    console.log(`⚠️ No stats found for key: ${statsKey}`);
     
-    // Get today's count
-    const todayStats = await DailyStats.findOne({ userId: statsKey, dateKey: today });
-    todayCount = todayStats ? todayStats.count : 0;
-    
-    // Get hour's count
-    const hourStats = await DailyStats.findOne({ userId: statsKey, hourKey: hour });
-    hourCount = hourStats ? hourStats.count : 0;
-    
-    // Get pattern's count
-    const patternStats = await DailyStats.findOne({ userId: statsKey, patternKey: pattern });
-    patternCount = patternStats ? patternStats.count : 0;
-    
-    console.log(`📊 Stats loaded from MongoDB for ${statsKey}:`, { todayCount, hourCount, patternCount });
-  } catch (error) {
-    console.error(`❌ Error loading stats from MongoDB:`, error);
-    // Fall back to memory-based stats if MongoDB fails
-    const stats = await loadDailyStats();
-    if (stats[statsKey]) {
-      todayCount = stats[statsKey][today] || 0;
-      hourCount = stats[statsKey][hour] || 0;
-      patternCount = stats[statsKey][pattern] || 0;
+    // If using CRM key failed, try user-specific as fallback
+    if (crmUrl && stats[userId]) {
+      todayCount = stats[userId][today] || 0;
+      hourCount = stats[userId][hour] || 0;
+      patternCount = stats[userId][pattern] || 0;
+      console.log(`📊 Fallback to user ${userId} stats:`, { todayCount, hourCount, patternCount });
     }
   }
   
@@ -2019,19 +2012,21 @@ const processJobInBackground = async (jobId) => {
               job.processedCount = job.successCount + job.failureCount;
               
               // Update daily stats using CRM-based key if available - PREVENT DUPLICATES
-              const statsKey = job.crmUrl ? normalizeCrmUrl(crmUrl) : userId;
+              const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
               const today = new Date().toISOString().split("T")[0];
               const hour = `${today}-${new Date().getHours()}`;
               const currentPattern = getCurrentHumanPattern();
               const pattern = `${today}-${currentPattern.name}`;
               
               // CRITICAL: Only update stats if contact wasn't already completed before
-              // Check initial status that we stored at the beginning of processing
-              if (initialContactStatus !== "completed") {
+              // Check if this contact was already in completed status before this processing
+              const wasAlreadyCompleted = contact.status === "completed" && contact.processedAt;
+              
+              if (!wasAlreadyCompleted) {
                 await updateDailyStats(statsKey, today, hour, pattern);
-                console.log(`📊 Stats updated for NEW completion: ${contact.contactId} (was ${initialContactStatus})`);
+                console.log(`📊 Stats updated for NEW completion: ${contact.contactId}`);
               } else {
-                console.log(`⚠️ Contact ${contact.contactId} was already completed initially, skipping stats update`);
+                console.log(`⚠️ Contact ${contact.contactId} was already completed, skipping stats update`);
               }
               
               // Update pattern-specific stats in job object only
@@ -2085,19 +2080,19 @@ const processJobInBackground = async (jobId) => {
             job.processedCount = job.successCount + job.failureCount;
             
             // Update daily stats using CRM-based key for failed contacts too - PREVENT DUPLICATES
-            const statsKey = job.crmUrl ? normalizeCrmUrl(crmUrl) : userId;
+            const statsKey = job.crmUrl ? normalizeCrmUrl(job.crmUrl) : job.userId;
             const today = new Date().toISOString().split("T")[0];
             const hour = `${today}-${new Date().getHours()}`;
             const currentPattern = getCurrentHumanPattern();
             const pattern = `${today}-${currentPattern.name}`;
             
-            // CRITICAL: Only update stats if contact wasn't already processed before
-            // Check initial status that we stored at the beginning of processing
-            if (initialContactStatus !== "completed" && initialContactStatus !== "failed") {
+            // CRITICAL: Only update stats if contact wasn't already counted
+            if (!contact.statsRecorded) {
               await updateDailyStats(statsKey, today, hour, pattern);
-              console.log(`📊 Stats updated for NEW failure: ${contact.contactId} (was ${initialContactStatus})`);
+              contact.statsRecorded = true; // Mark as recorded to prevent duplicates
+              console.log(`📊 Stats updated for failed contact ${contact.contactId}`);
             } else {
-              console.log(`⚠️ Contact ${contact.contactId} was already processed initially (${initialContactStatus}), skipping stats update`);
+              console.log(`⚠️ Stats already recorded for failed contact ${contact.contactId}, skipping`);
             }
 
             if (error.message.includes("TOKEN_REFRESH_FAILED")) {
@@ -2446,9 +2441,6 @@ app.get("/job-status/:jobId", async (req, res) => {
               completedAt: new Date(),
               currentBatchIndex: 0,
               completionReason: "auto_completed_by_status_check",
-              humanPatterns: job.humanPatterns,
-              dailyStats: job.dailyStats,
-              lastProcessedAt: new Date(),
               cooldownOverridden: true,
               overriddenAt: new Date(),
               overrideReason: "auto_completion_status_check"
@@ -2466,7 +2458,7 @@ app.get("/job-status/:jobId", async (req, res) => {
     const userSessions = await loadUserSessions();
     const userSession = userSessions[job.userId];
     const jobCrmUrl = userSession?.crmUrl;
-    const limitCheck = await checkDailyLimit(userId, jobCrmUrl);
+    const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
     const currentPattern = getCurrentHumanPattern();
     
     // Format dates properly
@@ -2529,6 +2521,205 @@ app.get("/job-status/:jobId", async (req, res) => {
 
     res.status(200).json({
       success: true,
+      job: {
+        jobId: job.jobId,
+        status: job.status,
+        totalContacts: job.totalContacts,
+        processedCount: job.processedCount,
+        successCount: job.successCount,
+        failureCount: job.failureCount,
+        createdAt: createdAt,
+        lastProcessedAt: lastProcessedAt,
+        completedAt: completedAt,
+        failedAt: failedAt,
+        errors: job.errors,
+        pauseReason: job.pauseReason,
+        estimatedResumeTime: job.estimatedResumeTime,
+        humanPatterns: job.humanPatterns,
+        dailyStats: job.dailyStats,
+        currentPattern: currentPattern.name,
+        currentPatternInfo: currentPattern,
+        dailyLimitInfo: limitCheck,
+        // NEW: Hourly limit information
+        hourlyLimitInfo: limitCheck ? {
+          hourlyCount: limitCheck.hourlyCount,
+          hourlyLimit: limitCheck.hourlyLimit,
+          hourlyLimitReached: limitCheck.hourlyCount >= limitCheck.hourlyLimit,
+          waitInfo: hourlyWaitInfo
+        } : null,
+        isStalled: isStalled,
+        restartCount: job.restartCount || 0,
+        timeSinceLastProcess: Math.round(timeSinceLastProcess)
+      },
+      simpleClientStats: null, // Frontend expects this property
+      simpleClientInitialized: true // Frontend expects this property
+    });
+  } catch (error) {
+    console.error("❌ Error getting job status:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// Enhanced user job endpoint with job age tracking and better memory
+app.get("/user-job/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    console.log(`🔍 Checking job for user ${userId}:`, 
+      userSession ? 
+      { hasSession: true, currentJobId: userSession.currentJobId, crmUrl: normalizeCrmUrl(userSession.crmUrl || '') } : 
+      { hasSession: false }
+    );
+
+    // If no direct session, check for CRM-shared jobs
+    let sharedJobId = null;
+    if (!userSession || !userSession.currentJobId) {
+      if (userSession?.crmUrl) {
+        const normalizedCrm = normalizeCrmUrl(userSession.crmUrl);
+        const jobs = await loadJobs();
+        
+        // Look for any job from same CRM
+        for (const job of Object.values(jobs)) {
+          const jobUserSession = userSessions[job.userId];
+          if (jobUserSession?.crmUrl && 
+              normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrm &&
+              job.status !== "completed" &&
+              job.contacts && 
+              job.processedCount < job.totalContacts) {
+            sharedJobId = job.jobId;
+            console.log(`📋 Found CRM-shared job for user ${userId}:`, {
+              jobId: job.jobId,
+              originalCreator: job.userId,
+              crmUrl: normalizedCrm
+            });
+            break;
+          }
+        }
+      }
+      
+      if (!sharedJobId) {
+        const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
+        console.log(`❌ No active job found for user ${userId}`);
+        return res.status(200).json({
+          success: false,
+          message: "No active job found for user",
+          canResume: false,
+          job: null,
+          currentPattern: getCurrentHumanPattern().name,
+          limitInfo: limitCheck,
+        });
+      }
+    }
+
+    const jobs = await loadJobs();
+    const jobId = sharedJobId || userSession.currentJobId;
+    const job = jobs[jobId];
+    
+    if (!job) {
+      console.error(`❌ Job ${jobId} not found for user ${userId}`);
+      return res.status(200).json({
+        success: false,
+        message: `Job with ID ${jobId} not found`,
+        canResume: false,
+        job: null,
+        currentPattern: getCurrentHumanPattern().name,
+      });
+    }
+
+    // If this is a shared job, make sure user is added to participants
+    if (sharedJobId && job.participants && !job.participants.includes(userId)) {
+      job.participants.push(userId);
+      await saveJobs({ ...jobs, [jobId]: job });
+      console.log(`✅ Added user ${userId} to shared job participants`);
+    }
+
+    // Calculate job age
+    const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+    const jobAgeInDays = Math.floor((Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60 * 24));
+    const jobAgeInHours = Math.floor((Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60));
+    
+    console.log(`📊 Job age check for ${userId}:`, {
+      jobId: job.jobId,
+      status: job.status,
+      ageInDays: jobAgeInDays,
+      ageInHours: jobAgeInHours,
+      processedCount: job.processedCount,
+      totalContacts: job.totalContacts
+    });
+
+    // Synchronize the job stats with daily stats
+    console.log(`🔄 Synchronizing job stats for user ${userId}`);
+    await synchronizeJobWithDailyStats(userId, job);
+
+    const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
+    const currentPattern = getCurrentHumanPattern();
+
+    // Calculate hourly wait time if limit is reached
+    const calculateHourlyWaitTime = () => {
+      if (!limitCheck || limitCheck.hourlyCount < limitCheck.hourlyLimit) {
+        return { needsWait: false, waitMinutes: 0, waitUntil: null };
+      }
+      
+      const now = new Date();
+      const nextHour = new Date(now);
+      nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0); // Next hour at :00 minutes
+      
+      const waitTimeMs = nextHour.getTime() - now.getTime();
+      const waitMinutes = Math.ceil(waitTimeMs / (1000 * 60));
+      
+      return {
+        needsWait: true,
+        waitMinutes: waitMinutes,
+        waitUntil: nextHour.toISOString(),
+        waitMessage: `${waitMinutes} minutes until next hour`
+      };
+    };
+    
+    const hourlyWaitInfo = calculateHourlyWaitTime();
+
+    // Format dates properly
+    const formatDate = (date) => {
+      if (!date) return null;
+      try {
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return null;
+        return d.toISOString();
+      } catch (e) {
+        console.error("Invalid date:", date, e);
+        return null;
+      }
+    };
+    
+    const createdAt = formatDate(job.createdAt) || formatDate(job.startTime) || null;
+    const lastProcessedAt = formatDate(job.lastProcessedAt) || formatDate(job.lastProcessedTime) || null;
+    const completedAt = formatDate(job.completedAt) || null;
+    const failedAt = formatDate(job.failedAt) || null;
+    
+    console.log("✅ Sending job data with age tracking:", { 
+      jobId: job.jobId,
+      ageInDays: jobAgeInDays,
+      processedCount: job.processedCount,
+      totalContacts: job.totalContacts,
+      createdAt, 
+      lastProcessedAt, 
+      completedAt 
+    });
+
+    res.status(200).json({
+      success: true,
+      canResume: job.status === "paused" || job.status === "processing",
+      authStatus: {
+        linkedinValid: !job.pauseReason?.includes("linkedin_session"),
+        dataverseValid: !job.pauseReason?.includes("dataverse_session"),
+        lastError: job.lastError || null,
+        needsReauth: job.pauseReason?.includes("_session_invalid") || false
+      },
       job: {
         jobId: job.jobId,
         status: job.status,
@@ -2826,7 +3017,12 @@ app.get("/job-poll/:userId", async (req, res) => {
             pauseDuration: job.pausedAt ? 
               Math.round((new Date() - new Date(job.pausedAt)) / 1000) : null,
             processedCount: job.processedCount,
-            totalContacts: job.totalContacts
+            totalContacts: job.totalContacts,
+            limitStatus: {
+              daily: `${limitCheck.dailyCount}/${limitCheck.dailyLimit}`,
+              hourly: `${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}`,
+              pattern: `${limitCheck.patternCount}/${limitCheck.patternLimit || '∞'}`
+            }
           };
 
           job.resumeHistory.push(resumeEvent);
@@ -3345,9 +3541,16 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
       .map(job => ({
         jobId: job.jobId,
         status: job.status,
-        createdAt: job.createdAt,
+        totalContacts: job.totalContacts,
         processedCount: job.processedCount,
-        totalContacts: job.totalContacts
+        successCount: job.successCount,
+        failureCount: job.failureCount,
+        createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
+        completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+        lastProcessedAt: job.lastProcessedAt ? new Date(job.lastProcessedAt).toISOString() : null,
+        cooldownOverridden: job.cooldownOverridden || false,
+        overriddenAt: job.overriddenAt ? new Date(job.overriddenAt).toISOString() : null,
+        overrideReason: job.overrideReason || null
       }))
       // Sort by creation date (newest first)
       .sort((a, b) => {
@@ -3582,13 +3785,13 @@ app.post("/override-cooldown/:userId", async (req, res) => {
         status: 'processing',  // Start processing immediately
         contacts: freshContacts,
         totalContacts: freshContacts.length,
-        processedCount: 0,
-        successCount: 0,
-        failureCount: 0,
-        status: "pending", // pending, processing, paused, completed, failed
+        processedCount: 0,       // RESET: Start from 0
+        successCount: 0,         // RESET: Start from 0
+        failureCount: 0,         // RESET: Start from 0
+        currentBatchIndex: 0,    // RESET: Start from beginning
         createdAt: now.toISOString(),
-        lastProcessedAt: null,
-        cancelToken: uuidv4(), // Initialize with a cancelToken for proper cancellation tracking
+        startTime: now.toISOString(),
+        lastProcessedAt: now.toISOString(),
         errors: [],
         humanPatterns: {
           startPattern: null,
@@ -3798,7 +4001,7 @@ app.post("/debug-restart-job/:jobId", async (req, res) => {
       };
       
       await saveUserSessions(userSessions);
-      console.log(`✅ Created placeholder user session for ${userId}`);
+      console.log(`✅ Created placeholder user session for ${job.userId}`);
     }
     
     // Reset job state
@@ -3868,7 +4071,6 @@ app.post("/admin/cleanup-user/:userId", async (req, res) => {
     
     if (resetAll) {
       // Clean up other data files that might reference this user
-     
       try {
         // Daily stats
         const dailyStats = await require('./helpers/fileLock').readJsonFile('./data/daily_stats.json');
@@ -3962,6 +4164,7 @@ app.get("/admin/user-data/:userId", async (req, res) => {
         totalContacts: job.totalContacts
       }))
     });
+    
   } catch (error) {
     console.error(`❌ Error getting user data: ${error.message}`);
     res.status(500).json({
@@ -4273,6 +4476,7 @@ app.post("/restart-processing/:userId", async (req, res) => {
 
       } catch (crmError) {
         console.error(`❌ Error fetching contacts from CRM: ${crmError.message}`);
+        console.log(`⚠️ CRM Error details:`, crmError);
         console.log(`⚠️ Falling back to resetting existing contacts to pending`);
 
         // Fallback: Reset existing contacts to pending
