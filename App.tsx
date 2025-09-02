@@ -1053,78 +1053,78 @@ const handleOverrideCooldown = async () => {
       // Check daily limits
       const limits = await checkDailyLimits(userId);
 
-      // **ALWAYS CHECK LIMITS** - regardless of last run time
-      if (limits && !limits.canProcess) {
-        console.log("🚫 Processing limits reached, checking if there's an existing job...");
-        
-        // First check if there's an existing job that should be shown
-        try {
-          const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
-          if (jobResponse.ok) {
-            const jobResult = await jobResponse.json();
+      // **FIRST: Always check for existing jobs regardless of limits**
+      console.log("� Step 2: Checking for existing jobs first...");
+      try {
+        const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+        if (jobResponse.ok) {
+          const jobResult = await jobResponse.json();
+          
+          // **PRIORITY 1: If there's an existing job, show it regardless of limits**
+          if (jobResult.success && jobResult.canResume && jobResult.job) {
+            console.log("✅ Found existing job - prioritizing job display over limits");
+            const jobObj = jobResult.job;
             
-            // If there's an existing job (paused, processing, etc.), show it
-            if (jobResult.success && jobResult.canResume && jobResult.job) {
-              console.log("✅ Found existing job despite limits - showing job status");
-              const jobObj = jobResult.job;
-              
-              setJobStatus(jobObj);
-              setDailyLimitInfo(jobObj.dailyLimitInfo);
-              setAuthError(null);
+            setJobStatus(jobObj);
+            setDailyLimitInfo(jobObj.dailyLimitInfo);
+            setAuthError(null);
 
-              let statusMessage = "";
-              const ageInfo = jobObj.jobAge?.days > 0 ? ` (${jobObj.jobAge.days}d old)` : '';
+            let statusMessage = "";
+            const ageInfo = jobObj.jobAge?.days > 0 ? ` (${jobObj.jobAge.days}d old)` : '';
 
-              if (jobObj.status === "processing") {
-                statusMessage = `🔄 Continuing job${ageInfo}... (${jobObj.processedCount}/${jobObj.totalContacts})`;
-              } else if (jobObj.status === "paused") {
-                // Use new pauseDisplayInfo if available
-                if (jobObj.pauseDisplayInfo) {
-                  const pauseInfo = jobObj.pauseDisplayInfo;
-                  const pausedTime = jobObj.pausedAt 
-                    ? ` (${new Date(jobObj.pausedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` 
-                    : '';
-                  
-                  if (pauseInfo.needsUserAction) {
-                    statusMessage = `⚠️ Job needs attention${ageInfo}${pausedTime} - ${pauseInfo.message}`;
-                  } else {
-                    statusMessage = `⏸️ Job paused${ageInfo}${pausedTime} - ${pauseInfo.message}`;
-                  }
-                } 
-                // Fallback to hourly limit logic for paused jobs
-                else if (jobObj.hourlyLimitInfo?.hourlyLimitReached) {
-                  const waitTime = jobObj.hourlyLimitInfo.waitInfo?.waitMinutes || 0;
-                  statusMessage = `⏸️ Job paused${ageInfo} - Hourly limit reached. Wait ${waitTime} minutes.`;
+            if (jobObj.status === "processing") {
+              statusMessage = `🔄 Continuing job${ageInfo}... (${jobObj.processedCount}/${jobObj.totalContacts})`;
+            } else if (jobObj.status === "paused") {
+              // Use new pauseDisplayInfo if available
+              if (jobObj.pauseDisplayInfo) {
+                const pauseInfo = jobObj.pauseDisplayInfo;
+                const pausedTime = jobObj.pausedAt 
+                  ? ` (${new Date(jobObj.pausedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` 
+                  : '';
+                
+                if (pauseInfo.needsUserAction) {
+                  statusMessage = `⚠️ Job needs attention${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+                } else {
+                  statusMessage = `⏸️ Job paused${ageInfo}${pausedTime} - ${pauseInfo.message}`;
                 }
-                else {
-                  statusMessage = `⏸️ Job paused${ageInfo}. Processed: ${jobObj.processedCount}/${jobObj.totalContacts}`;
-                }
-              } else {
-                statusMessage = `Found ${jobObj.status} job${ageInfo}. Progress: ${jobObj.processedCount}/${jobObj.totalContacts}`;
+              } 
+              // Fallback to hourly limit logic for paused jobs
+              else if (jobObj.hourlyLimitInfo?.hourlyLimitReached) {
+                const waitTime = jobObj.hourlyLimitInfo.waitInfo?.waitMinutes || 0;
+                statusMessage = `⏸️ Job paused${ageInfo} - Hourly limit reached. Wait ${waitTime} minutes.`;
               }
-
-              chrome.runtime.sendMessage({
-                type: "PROCESS_STATUS",
-                data: {
-                  status: jobObj.status,
-                  message: statusMessage,
-                  canResume: jobObj.status === "paused",
-                  jobData: jobObj,
-                  dailyLimitInfo: jobObj.dailyLimitInfo,
-                  humanPattern: jobResult.currentPatternInfo,
-                  jobAge: jobObj.jobAge,
-                },
-              });
-              
-              setIsCheckingJob(false);
-              return; // Exit early, don't show limits message
+              else {
+                statusMessage = `⏸️ Job paused${ageInfo}. Processed: ${jobObj.processedCount}/${jobObj.totalContacts}`;
+              }
+            } else {
+              statusMessage = `Found ${jobObj.status} job${ageInfo}. Progress: ${jobObj.processedCount}/${jobObj.totalContacts}`;
             }
+
+            chrome.runtime.sendMessage({
+              type: "PROCESS_STATUS",
+              data: {
+                status: jobObj.status,
+                message: statusMessage,
+                canResume: jobObj.status === "paused",
+                jobData: jobObj,
+                dailyLimitInfo: jobObj.dailyLimitInfo,
+                humanPattern: jobResult.currentPatternInfo,
+                jobAge: jobObj.jobAge,
+              },
+            });
+            
+            setIsCheckingJob(false);
+            return; // Exit early - existing job takes priority
           }
-        } catch (jobCheckError) {
-          console.error("Error checking for existing job:", jobCheckError);
         }
+      } catch (jobCheckError) {
+        console.error("Error checking for existing job:", jobCheckError);
+      }
+
+      // **PRIORITY 2: Only check limits if no existing job found**
+      if (limits && !limits.canProcess) {
+        console.log("🚫 No existing job found and processing limits reached");
         
-        // No existing job found, show limits message
         let message = "Processing limits reached: ";
 
         if (limits.inPause) {
@@ -1157,32 +1157,16 @@ const handleOverrideCooldown = async () => {
         return;
       }
 
+      // **PRIORITY 3: If no limits blocking and no existing job, show ready state**
       setIsCheckingJob(true);
       try {
-        console.log("🔍 Step 2: Fetching user job information...");
+        console.log("🔍 Step 3: No existing job found, checking for fresh start...");
         const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
         console.log("🔍 User job API response status:", response.status);
 
         if (response.ok) {
           const result = await response.json();
           console.log("📋 User job API result:", result);
-
-          // Defensive: always use result.job if present, else try to build from jobStatus string
-          let jobObj = null;
-          if (result.job && typeof result.job === 'object') {
-            jobObj = result.job;
-          } else if (result.jobStatus && typeof result.jobStatus === 'string') {
-            // If only a string status is returned, build a minimal job object
-            jobObj = {
-              jobId: result.jobId || 'unknown',
-              status: result.jobStatus,
-              totalContacts: result.totalContacts || 0,
-              processedCount: result.processedCount || 0,
-              successCount: result.successCount || 0,
-              failureCount: result.failureCount || 0,
-              createdAt: result.createdAt || new Date().toISOString(),
-            };
-          }
 
           // Handle cooldown case from user-job endpoint
           if (result.cooldownActive) {
@@ -1206,9 +1190,31 @@ const handleOverrideCooldown = async () => {
             return;
           }
 
-          // Additional check for cooldown even if not explicitly returned
+          // Double-check: if somehow we missed an active job above, catch it here
+          let jobObj = null;
+          if (result.job && typeof result.job === 'object') {
+            jobObj = result.job;
+          } else if (result.jobStatus && typeof result.jobStatus === 'string') {
+            jobObj = {
+              jobId: result.jobId || 'unknown',
+              status: result.jobStatus,
+              totalContacts: result.totalContacts || 0,
+              processedCount: result.processedCount || 0,
+              successCount: result.successCount || 0,
+              failureCount: result.failureCount || 0,
+              createdAt: result.createdAt || new Date().toISOString(),
+            };
+          }
+
+          if (jobObj && (jobObj.status === "processing" || jobObj.status === "paused")) {
+            console.log("⚠️ Found active job in second check - this should have been caught earlier!");
+            setJobStatus(jobObj);
+            setDailyLimitInfo(jobObj.dailyLimitInfo);
+            return;
+          }
+
+          // Handle completed job cooldown logic
           if (jobObj && jobObj.status === "completed") {
-            // **CHECK FOR COOLDOWN OVERRIDE** - If job was override, don't trigger cooldown
             if (jobObj.cooldownOverridden) {
               console.log("🔓 Job was cooldown overridden - ignoring completed job and staying ready");
               setJobStatus(null);
@@ -1255,7 +1261,7 @@ const handleOverrideCooldown = async () => {
             }
           }
 
-          // **NEW** Handle cancelled/failed job case
+          // Handle cancelled/failed job case
           if (jobObj && (jobObj.status === "cancelled" || jobObj.status === "failed")) {
             setJobStatus(jobObj);
             chrome.runtime.sendMessage({
@@ -1276,87 +1282,23 @@ const handleOverrideCooldown = async () => {
             return;
           }
 
-          if (result.success && result.canResume && jobObj) {
-            console.log("✅ Setting NEW job status with ID:", jobObj.jobId);
+          // **FINAL STATE: Ready to process**
+          console.log("✅ No active job found, setting ready state");
+          setJobStatus(null);
+          setAuthError(null);
+          const readyMessage = limits 
+            ? `Ready to process. Today: ${limits.dailyCount}/${limits.dailyLimit} | Current pattern: ${limits.currentPattern} (${limits.patternCount}/${limits.patternLimit || '∞'})`
+            : "Ready to process LinkedIn profiles";
 
-            setJobStatus(jobObj);
-            setDailyLimitInfo(jobObj.dailyLimitInfo);
-            setAuthError(null); // Clear auth error on successful job check
-
-            let statusMessage = "";
-            let canResume = true;
-            const ageInfo = jobObj.jobAge?.days > 0 ? ` (${jobObj.jobAge.days}d old)` : '';
-
-            if (jobObj.status === "processing") {
-              statusMessage = `🔄 Continuing job${ageInfo}... (${jobObj.processedCount}/${jobObj.totalContacts})`;
-              // Don't call startJobMonitoring here - let the useEffect handle it
-            } else if (jobObj.status === "paused") {
-              // Use new pauseDisplayInfo if available
-              if (jobObj.pauseDisplayInfo) {
-                const pauseInfo = jobObj.pauseDisplayInfo;
-                const pausedTime = jobObj.pausedAt 
-                  ? ` (${new Date(jobObj.pausedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` 
-                  : '';
-                
-                if (pauseInfo.needsUserAction) {
-                  statusMessage = `⚠️ Job needs attention${ageInfo}${pausedTime} - ${pauseInfo.message}`;
-                  canResume = false;
-                } else {
-                  statusMessage = `⏸️ Found paused job${ageInfo}${pausedTime} - ${pauseInfo.message}`;
-                  canResume = pauseInfo.isAutoResumable;
-                }
-              }
-              // Fallback to old logic if pauseDisplayInfo not available
-              else if (jobObj.pauseReason === "daily_limit_reached") {
-                statusMessage = `⏸️ Paused${ageInfo} - Daily limit reached. Will resume tomorrow`;
-                canResume = false;
-              } 
-              else if (jobObj.pauseReason === "pattern_limit_reached") {
-                statusMessage = `⏸️ Paused${ageInfo} - ${jobObj.dailyLimitInfo?.currentPattern} pattern limit reached`;
-              }
-              else if (jobObj.pauseReason === "pause_period") {
-                const resumeTime = jobObj.estimatedResumeTime 
-                  ? new Date(jobObj.estimatedResumeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : 'soon';
-                statusMessage = `⏸️ Paused${ageInfo} - Currently in ${jobObj.dailyLimitInfo?.currentPattern} period. Resuming ${resumeTime}`;
-              }
-              else {
-                statusMessage = `⏸️ Found paused job${ageInfo}. Processed: ${jobObj.processedCount}/${jobObj.totalContacts}`;
-              }
-            } else {
-              statusMessage = `Found ${jobObj.status} job${ageInfo}. Progress: ${jobObj.processedCount}/${jobObj.totalContacts}`;
-            }
-
-            chrome.runtime.sendMessage({
-              type: "PROCESS_STATUS",
-              data: {
-                status: jobObj.status === "processing" ? "continuing" : "can_resume",
-                message: statusMessage,
-                canResume,
-                jobData: jobObj,
-                dailyLimitInfo: jobObj.dailyLimitInfo,
-                humanPattern: result.currentPatternInfo,
-                jobAge: jobObj.jobAge,
-              },
-            });
-          } else {
-            console.log("❌ No active job found, clearing job status");
-            setJobStatus(null);
-            setAuthError(null); // Clear auth error when ready
-            const readyMessage = limits 
-              ? `Ready to process. Today: ${limits.dailyCount}/${limits.dailyLimit} | Current pattern: ${limits.currentPattern} (${limits.patternCount}/${limits.patternLimit || '∞'})`
-              : "Ready to process LinkedIn profiles";
-
-            chrome.runtime.sendMessage({
-              type: "PROCESS_STATUS",
-              data: {
-                status: "ready",
-                message: readyMessage,
-                dailyLimitInfo: limits,
-                humanPattern: patternInfo?.currentPattern?.info,
-              },
-            });
-          }
+          chrome.runtime.sendMessage({
+            type: "PROCESS_STATUS",
+            data: {
+              status: "ready",
+              message: readyMessage,
+              dailyLimitInfo: limits,
+              humanPattern: patternInfo?.currentPattern?.info,
+            },
+          });
         } else {
           setJobStatus(null);
         }

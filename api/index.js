@@ -5195,8 +5195,7 @@ app.post("/force-run/:userId", async (req, res) => {
     }
     
     // Reset ALL user stats to 0 using the helper function
-    const { clearUserDailyStats } = require('./helpers/db');
-    await clearUserDailyStats(userId);
+    await resetUserStats(userId);
     console.log(`🧹 Cleared all daily stats for user ${userId} via force run`);
     
     // Force resume the job by changing status to processing
