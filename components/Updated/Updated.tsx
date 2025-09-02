@@ -1172,8 +1172,32 @@ const renderErrors = () => {
             >
               ✅ Complete Processing
             </button>
+            {/* Show Force Run button for paused jobs */}
+            {jobStatus.status === "paused" && onForceRun && (
+              <button 
+                className="control-button force-run-button"
+                onClick={handleForceRun}
+                title="Reset all limits and start processing immediately"
+                style={{
+                  background: "linear-gradient(45deg, #EF4444, #DC2626)",
+                  color: "white",
+                  border: "1px solid #DC2626",
+                  borderRadius: "6px",
+                  padding: "8px 12px",
+                  fontSize: "12px",
+                  fontWeight: "bold",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease"
+                }}
+              >
+                🚀 Force to Run
+              </button>
+            )}
             <small style={{ color: '#6B7280', fontSize: '10px', marginTop: '4px', display: 'block' }}>
-              Complete the job by marking all remaining contacts as successful
+              {jobStatus.status === "paused" 
+                ? "Complete the job or force restart with reset limits" 
+                : "Complete the job by marking all remaining contacts as successful"
+              }
             </small>
           </div>
         </div>
@@ -1365,11 +1389,8 @@ const renderErrors = () => {
       );
     }
 
-    // Show Force Run button for ready (no job) or paused jobs
-    if (onForceRun && (
-      !normalizedJobStatus || // ready state (no job)
-      normalizedJobStatus.status === "paused" // paused state
-    )) {
+    // Show Force Run button ONLY for ready state (no job)
+    if (onForceRun && !normalizedJobStatus) {
       return (
         <div className="job-controls-section">
           <div className="section-header">

@@ -929,7 +929,19 @@ const handleOverrideCooldown = async () => {
         });
 
         // Refresh job status immediately
-        await fetchJobStatus();
+        const userId = getUserId();
+        try {
+          const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+          if (response.ok) {
+            const result = await response.json();
+            if (result.success && result.job) {
+              setJobStatus(result.job);
+              setDailyLimitInfo(result.job.dailyLimitInfo);
+            }
+          }
+        } catch (refreshError) {
+          console.error("Error refreshing job status:", refreshError);
+        }
         
         return true;
       } else {
@@ -1041,37 +1053,108 @@ const handleOverrideCooldown = async () => {
       // Check daily limits
       const limits = await checkDailyLimits(userId);
 
-      // If within one month and limits are exceeded, don't check for jobs
-      if (!hasOneMonthPassed(lastRun)) {
-        if (limits && !limits.canProcess) {
-          console.log("🚫 Skipping job check - limits reached");
-          let message = "Processing limits reached: ";
+      // **ALWAYS CHECK LIMITS** - regardless of last run time
+      if (limits && !limits.canProcess) {
+        console.log("🚫 Processing limits reached, checking if there's an existing job...");
+        
+        // First check if there's an existing job that should be shown
+        try {
+          const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+          if (jobResponse.ok) {
+            const jobResult = await jobResponse.json();
+            
+            // If there's an existing job (paused, processing, etc.), show it
+            if (jobResult.success && jobResult.canResume && jobResult.job) {
+              console.log("✅ Found existing job despite limits - showing job status");
+              const jobObj = jobResult.job;
+              
+              setJobStatus(jobObj);
+              setDailyLimitInfo(jobObj.dailyLimitInfo);
+              setAuthError(null);
 
-          if (limits.inPause) {
-            message += `Currently in ${limits.currentPattern} pause period. `;
-            if (limits.estimatedResumeTime) {
-              const resumeTime = new Date(limits.estimatedResumeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              message += `Will resume at ${resumeTime} during ${limits.nextActivePattern?.name}.`;
+              let statusMessage = "";
+              const ageInfo = jobObj.jobAge?.days > 0 ? ` (${jobObj.jobAge.days}d old)` : '';
+
+              if (jobObj.status === "processing") {
+                statusMessage = `🔄 Continuing job${ageInfo}... (${jobObj.processedCount}/${jobObj.totalContacts})`;
+              } else if (jobObj.status === "paused") {
+                // Use new pauseDisplayInfo if available
+                if (jobObj.pauseDisplayInfo) {
+                  const pauseInfo = jobObj.pauseDisplayInfo;
+                  const pausedTime = jobObj.pausedAt 
+                    ? ` (${new Date(jobObj.pausedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` 
+                    : '';
+                  
+                  if (pauseInfo.needsUserAction) {
+                    statusMessage = `⚠️ Job needs attention${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+                  } else {
+                    statusMessage = `⏸️ Job paused${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+                  }
+                } 
+                // Fallback to hourly limit logic for paused jobs
+                else if (jobObj.hourlyLimitInfo?.hourlyLimitReached) {
+                  const waitTime = jobObj.hourlyLimitInfo.waitInfo?.waitMinutes || 0;
+                  statusMessage = `⏸️ Job paused${ageInfo} - Hourly limit reached. Wait ${waitTime} minutes.`;
+                }
+                else {
+                  statusMessage = `⏸️ Job paused${ageInfo}. Processed: ${jobObj.processedCount}/${jobObj.totalContacts}`;
+                }
+              } else {
+                statusMessage = `Found ${jobObj.status} job${ageInfo}. Progress: ${jobObj.processedCount}/${jobObj.totalContacts}`;
+              }
+
+              chrome.runtime.sendMessage({
+                type: "PROCESS_STATUS",
+                data: {
+                  status: jobObj.status,
+                  message: statusMessage,
+                  canResume: jobObj.status === "paused",
+                  jobData: jobObj,
+                  dailyLimitInfo: jobObj.dailyLimitInfo,
+                  humanPattern: jobResult.currentPatternInfo,
+                  jobAge: jobObj.jobAge,
+                },
+              });
+              
+              setIsCheckingJob(false);
+              return; // Exit early, don't show limits message
             }
-          } else if (limits.patternCount >= limits.patternLimit) {
-            message += `Pattern limit reached (${limits.patternCount}/${limits.patternLimit} for ${limits.currentPattern}). `;
-          } else if (limits.dailyCount >= limits.dailyLimit) {
-            message += `Daily limit reached (${limits.dailyCount}/${limits.dailyLimit}). `;
-          } else if (limits.hourlyCount >= limits.hourlyLimit) {
-            message += `Hourly limit reached (${limits.hourlyCount}/${limits.hourlyLimit}). `;
           }
-
-          chrome.runtime.sendMessage({
-            type: "PROCESS_STATUS",
-            data: {
-              status: "limit_reached",
-              message,
-              dailyLimitInfo: limits,
-              humanPattern: patternInfo?.currentPattern?.info,
-            },
-          });
-          return;
+        } catch (jobCheckError) {
+          console.error("Error checking for existing job:", jobCheckError);
         }
+        
+        // No existing job found, show limits message
+        let message = "Processing limits reached: ";
+
+        if (limits.inPause) {
+          message += `Currently in ${limits.currentPattern} pause period. `;
+          if (limits.estimatedResumeTime) {
+            const resumeTime = new Date(limits.estimatedResumeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            message += `Will resume at ${resumeTime} during ${limits.nextActivePattern?.name}.`;
+          }
+        } else if (limits.hourlyCount >= limits.hourlyLimit) {
+          message += `Hourly limit reached (${limits.hourlyCount}/${limits.hourlyLimit}). `;
+          // Add wait time info if available
+          const waitMinutes = Math.ceil((new Date().getMinutes() === 0 ? 0 : 60 - new Date().getMinutes()));
+          message += `Wait ${waitMinutes} minutes for next hour.`;
+        } else if (limits.patternCount >= limits.patternLimit) {
+          message += `Pattern limit reached (${limits.patternCount}/${limits.patternLimit} for ${limits.currentPattern}). `;
+        } else if (limits.dailyCount >= limits.dailyLimit) {
+          message += `Daily limit reached (${limits.dailyCount}/${limits.dailyLimit}). `;
+        }
+
+        chrome.runtime.sendMessage({
+          type: "PROCESS_STATUS",
+          data: {
+            status: "limit_reached",
+            message,
+            dailyLimitInfo: limits,
+            humanPattern: patternInfo?.currentPattern?.info,
+          },
+        });
+        setIsCheckingJob(false);
+        return;
       }
 
       setIsCheckingJob(true);
