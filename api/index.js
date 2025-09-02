@@ -3908,9 +3908,10 @@ app.get("/health", async (req, res) => {
 app.get("/user-cooldown/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    // Aktif iş var mı kontrol et
-    const activeJob = await Job.findOne({ userId, status: { $in: ["processing", "pending"] } });
+    // Aktif iş var mı kontrol et (paused jobs da dahil!)
+    const activeJob = await Job.findOne({ userId, status: { $in: ["processing", "pending", "paused"] } });
     if (activeJob) {
+      console.log(`🔍 Active job found for ${userId}: ${activeJob.jobId} (status: ${activeJob.status})`);
       return res.status(200).json({
         success: true,
         cooldownStatus: {
