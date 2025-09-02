@@ -1056,7 +1056,13 @@ const handleOverrideCooldown = async () => {
       // **FIRST: Always check for existing jobs regardless of limits**
       console.log("� Step 2: Checking for existing jobs first...");
       try {
-        const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+        const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`, {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
         if (jobResponse.ok) {
           const jobResult = await jobResponse.json();
           
@@ -1161,7 +1167,13 @@ const handleOverrideCooldown = async () => {
       setIsCheckingJob(true);
       try {
         console.log("🔍 Step 3: No existing job found, checking for fresh start...");
-        const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+        const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`, {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
         console.log("🔍 User job API response status:", response.status);
 
         if (response.ok) {

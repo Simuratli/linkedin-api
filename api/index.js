@@ -498,6 +498,17 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+// **PREVENT 304 CACHING** - Global no-cache middleware for all API responses
+app.use((req, res, next) => {
+  // Disable all caching for API endpoints
+  res.set({
+    'Cache-Control': 'no-cache, no-store, must-revalidate, private',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  });
+  next();
+});
+
 // Additional CORS headers for compatibility
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -3238,6 +3249,14 @@ app.get("/user-job/:userId", async (req, res) => {
     });
     
     console.log("🔍 API Response for /user-job:", JSON.stringify(responseObject, null, 2));
+
+    // **PREVENT 304 CACHING** - Add no-cache headers to force fresh response
+    res.set({
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache', 
+      'Expires': '0',
+      'ETag': `"${Date.now()}-${Math.random()}"` // Unique ETag to prevent 304
+    });
 
     res.status(200).json(responseObject);
   } catch (error) {
