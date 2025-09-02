@@ -104,7 +104,7 @@ const PORT = process.env.PORT || 3000;
 
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
-const BURST_LIMIT = 30; // Max profiles in one hour (fallback)
+const BURST_LIMIT = 11; // Max profiles in one hour (TEST: reduced from 30 to 11)
 const HOUR_IN_MS = 60 * 60 * 1000;
 
 // CRM URL normalization for shared processing
@@ -2532,9 +2532,9 @@ app.get("/job-status/:jobId", async (req, res) => {
           setImmediate(() => processJobInBackground(jobId));
         }
       }
-      // FULL RESET AUTO-RESUME: After 1 hour, reset ALL limits (for daily/pattern limits or as fallback)
-      else if (hoursSincePause >= 1) {
-        console.log(`🔄 Auto-resuming job ${jobId} - 1+ hours passed, resetting ALL limits`);
+      // FULL RESET AUTO-RESUME: After 1 MINUTE (test mode), reset ALL limits (for daily/pattern limits or as fallback)
+      else if (hoursSincePause >= (1/60)) { // TEST: 1 minute instead of 1 hour
+        console.log(`🔄 Auto-resuming job ${jobId} - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
         
         // Reset ALL user stats to 0
         const { clearUserDailyStats } = require('./helpers/db');
@@ -2986,9 +2986,9 @@ app.get("/user-job/:userId", async (req, res) => {
           setImmediate(() => processJobInBackground(jobId));
         }
       }
-      // FULL RESET AUTO-RESUME: After 1 hour, reset ALL limits (for daily/pattern limits or as fallback)
-      else if (hoursSincePause >= 1) {
-        console.log(`🔄 Auto-resuming job ${jobId} in user-job - 1+ hours passed, resetting ALL limits`);
+      // FULL RESET AUTO-RESUME: After 1 MINUTE (test mode), reset ALL limits (for daily/pattern limits or as fallback)
+      else if (hoursSincePause >= (1/60)) { // TEST: 1 minute instead of 1 hour
+        console.log(`🔄 Auto-resuming job ${jobId} in user-job - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
         
         // Reset ALL user stats to 0
         const { clearUserDailyStats } = require('./helpers/db');
