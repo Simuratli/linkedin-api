@@ -2631,39 +2631,36 @@ app.get("/job-status/:jobId", async (req, res) => {
     const jobCrmUrl = userSession?.crmUrl;
     const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
     
-    // SIMPLE HOURLY RESUME: If job is paused due to hourly limit but hourly count is now 0, resume it
-    if (job.status === "paused" && limitCheck && limitCheck.hourlyCount === 0) {
-      // Check if it was paused due to hourly limits OR if pauseReason is missing but limits suggest hourly issue
-      const wasHourlyPaused = job.pauseReason === "hourly_limit_reached" || 
-                             (!job.pauseReason && limitCheck.canProcess);
+    // SIMPLE HOURLY RESUME: Only resume if explicitly paused due to hourly limit and hourly count reset
+    if (job.status === "paused" && 
+        job.pauseReason === "hourly_limit_reached" && 
+        limitCheck && 
+        limitCheck.hourlyCount === 0 && 
+        limitCheck.canProcess) {
       
       console.log(`🔍 JOB-STATUS PAUSE DEBUG for job ${jobId}:`, {
         status: job.status,
-        pauseReason: job.pauseReason || 'MISSING',
+        pauseReason: job.pauseReason,
         hourlyCount: limitCheck.hourlyCount,
         canProcess: limitCheck.canProcess,
         processedCount: job.processedCount,
         totalContacts: job.totalContacts,
-        patternCountFromAPI: limitCheck.patternCount,
-        wasHourlyPaused
+        patternCountFromAPI: limitCheck.patternCount
       });
       
-      // ALWAYS RESUME if paused and hourly count is 0 (regardless of pauseReason)
-      if (limitCheck.canProcess || !job.pauseReason) {
-        console.log(`🔄 SIMPLE HOURLY RESUME: Job ${jobId} - hourly count is 0, setting status to processing`);
-        console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}, pauseReason=${job.pauseReason || 'MISSING'}`);
-        
-        job.status = "processing";
-        delete job.pauseReason;
-        delete job.pausedAt;
-        job.resumedAt = new Date().toISOString();
-        await saveJobs({ ...jobs, [jobId]: job });
-        console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
-        setImmediate(() => processJobInBackground(jobId));
-      } else {
-        console.log(`⏸️ Job ${jobId} paused but NOT resuming. Reason: ${job.pauseReason || 'MISSING'}, canProcess: ${limitCheck.canProcess}`);
-        console.log(`📊 Limits: daily=${limitCheck.dailyCount}/${limitCheck.dailyLimit}, hourly=${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}, pattern=${limitCheck.patternCount}/${limitCheck.patternLimit}`);
-      }
+      console.log(`🔄 SIMPLE HOURLY RESUME: Job ${jobId} - hourly limit reset, resuming processing`);
+      console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}`);
+      
+      job.status = "processing";
+      delete job.pauseReason;
+      delete job.pausedAt;
+      job.resumedAt = new Date().toISOString();
+      await saveJobs({ ...jobs, [jobId]: job });
+      console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+      setImmediate(() => processJobInBackground(jobId));
+    } else if (job.status === "paused") {
+      console.log(`⏸️ Job ${jobId} remains paused. Reason: ${job.pauseReason || 'MISSING'}, hourlyCount: ${limitCheck?.hourlyCount}, canProcess: ${limitCheck?.canProcess}`);
+      console.log(`📊 Limits: daily=${limitCheck?.dailyCount}/${limitCheck?.dailyLimit}, hourly=${limitCheck?.hourlyCount}/${limitCheck?.hourlyLimit}, pattern=${limitCheck?.patternCount}/${limitCheck?.patternLimit}`);
     }
     
     const currentPattern = getCurrentHumanPattern();
@@ -2726,6 +2723,34 @@ app.get("/job-status/:jobId", async (req, res) => {
       } : null
     });
 
+    // Function to get user-friendly pause messages
+    const getPauseDisplayInfo = (pauseReason, limitCheck) => {
+      if (!pauseReason) return null;
+      
+      const pauseMessages = {
+        'hourly_limit_reached': `Saatlik limit aşıldı (${limitCheck?.hourlyCount || 0}/${limitCheck?.hourlyLimit || 11}). Yeni saatte otomatik devam edecek.`,
+        'daily_limit_reached': `Günlük limit aşıldı (${limitCheck?.dailyCount || 0}/${limitCheck?.dailyLimit || 180}). Yarın otomatik devam edecek.`,
+        'pattern_limit_reached': `Pattern limiti aşıldı (${limitCheck?.currentPattern || 'unknown'}). Sonraki aktif dönemde devam edecek.`,
+        'pause_period': `Dinlenme zamanı (${limitCheck?.currentPattern || 'unknown'} pattern). Aktif dönemde otomatik devam edecek.`,
+        'limit_reached': 'Genel limit aşıldı. Otomatik olarak devam edecek.',
+        'user_session_missing': 'Kullanıcı oturumu eksik. Lütfen extension üzerinden tekrar bağlanın.',
+        'linkedin_session_invalid': 'LinkedIn oturumu geçersiz. Lütfen LinkedIn\'e tekrar giriş yapın.',
+        'dataverse_session_invalid': 'Dataverse oturumu geçersiz. Lütfen token\'ı yenileyin.',
+        'token_refresh_failed': 'Token yenileme başarısız. Lütfen tekrar yetkilendirin.',
+        'session_not_found': 'Oturum bulunamadı. Lütfen extension üzerinden tekrar bağlanın.',
+        'session_check_failed': 'Oturum kontrolü başarısız. Sistem hatası oluştu.'
+      };
+      
+      return {
+        code: pauseReason,
+        message: pauseMessages[pauseReason] || `Bilinmeyen sebep: ${pauseReason}`,
+        isAutoResumable: ['hourly_limit_reached', 'daily_limit_reached', 'pattern_limit_reached', 'pause_period', 'limit_reached'].includes(pauseReason),
+        needsUserAction: ['user_session_missing', 'linkedin_session_invalid', 'dataverse_session_invalid', 'token_refresh_failed', 'session_not_found'].includes(pauseReason)
+      };
+    };
+
+    const pauseDisplayInfo = getPauseDisplayInfo(job.pauseReason, limitCheck);
+
     res.status(200).json({
       success: true,
       job: {
@@ -2741,6 +2766,9 @@ app.get("/job-status/:jobId", async (req, res) => {
         failedAt: failedAt,
         errors: job.errors,
         pauseReason: job.pauseReason,
+        // ENHANCED: Detailed pause information for frontend
+        pauseDisplayInfo: pauseDisplayInfo,
+        pausedAt: job.pausedAt,
         // NEW: Unauthorized status flag for frontend
         needsTokenRefresh: job.pauseReason === 'token_refresh_failed',
         authError: job.pauseReason === 'token_refresh_failed' ? {
@@ -2884,39 +2912,36 @@ app.get("/user-job/:userId", async (req, res) => {
 
     const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
 
-    // SIMPLE HOURLY RESUME: If job is paused due to hourly limit but hourly count is now 0, resume it
-    if (job.status === "paused" && limitCheck && limitCheck.hourlyCount === 0) {
-      // Check if it was paused due to hourly limits OR if pauseReason is missing but limits suggest hourly issue
-      const wasHourlyPaused = job.pauseReason === "hourly_limit_reached" || 
-                             (!job.pauseReason && limitCheck.canProcess);
+    // SIMPLE HOURLY RESUME: Only resume if explicitly paused due to hourly limit and hourly count reset
+    if (job.status === "paused" && 
+        job.pauseReason === "hourly_limit_reached" && 
+        limitCheck && 
+        limitCheck.hourlyCount === 0 && 
+        limitCheck.canProcess) {
       
-      console.log(`🔍 PAUSE STATUS DEBUG for job ${jobId}:`, {
+      console.log(`🔍 USER-JOB PAUSE DEBUG for job ${jobId}:`, {
         status: job.status,
-        pauseReason: job.pauseReason || 'MISSING',
+        pauseReason: job.pauseReason,
         hourlyCount: limitCheck.hourlyCount,
         canProcess: limitCheck.canProcess,
         processedCount: job.processedCount,
         totalContacts: job.totalContacts,
-        patternCountFromAPI: limitCheck.patternCount,
-        wasHourlyPaused
+        patternCountFromAPI: limitCheck.patternCount
       });
       
-      // ALWAYS RESUME if paused and hourly count is 0 (regardless of pauseReason)
-      if (limitCheck.canProcess || !job.pauseReason) {
-        console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${jobId} - hourly count is 0, setting status to processing`);
-        console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}, pauseReason=${job.pauseReason || 'MISSING'}`);
-        
-        job.status = "processing";
-        delete job.pauseReason;
-        delete job.pausedAt;
-        job.resumedAt = new Date().toISOString();
-        await saveJobs({ ...jobs, [jobId]: job });
-        console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
-        setImmediate(() => processJobInBackground(jobId));
-      } else {
-        console.log(`⏸️ Job ${jobId} paused but NOT due to hourly limits. Reason: ${job.pauseReason || 'MISSING'}, canProcess: ${limitCheck.canProcess}`);
-        console.log(`📊 Limits: daily=${limitCheck.dailyCount}/${limitCheck.dailyLimit}, hourly=${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}, pattern=${limitCheck.patternCount}/${limitCheck.patternLimit}`);
-      }
+      console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${jobId} - hourly limit reset, resuming processing`);
+      console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}`);
+      
+      job.status = "processing";
+      delete job.pauseReason;
+      delete job.pausedAt;
+      job.resumedAt = new Date().toISOString();
+      await saveJobs({ ...jobs, [jobId]: job });
+      console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+      setImmediate(() => processJobInBackground(jobId));
+    } else if (job.status === "paused") {
+      console.log(`⏸️ Job ${jobId} remains paused in user-job. Reason: ${job.pauseReason || 'MISSING'}, hourlyCount: ${limitCheck?.hourlyCount}, canProcess: ${limitCheck?.canProcess}`);
+      console.log(`📊 Limits: daily=${limitCheck?.dailyCount}/${limitCheck?.dailyLimit}, hourly=${limitCheck?.hourlyCount}/${limitCheck?.hourlyLimit}, pattern=${limitCheck?.patternCount}/${limitCheck?.patternLimit}`);
     }
 
     // AUTO-RESUME LOGIC: Check if paused job can be resumed
@@ -3082,6 +3107,34 @@ app.get("/user-job/:userId", async (req, res) => {
       completedAt 
     });
 
+    // Function to get user-friendly pause messages
+    const getPauseDisplayInfo = (pauseReason, limitCheck) => {
+      if (!pauseReason) return null;
+      
+      const pauseMessages = {
+        'hourly_limit_reached': `Saatlik limit aşıldı (${limitCheck?.hourlyCount || 0}/${limitCheck?.hourlyLimit || 11}). Yeni saatte otomatik devam edecek.`,
+        'daily_limit_reached': `Günlük limit aşıldı (${limitCheck?.dailyCount || 0}/${limitCheck?.dailyLimit || 180}). Yarın otomatik devam edecek.`,
+        'pattern_limit_reached': `Pattern limiti aşıldı (${limitCheck?.currentPattern || 'unknown'}). Sonraki aktif dönemde devam edecek.`,
+        'pause_period': `Dinlenme zamanı (${limitCheck?.currentPattern || 'unknown'} pattern). Aktif dönemde otomatik devam edecek.`,
+        'limit_reached': 'Genel limit aşıldı. Otomatik olarak devam edecek.',
+        'user_session_missing': 'Kullanıcı oturumu eksik. Lütfen extension üzerinden tekrar bağlanın.',
+        'linkedin_session_invalid': 'LinkedIn oturumu geçersiz. Lütfen LinkedIn\'e tekrar giriş yapın.',
+        'dataverse_session_invalid': 'Dataverse oturumu geçersiz. Lütfen token\'ı yenileyin.',
+        'token_refresh_failed': 'Token yenileme başarısız. Lütfen tekrar yetkilendirin.',
+        'session_not_found': 'Oturum bulunamadı. Lütfen extension üzerinden tekrar bağlanın.',
+        'session_check_failed': 'Oturum kontrolü başarısız. Sistem hatası oluştu.'
+      };
+      
+      return {
+        code: pauseReason,
+        message: pauseMessages[pauseReason] || `Bilinmeyen sebep: ${pauseReason}`,
+        isAutoResumable: ['hourly_limit_reached', 'daily_limit_reached', 'pattern_limit_reached', 'pause_period', 'limit_reached'].includes(pauseReason),
+        needsUserAction: ['user_session_missing', 'linkedin_session_invalid', 'dataverse_session_invalid', 'token_refresh_failed', 'session_not_found'].includes(pauseReason)
+      };
+    };
+
+    const pauseDisplayInfo = getPauseDisplayInfo(job.pauseReason, limitCheck);
+
     res.status(200).json({
       success: true,
       canResume: job.status === "paused" || job.status === "processing",
@@ -3103,6 +3156,9 @@ app.get("/user-job/:userId", async (req, res) => {
         completedAt: completedAt,
         failedAt: failedAt,
         pauseReason: job.pauseReason,
+        // ENHANCED: Detailed pause information for frontend
+        pauseDisplayInfo: pauseDisplayInfo,
+        pausedAt: job.pausedAt,
         // NEW: Unauthorized status flag for frontend
         needsTokenRefresh: job.pauseReason === 'token_refresh_failed',
         authError: job.pauseReason === 'token_refresh_failed' ? {
