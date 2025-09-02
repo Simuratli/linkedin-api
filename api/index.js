@@ -2632,15 +2632,26 @@ app.get("/job-status/:jobId", async (req, res) => {
     const limitCheck = await checkDailyLimit(job.userId, jobCrmUrl);
     
     // SIMPLE HOURLY RESUME: If job is paused due to hourly limit but hourly count is now 0, resume it
-    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached" && limitCheck && limitCheck.hourlyCount === 0) {
-      console.log(`🔄 SIMPLE HOURLY RESUME: Job ${jobId} - hourly count is 0, setting status to processing`);
-      job.status = "processing";
-      delete job.pauseReason;
-      delete job.pausedAt;
-      job.resumedAt = new Date().toISOString();
-      await saveJobs({ ...jobs, [jobId]: job });
-      console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
-      setImmediate(() => processJobInBackground(jobId));
+    if (job.status === "paused" && limitCheck && limitCheck.hourlyCount === 0) {
+      // Check if it was paused due to hourly limits OR if pauseReason is missing but limits suggest hourly issue
+      const wasHourlyPaused = job.pauseReason === "hourly_limit_reached" || 
+                             (!job.pauseReason && limitCheck.canProcess);
+      
+      if (wasHourlyPaused) {
+        console.log(`🔄 SIMPLE HOURLY RESUME: Job ${jobId} - hourly count is 0, setting status to processing`);
+        console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}, pauseReason=${job.pauseReason || 'MISSING'}`);
+        
+        job.status = "processing";
+        delete job.pauseReason;
+        delete job.pausedAt;
+        job.resumedAt = new Date().toISOString();
+        await saveJobs({ ...jobs, [jobId]: job });
+        console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+        setImmediate(() => processJobInBackground(jobId));
+      } else {
+        console.log(`⏸️ Job ${jobId} paused but NOT due to hourly limits. Reason: ${job.pauseReason || 'MISSING'}, canProcess: ${limitCheck.canProcess}`);
+        console.log(`📊 Limits: daily=${limitCheck.dailyCount}/${limitCheck.dailyLimit}, hourly=${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}, pattern=${limitCheck.patternCount}/${limitCheck.patternLimit}`);
+      }
     }
     
     const currentPattern = getCurrentHumanPattern();
@@ -2862,15 +2873,26 @@ app.get("/user-job/:userId", async (req, res) => {
     const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
 
     // SIMPLE HOURLY RESUME: If job is paused due to hourly limit but hourly count is now 0, resume it
-    if (job.status === "paused" && job.pauseReason === "hourly_limit_reached" && limitCheck && limitCheck.hourlyCount === 0) {
-      console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${jobId} - hourly count is 0, setting status to processing`);
-      job.status = "processing";
-      delete job.pauseReason;
-      delete job.pausedAt;
-      job.resumedAt = new Date().toISOString();
-      await saveJobs({ ...jobs, [jobId]: job });
-      console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
-      setImmediate(() => processJobInBackground(jobId));
+    if (job.status === "paused" && limitCheck && limitCheck.hourlyCount === 0) {
+      // Check if it was paused due to hourly limits OR if pauseReason is missing but limits suggest hourly issue
+      const wasHourlyPaused = job.pauseReason === "hourly_limit_reached" || 
+                             (!job.pauseReason && limitCheck.canProcess);
+      
+      if (wasHourlyPaused) {
+        console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${jobId} - hourly count is 0, setting status to processing`);
+        console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}, pauseReason=${job.pauseReason || 'MISSING'}`);
+        
+        job.status = "processing";
+        delete job.pauseReason;
+        delete job.pausedAt;
+        job.resumedAt = new Date().toISOString();
+        await saveJobs({ ...jobs, [jobId]: job });
+        console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+        setImmediate(() => processJobInBackground(jobId));
+      } else {
+        console.log(`⏸️ Job ${jobId} paused but NOT due to hourly limits. Reason: ${job.pauseReason || 'MISSING'}, canProcess: ${limitCheck.canProcess}`);
+        console.log(`📊 Limits: daily=${limitCheck.dailyCount}/${limitCheck.dailyLimit}, hourly=${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}, pattern=${limitCheck.patternCount}/${limitCheck.patternLimit}`);
+      }
     }
 
     // AUTO-RESUME LOGIC: Check if paused job can be resumed
