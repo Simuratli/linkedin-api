@@ -900,6 +900,62 @@ const handleOverrideCooldown = async () => {
     }
   };
 
+  // **NEW** Handle force run - resets all limits and starts processing
+  const handleForceRun = async () => {
+    const userId = getUserId();
+    console.log("🚀 Attempting to force run for user:", userId);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/force-run/${encodeURIComponent(userId)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      console.log("🔍 Force run API response status:", response.status);
+      const result = await response.json();
+      console.log("🔍 Force run API result:", result);
+
+      if (result.success) {
+        console.log("✅ Force run successful:", result.message);
+        
+        chrome.runtime.sendMessage({
+          type: "PROCESS_STATUS",
+          data: {
+            status: "success",
+            message: "🚀 Force run successful! All limits reset and processing started.",
+          },
+        });
+
+        // Refresh job status immediately
+        await fetchJobStatus();
+        
+        return true;
+      } else {
+        console.error("❌ Force run failed:", result.message);
+        chrome.runtime.sendMessage({
+          type: "PROCESS_STATUS",
+          data: {
+            status: "error",
+            message: `❌ Force run failed: ${result.message}`,
+          },
+        });
+        return false;
+      }
+    } catch (error) {
+      console.error("❌ Error during force run:", error);
+      chrome.runtime.sendMessage({
+        type: "PROCESS_STATUS",
+        data: {
+          status: "error",
+          message: `❌ Error during force run: ${error.message}`,
+        },
+      });
+      return false;
+    }
+  };
+
   const callStartProcessingAPI = async (requestData: any) => {
     const userId = getUserId();
 
@@ -1614,6 +1670,7 @@ const handleOverrideCooldown = async () => {
                 needsTokenRefresh={jobStatus?.needsTokenRefresh}
                 onOverrideCooldown={handleOverrideCooldown}
                 onStopProcessing={handleStopProcessing}
+                onForceRun={handleForceRun}
               />
               <span
                 onClick={() => {

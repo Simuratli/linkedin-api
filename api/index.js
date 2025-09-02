@@ -5146,6 +5146,118 @@ app.post("/restart-processing/:userId", async (req, res) => {
   }
 });
 
+// Force run endpoint - Reset all limits and resume processing
+app.post("/force-run/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    console.log(`🚀 Force run requested for user ${userId}`);
+    
+    // Load user sessions and jobs
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    const jobs = await loadJobs();
+    
+    if (!userSession) {
+      return res.status(404).json({
+        success: false,
+        message: "User session not found"
+      });
+    }
+    
+    // Find user's current job
+    let jobId = userSession.currentJobId;
+    let job = jobs[jobId];
+    
+    // If no job or job is completed/failed, look for any resumable job for this user
+    if (!job || ["completed", "failed"].includes(job.status)) {
+      // Look for any paused job for this user
+      const userJobs = Object.values(jobs).filter(j => j.userId === userId);
+      const pausedJob = userJobs.find(j => j.status === "paused");
+      
+      if (pausedJob) {
+        job = pausedJob;
+        jobId = pausedJob.jobId;
+        console.log(`📋 Found paused job ${jobId} for force run`);
+      } else {
+        return res.status(404).json({
+          success: false,
+          message: "No pausable/resumable job found for user"
+        });
+      }
+    }
+    
+    // Only allow force run for paused jobs or when no active job (ready state)
+    if (job.status !== "paused") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot force run job in ${job.status} state. Only paused jobs can be force-run.`
+      });
+    }
+    
+    // Reset ALL user stats to 0 using the helper function
+    const { clearUserDailyStats } = require('./helpers/db');
+    await clearUserDailyStats(userId);
+    console.log(`🧹 Cleared all daily stats for user ${userId} via force run`);
+    
+    // Force resume the job by changing status to processing
+    job.status = "processing";
+    delete job.pauseReason;
+    delete job.pausedAt;
+    delete job.estimatedResumeTime;
+    job.resumedAt = new Date().toISOString();
+    job.lastProcessedAt = new Date().toISOString();
+    job.forceRunAt = new Date().toISOString();
+    job.forceRunReason = "manual_force_run_limits_reset";
+    
+    // Add force run event to history
+    const forceRunEvent = {
+      type: "resume",
+      timestamp: new Date().toISOString(),
+      reason: "manual_force_run",
+      icon: "🚀",
+      message: "Force run - All limits reset and job resumed manually",
+      details: {
+        resetLimits: "daily, hourly, pattern counts all reset to 0",
+        previousStatus: "paused",
+        actionType: "manual_force_run",
+        resetBy: "user_request"
+      }
+    };
+    
+    if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
+    job.pauseResumeHistory.push(forceRunEvent);
+    
+    // Save updated job
+    await saveJobs({ ...jobs, [jobId]: job });
+    console.log(`✅ Job ${jobId} force-run completed - status changed to processing, all limits reset`);
+    
+    // Start background processing immediately
+    console.log(`🚀 Starting background processing for force-run job ${jobId}`);
+    setImmediate(() => processJobInBackground(jobId));
+    
+    res.status(200).json({
+      success: true,
+      message: "Job force-run successful - all limits reset and processing resumed",
+      job: {
+        jobId: job.jobId,
+        status: job.status,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts,
+        forceRunAt: job.forceRunAt,
+        resumedAt: job.resumedAt
+      }
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error in force run: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Error performing force run",
+      error: error.message
+    });
+  }
+});
+
 // Initialize data directory, MongoDB and start server
 (async () => {
   try {
