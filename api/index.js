@@ -2537,8 +2537,7 @@ app.get("/job-status/:jobId", async (req, res) => {
         console.log(`🔄 Auto-resuming job ${jobId} - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
         
         // Reset ALL user stats to 0
-        const { clearUserDailyStats } = require('./helpers/db');
-        await clearUserDailyStats(job.userId);
+        await resetUserStats(job.userId);
         console.log(`🧹 Cleared all daily stats for user ${job.userId}`);
         
         // CRITICAL: Resume the job with explicit status change
@@ -2859,6 +2858,22 @@ app.get("/user-job/:userId", async (req, res) => {
       if (!sharedJobId) {
         const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
         console.log(`❌ No active job found for user ${userId}`);
+        
+        // **DEBUG: Log why no job was found**
+        console.log("🔍 DEBUG: No Job Found Analysis:", {
+          userId: userId,
+          hasUserSession: !!userSession,
+          userSessionJobId: userSession?.currentJobId || null,
+          searchedForSharedJob: true,
+          foundSharedJob: false,
+          totalJobsChecked: jobs ? Object.keys(jobs).length : 0,
+          userSessionDetails: userSession ? {
+            currentJobId: userSession.currentJobId,
+            crmUrl: userSession.crmUrl,
+            hasSession: true
+          } : { hasSession: false }
+        });
+        
         return res.status(200).json({
           success: false,
           message: "No active job found for user",
@@ -2873,6 +2888,17 @@ app.get("/user-job/:userId", async (req, res) => {
     const jobs = await loadJobs();
     const jobId = sharedJobId || userSession.currentJobId;
     const job = jobs[jobId];
+    
+    console.log("🔍 DEBUG: Memory Load Check for /user-job:", {
+      userId: userId,
+      totalJobsInMemory: Object.keys(jobs).length,
+      userSessionExists: !!userSession,
+      currentJobId: userSession?.currentJobId || null,
+      sharedJobId: sharedJobId || null,
+      finalJobId: jobId,
+      jobExistsInMemory: !!jobs[jobId],
+      allJobIds: Object.keys(jobs).slice(0, 10) // Show first 10 job IDs
+    });
     
     if (!job) {
       console.error(`❌ Job ${jobId} not found for user ${userId}`);
@@ -3016,8 +3042,7 @@ app.get("/user-job/:userId", async (req, res) => {
         console.log(`🔄 Auto-resuming job ${jobId} in user-job - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
         
         // Reset ALL user stats to 0
-        const { clearUserDailyStats } = require('./helpers/db');
-        await clearUserDailyStats(userId);
+        await resetUserStats(userId);
         console.log(`🧹 Cleared all daily stats for user ${userId} in user-job endpoint`);
         
         // Resume the job
@@ -3135,7 +3160,8 @@ app.get("/user-job/:userId", async (req, res) => {
 
     const pauseDisplayInfo = getPauseDisplayInfo(job.pauseReason, limitCheck);
 
-    res.status(200).json({
+    // **DEBUG: Log exact response before sending**
+    const responseObject = {
       success: true,
       canResume: job.status === "paused" || job.status === "processing",
       authStatus: {
@@ -3193,7 +3219,27 @@ app.get("/user-job/:userId", async (req, res) => {
       },
       simpleClientStats: null,
       simpleClientInitialized: true
+    };
+    
+    console.log("🔍 DEBUG: Memory vs Response Debug for /user-job:", {
+      userId: userId,
+      memoryJobExists: !!job,
+      jobFromMemory: job ? {
+        jobId: job.jobId,
+        status: job.status,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts
+      } : null,
+      responseSuccess: responseObject.success,
+      responseJobExists: !!responseObject.job,
+      responseJobId: responseObject.job?.jobId || 'null',
+      source: 'file_system_memory',
+      timestamp: new Date().toISOString()
     });
+    
+    console.log("🔍 API Response for /user-job:", JSON.stringify(responseObject, null, 2));
+
+    res.status(200).json(responseObject);
   } catch (error) {
     console.error("❌ Error getting user job:", error);
     res.status(500).json({
