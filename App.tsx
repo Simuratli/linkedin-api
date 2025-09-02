@@ -82,6 +82,13 @@ interface JobStatus {
   failedAt?: string;
   cancelledAt?: string;
   pauseReason?: string;
+  pausedAt?: string;
+  pauseDisplayInfo?: {
+    code: string;
+    message: string;
+    isAutoResumable: boolean;
+    needsUserAction: boolean;
+  };
   estimatedResumeTime?: string;
   dailyLimitInfo?: DailyLimitInfo;
   hourlyLimitInfo?: {
@@ -396,7 +403,21 @@ function App() {
       else if (result.job.status === "paused") {
         const ageInfo = result.job.jobAge?.days > 0 ? ` (${result.job.jobAge.days}d old)` : '';
         
-        if (result.job.pauseReason === "daily_limit_reached") {
+        // Use new pauseDisplayInfo if available
+        if (result.job.pauseDisplayInfo) {
+          const pauseInfo = result.job.pauseDisplayInfo;
+          const pausedTime = result.job.pausedAt 
+            ? ` (${new Date(result.job.pausedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` 
+            : '';
+          
+          if (pauseInfo.needsUserAction) {
+            statusMessage = `⚠️ Paused${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+          } else {
+            statusMessage = `⏸️ Paused${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+          }
+        }
+        // Fallback to old logic if pauseDisplayInfo not available
+        else if (result.job.pauseReason === "daily_limit_reached") {
           statusMessage = `⏸️ Paused${ageInfo} - Daily limit reached`;
         } 
         else if (result.job.pauseReason === "pattern_limit_reached") {
@@ -718,7 +739,21 @@ const handleOverrideCooldown = async () => {
             if (jobResult.job.status === "processing") {
               statusMessage = `🔄 Continuing job${ageInfo}... (${jobResult.job.processedCount}/${jobResult.job.totalContacts})`;
             } else if (jobResult.job.status === "paused") {
-              statusMessage = `⏸️ Found paused job${ageInfo}. Ready to resume: ${jobResult.job.processedCount}/${jobResult.job.totalContacts}`;
+              // Use new pauseDisplayInfo if available
+              if (jobResult.job.pauseDisplayInfo) {
+                const pauseInfo = jobResult.job.pauseDisplayInfo;
+                const pausedTime = jobResult.job.pausedAt 
+                  ? ` (${new Date(jobResult.job.pausedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` 
+                  : '';
+                
+                if (pauseInfo.needsUserAction) {
+                  statusMessage = `⚠️ Job needs attention${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+                } else {
+                  statusMessage = `⏸️ Found paused job${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+                }
+              } else {
+                statusMessage = `⏸️ Found paused job${ageInfo}. Ready to resume: ${jobResult.job.processedCount}/${jobResult.job.totalContacts}`;
+              }
             } else {
               statusMessage = `Found ${jobResult.job.status} job${ageInfo}. Progress: ${jobResult.job.processedCount}/${jobResult.job.totalContacts}`;
             }
@@ -1117,7 +1152,23 @@ const handleOverrideCooldown = async () => {
               statusMessage = `🔄 Continuing job${ageInfo}... (${jobObj.processedCount}/${jobObj.totalContacts})`;
               // Don't call startJobMonitoring here - let the useEffect handle it
             } else if (jobObj.status === "paused") {
-              if (jobObj.pauseReason === "daily_limit_reached") {
+              // Use new pauseDisplayInfo if available
+              if (jobObj.pauseDisplayInfo) {
+                const pauseInfo = jobObj.pauseDisplayInfo;
+                const pausedTime = jobObj.pausedAt 
+                  ? ` (${new Date(jobObj.pausedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` 
+                  : '';
+                
+                if (pauseInfo.needsUserAction) {
+                  statusMessage = `⚠️ Job needs attention${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+                  canResume = false;
+                } else {
+                  statusMessage = `⏸️ Found paused job${ageInfo}${pausedTime} - ${pauseInfo.message}`;
+                  canResume = pauseInfo.isAutoResumable;
+                }
+              }
+              // Fallback to old logic if pauseDisplayInfo not available
+              else if (jobObj.pauseReason === "daily_limit_reached") {
                 statusMessage = `⏸️ Paused${ageInfo} - Daily limit reached. Will resume tomorrow`;
                 canResume = false;
               } 

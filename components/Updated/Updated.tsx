@@ -101,6 +101,13 @@ interface JobStatus {
   failedAt?: string;
   cancelledAt?: string;
   pauseReason?: string;
+  pausedAt?: string;
+  pauseDisplayInfo?: {
+    code: string;
+    message: string;
+    isAutoResumable: boolean;
+    needsUserAction: boolean;
+  };
   estimatedResumeTime?: string;
   dailyLimitInfo?: DailyLimitInfo;
   hourlyLimitInfo?: {
@@ -844,30 +851,62 @@ export function JobStatusPopover({
       );
     }
 
-    if (!jobStatus || jobStatus.status !== "paused" || !jobStatus.pauseReason) return null;
+    if (!jobStatus || jobStatus.status !== "paused") return null;
 
-    const reasonMessages = {
-      daily_limit_reached: "Daily processing limit has been reached",
-      pattern_limit_reached: `${jobStatus.currentPattern} pattern limit reached`,
-      pause_period: `Currently in ${jobStatus.currentPattern} pause period`,
-      hourly_limit_reached: "Hourly processing limit reached",
-      session_invalid: "Session has expired - please re-authenticate",
-      token_refresh_failed: "Authentication refresh failed - please re-authenticate",
-      linkedin_session_invalid: "LinkedIn session expired - please re-authenticate LinkedIn",
-      dataverse_session_invalid: "Dataverse session expired - please re-authenticate Dynamics",
-      limit_reached: "Processing limits reached"
-    };
+    // Use new pauseDisplayInfo if available, otherwise fall back to old logic
+    let displayMessage = "";
+    let needsUserAction = false;
+    let isAutoResumable = true;
+
+    if (jobStatus.pauseDisplayInfo) {
+      displayMessage = jobStatus.pauseDisplayInfo.message;
+      needsUserAction = jobStatus.pauseDisplayInfo.needsUserAction;
+      isAutoResumable = jobStatus.pauseDisplayInfo.isAutoResumable;
+    } else if (jobStatus.pauseReason) {
+      // Fallback to old logic
+      const reasonMessages = {
+        daily_limit_reached: "Daily processing limit has been reached",
+        pattern_limit_reached: `${jobStatus.currentPattern} pattern limit reached`,
+        pause_period: `Currently in ${jobStatus.currentPattern} pause period`,
+        hourly_limit_reached: "Hourly processing limit reached",
+        session_invalid: "Session has expired - please re-authenticate",
+        token_refresh_failed: "Authentication refresh failed - please re-authenticate",
+        linkedin_session_invalid: "LinkedIn session expired - please re-authenticate LinkedIn",
+        dataverse_session_invalid: "Dataverse session expired - please re-authenticate Dynamics",
+        limit_reached: "Processing limits reached"
+      };
+      displayMessage = reasonMessages[jobStatus.pauseReason] || `Paused: ${jobStatus.pauseReason}`;
+      needsUserAction = ['session_invalid', 'token_refresh_failed', 'linkedin_session_invalid', 'dataverse_session_invalid'].includes(jobStatus.pauseReason);
+    } else {
+      return null; // No pause reason available
+    }
+
+    const pausedTime = jobStatus.pausedAt 
+      ? new Date(jobStatus.pausedAt).toLocaleString() 
+      : '';
 
     return (
       <div className="pause-reason-section">
         <div className="section-header">
-          <strong>Pause Reason:</strong>
+          <span className="section-title">
+            {needsUserAction ? "⚠️ Action Required" : "⏸️ Pause Information"}
+          </span>
         </div>
-        <div className={`pause-reason ${jobStatus.pauseReason.includes('_session_invalid') ? 'auth-error' : ''}`}>
-          {reasonMessages[jobStatus.pauseReason as keyof typeof reasonMessages] || jobStatus.pauseReason}
-          {jobStatus.lastError?.message && (
-            <div className="error-details">
-              {jobStatus.lastError.message}
+        <div className="pause-details">
+          <div className="pause-message" style={{ 
+            color: needsUserAction ? '#DC2626' : '#F59E0B',
+            fontWeight: needsUserAction ? 'bold' : 'normal'
+          }}>
+            {displayMessage}
+          </div>
+          {pausedTime && (
+            <div className="pause-timestamp">
+              Paused at: {pausedTime}
+            </div>
+          )}
+          {isAutoResumable && !needsUserAction && (
+            <div className="auto-resume-note" style={{ color: '#10B981', fontSize: '0.85em', marginTop: '4px' }}>
+              ✓ Will resume automatically when conditions are met
             </div>
           )}
         </div>
