@@ -17,13 +17,13 @@ const USER_AGENTS = [
 const HUMAN_PATTERNS = {
   morningBurst: {
     time: "9-11 AM (Weekdays)",
-    profiles: 25,
+    profiles: 80,
     delay: "8-15 sec", // Ultra fast morning burst
     hourStart: 9,
     hourEnd: 11,
     minDelay: 8000, // 8 sec
     maxDelay: 15000, // 15 sec
-    maxProfiles: 25,
+    maxProfiles: 80,
     weekdayOnly: true,
   },
   lunchBreak: {
@@ -35,63 +35,63 @@ const HUMAN_PATTERNS = {
   },
   afternoonWork: {
     time: "2-5 PM (Weekdays)",
-    profiles: 35,
+    profiles: 100,
     delay: "10-20 sec", // Fast work pace
     hourStart: 14,
     hourEnd: 17,
     minDelay: 10000, // 10 sec
     maxDelay: 20000, // 20 sec
-    maxProfiles: 35,
+    maxProfiles: 100,
     weekdayOnly: true,
   },
   eveningLight: {
     time: "6-8 PM (Weekdays)",
-    profiles: 30,
+    profiles: 70,
     delay: "12-25 sec", // Quick evening check
     hourStart: 18,
     hourEnd: 20,
     minDelay: 12000, // 12 sec
     maxDelay: 25000, // 25 sec
-    maxProfiles: 30,
+    maxProfiles: 70,
     weekdayOnly: true,
   },
   nightRest: {
     time: "9 PM-8 AM (All days)",
     pause: true,
     hourStart: 22,
-    hourEnd: 22,
+    hourEnd: 6,
   },
   weekendBurst: {
     time: "9 AM-12 PM (Weekends)",
-    profiles: 50,
+    profiles: 90,
     delay: "15-30 sec", // Fast weekend burst
     hourStart: 9,
     hourEnd: 12,
     minDelay: 15000, // 15 sec
     maxDelay: 30000, // 30 sec
-    maxProfiles: 50,
+    maxProfiles: 90,
     weekendOnly: true,
   },
   weekendEvening: {
     time: "5-9 PM (Weekends)",
-    profiles: 25,
+    profiles: 65,
     delay: "20-40 sec", // Quick weekend evening
     hourStart: 17,
     hourEnd: 21,
     minDelay: 20000, // 20 sec
     maxDelay: 40000, // 40 sec
-    maxProfiles: 25,
+    maxProfiles: 65,
     weekendOnly: true,
   },
   weekendAfternoon: {
     time: "1-4 PM (Weekends)",
-    profiles: 30,
+    profiles: 75,
     delay: "18-35 sec", // Efficient weekend afternoon
     hourStart: 13,
     hourEnd: 16,
     minDelay: 18000, // 18 sec
     maxDelay: 35000, // 35 sec
-    maxProfiles: 30,
+    maxProfiles: 75,
     weekendOnly: true,
   },
 };

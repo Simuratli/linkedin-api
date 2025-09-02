@@ -104,7 +104,7 @@ const PORT = process.env.PORT || 3000;
 
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
-const BURST_LIMIT = 11; // Max profiles in one hour (TEST: reduced from 30 to 11)
+const BURST_LIMIT = 20; // Max profiles in one hour (increased from 11 to 20)
 const HOUR_IN_MS = 60 * 60 * 1000;
 
 // CRM URL normalization for shared processing
@@ -2738,7 +2738,7 @@ app.get("/job-status/:jobId", async (req, res) => {
       if (!pauseReason) return null;
       
       const pauseMessages = {
-        'hourly_limit_reached': `Saatlik limit aşıldı (${limitCheck?.hourlyCount || 0}/${limitCheck?.hourlyLimit || 11}). Yeni saatte otomatik devam edecek.`,
+        'hourly_limit_reached': `Saatlik limit aşıldı (${limitCheck?.hourlyCount || 0}/${limitCheck?.hourlyLimit || 20}). Yeni saatte otomatik devam edecek.`,
         'daily_limit_reached': `Günlük limit aşıldı (${limitCheck?.dailyCount || 0}/${limitCheck?.dailyLimit || 180}). Yarın otomatik devam edecek.`,
         'pattern_limit_reached': `Pattern limiti aşıldı (${limitCheck?.currentPattern || 'unknown'}). Sonraki aktif dönemde devam edecek.`,
         'pause_period': `Dinlenme zamanı (${limitCheck?.currentPattern || 'unknown'} pattern). Aktif dönemde otomatik devam edecek.`,
@@ -3148,7 +3148,7 @@ app.get("/user-job/:userId", async (req, res) => {
       if (!pauseReason) return null;
       
       const pauseMessages = {
-        'hourly_limit_reached': `Saatlik limit aşıldı (${limitCheck?.hourlyCount || 0}/${limitCheck?.hourlyLimit || 11}). Yeni saatte otomatik devam edecek.`,
+        'hourly_limit_reached': `Saatlik limit aşıldı (${limitCheck?.hourlyCount || 0}/${limitCheck?.hourlyLimit || 20}). Yeni saatte otomatik devam edecek.`,
         'daily_limit_reached': `Günlük limit aşıldı (${limitCheck?.dailyCount || 0}/${limitCheck?.dailyLimit || 180}). Yarın otomatik devam edecek.`,
         'pattern_limit_reached': `Pattern limiti aşıldı (${limitCheck?.currentPattern || 'unknown'}). Sonraki aktif dönemde devam edecek.`,
         'pause_period': `Dinlenme zamanı (${limitCheck?.currentPattern || 'unknown'} pattern). Aktif dönemde otomatik devam edecek.`,
