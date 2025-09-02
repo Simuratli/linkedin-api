@@ -2637,7 +2637,19 @@ app.get("/job-status/:jobId", async (req, res) => {
       const wasHourlyPaused = job.pauseReason === "hourly_limit_reached" || 
                              (!job.pauseReason && limitCheck.canProcess);
       
-      if (wasHourlyPaused) {
+      console.log(`🔍 JOB-STATUS PAUSE DEBUG for job ${jobId}:`, {
+        status: job.status,
+        pauseReason: job.pauseReason || 'MISSING',
+        hourlyCount: limitCheck.hourlyCount,
+        canProcess: limitCheck.canProcess,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts,
+        patternCountFromAPI: limitCheck.patternCount,
+        wasHourlyPaused
+      });
+      
+      // ALWAYS RESUME if paused and hourly count is 0 (regardless of pauseReason)
+      if (limitCheck.canProcess || !job.pauseReason) {
         console.log(`🔄 SIMPLE HOURLY RESUME: Job ${jobId} - hourly count is 0, setting status to processing`);
         console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}, pauseReason=${job.pauseReason || 'MISSING'}`);
         
@@ -2649,7 +2661,7 @@ app.get("/job-status/:jobId", async (req, res) => {
         console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
         setImmediate(() => processJobInBackground(jobId));
       } else {
-        console.log(`⏸️ Job ${jobId} paused but NOT due to hourly limits. Reason: ${job.pauseReason || 'MISSING'}, canProcess: ${limitCheck.canProcess}`);
+        console.log(`⏸️ Job ${jobId} paused but NOT resuming. Reason: ${job.pauseReason || 'MISSING'}, canProcess: ${limitCheck.canProcess}`);
         console.log(`📊 Limits: daily=${limitCheck.dailyCount}/${limitCheck.dailyLimit}, hourly=${limitCheck.hourlyCount}/${limitCheck.hourlyLimit}, pattern=${limitCheck.patternCount}/${limitCheck.patternLimit}`);
       }
     }
@@ -2878,7 +2890,19 @@ app.get("/user-job/:userId", async (req, res) => {
       const wasHourlyPaused = job.pauseReason === "hourly_limit_reached" || 
                              (!job.pauseReason && limitCheck.canProcess);
       
-      if (wasHourlyPaused) {
+      console.log(`🔍 PAUSE STATUS DEBUG for job ${jobId}:`, {
+        status: job.status,
+        pauseReason: job.pauseReason || 'MISSING',
+        hourlyCount: limitCheck.hourlyCount,
+        canProcess: limitCheck.canProcess,
+        processedCount: job.processedCount,
+        totalContacts: job.totalContacts,
+        patternCountFromAPI: limitCheck.patternCount,
+        wasHourlyPaused
+      });
+      
+      // ALWAYS RESUME if paused and hourly count is 0 (regardless of pauseReason)
+      if (limitCheck.canProcess || !job.pauseReason) {
         console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${jobId} - hourly count is 0, setting status to processing`);
         console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}, pauseReason=${job.pauseReason || 'MISSING'}`);
         
