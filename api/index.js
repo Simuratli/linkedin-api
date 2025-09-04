@@ -3596,10 +3596,10 @@ app.get("/job-poll/:userId", async (req, res) => {
           
           job.status = "processing";
           job.resumedAt = new Date().toISOString();
-          await saveJobs({...(await loadJobs()), [activeJobId]: job});
+          await saveJobs({...(await loadJobs()), [job.jobId]: job});
           
           // Use setImmediate to restart processing in background
-          setImmediate(() => processJobInBackground(activeJobId));
+          setImmediate(() => processJobInBackground(job.jobId));
         }
       }
     }
