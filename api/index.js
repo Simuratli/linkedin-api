@@ -4621,12 +4621,38 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     let activeJobs = [];
     
     if (normalizedCrmUrl) {
-      // CRM-AWARE: Find all active jobs for this CRM URL
-      activeJobs = Object.values(jobs).filter(job => 
+      console.log(`🔍 CRM-AWARE CANCEL: Looking for active jobs for CRM ${normalizedCrmUrl}...`);
+      
+      // FIRST: Find jobs that already have crmUrl field
+      const directCrmJobs = Object.values(jobs).filter(job => 
         job.crmUrl === normalizedCrmUrl && 
         (job.status === "processing" || job.status === "paused" || job.status === "pending")
       );
-      console.log(`🛑 CRM-AWARE: Found ${activeJobs.length} active jobs for CRM ${normalizedCrmUrl}`);
+      
+      console.log(`🔍 CRM-AWARE CANCEL: Found ${directCrmJobs.length} direct CRM jobs`);
+      
+      // SECOND: Find legacy jobs without crmUrl through user sessions (and migrate them)
+      const legacyJobs = [];
+      for (const job of Object.values(jobs)) {
+        if (!job.crmUrl && (job.status === "processing" || job.status === "paused" || job.status === "pending")) {
+          const jobUserSession = userSessions[job.userId];
+          if (jobUserSession?.crmUrl && normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrmUrl) {
+            console.log(`🔍 CRM-AWARE CANCEL: Found legacy job ${job.jobId} via user session`);
+            
+            // MIGRATE: Add crmUrl to legacy job
+            job.crmUrl = normalizedCrmUrl;
+            jobs[job.jobId] = job;
+            
+            legacyJobs.push(job);
+            console.log(`� CANCEL: Migrated legacy job ${job.jobId} with crmUrl: ${normalizedCrmUrl}`);
+          }
+        }
+      }
+      
+      // COMBINE: All jobs for this CRM
+      activeJobs = [...directCrmJobs, ...legacyJobs];
+      console.log(`�🛑 CRM-AWARE CANCEL: Total found ${activeJobs.length} active jobs for CRM ${normalizedCrmUrl} (${directCrmJobs.length} direct + ${legacyJobs.length} legacy)`);
+      
     } else {
       // Fallback to user-specific jobs if no CRM URL
       activeJobs = Object.values(jobs).filter(job => 
@@ -4635,6 +4661,10 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       );
       console.log(`🛑 FALLBACK: Found ${activeJobs.length} active jobs for user ${userId}`);
     }
+    
+    // Save any migrated jobs before proceeding with cancellation
+    await saveJobs(jobs);
+    console.log(`💾 Jobs saved before cancellation processing`);
     
     if (activeJobs.length === 0) {
       return res.status(200).json({
