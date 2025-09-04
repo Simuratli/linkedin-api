@@ -3184,7 +3184,7 @@ app.get("/user-job/:userId", async (req, res) => {
     const finalJob = activeJob || completedJob;
     
     if (!finalJob) {
-      const limitCheck = await checkDailyLimit(userId, finalCrmUrl);
+      const limitCheck = await checkDailyLimit(userId, normalizedCrmUrl);
       console.log(`❌ CRM-CENTRIC: No job found for CRM ${normalizedCrmUrl}`);
         
       return res.status(200).json({
@@ -3239,7 +3239,7 @@ app.get("/user-job/:userId", async (req, res) => {
     console.log(`🔄 CRM-CENTRIC: Synchronizing job stats for CRM ${normalizedCrmUrl}`);
     await synchronizeJobWithDailyStats(userId, finalJob);
 
-    const limitCheck = await checkDailyLimit(userId, finalCrmUrl);
+    const limitCheck = await checkDailyLimit(userId, normalizedCrmUrl);
 
     // CRM-CENTRIC: SIMPLE HOURLY RESUME - Only resume if explicitly paused due to hourly limit and hourly count reset
     if (finalJob.status === "paused" && 
