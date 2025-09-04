@@ -790,10 +790,10 @@ app.post("/start-processing", async (req, res) => {
       console.log(`� CRM-AWARE: Found recent completed job for CRM ${normalizedCrmUrl}. Preventing new job creation.`);
       return res.status(200).json({
         success: false,
-        message: `Processing for this CRM was recently completed by ${recentCompletedJob.userId}. Job completed at ${new Date(recentCompletedJob.completedAt).toLocaleString()}.`,
+        message: `Processing for this CRM was recently completed by ${recentCompletedJob.originalCreator || recentCompletedJob.userId}. Job completed at ${new Date(recentCompletedJob.completedAt).toLocaleString()}.`,
         jobAlreadyCompleted: true,
         existingJobId: recentCompletedJob.jobId,
-        completedBy: recentCompletedJob.userId,
+        completedBy: recentCompletedJob.originalCreator || recentCompletedJob.userId,
         completedAt: recentCompletedJob.completedAt,
         processedCount: recentCompletedJob.processedCount,
         totalContacts: recentCompletedJob.totalContacts,
@@ -809,7 +809,7 @@ app.post("/start-processing", async (req, res) => {
     if (currentIncompleteJob && !resume) {
       // CRM-AWARE: Add current user to participants if not already included
       if (!currentIncompleteJob.participants) {
-        currentIncompleteJob.participants = [currentIncompleteJob.userId];
+        currentIncompleteJob.participants = [currentIncompleteJob.originalCreator || currentIncompleteJob.userId];
       }
       if (!currentIncompleteJob.participants.includes(userId)) {
         currentIncompleteJob.participants.push(userId);
@@ -835,7 +835,7 @@ app.post("/start-processing", async (req, res) => {
       await saveJobs({ ...allJobs, [currentIncompleteJob.jobId]: currentIncompleteJob });
       await saveUserSessions(userSessions);
       
-      console.log(`🔄 CRM-AWARE: User ${userId} connected to shared job ${currentIncompleteJob.jobId} (originally created by ${currentIncompleteJob.userId})`);
+      console.log(`🔄 CRM-AWARE: User ${userId} connected to shared job ${currentIncompleteJob.jobId} (originally created by ${currentIncompleteJob.originalCreator || currentIncompleteJob.userId})`);
       
       return res.status(200).json({
         success: false,
@@ -846,7 +846,7 @@ app.post("/start-processing", async (req, res) => {
         totalContacts: currentIncompleteJob.totalContacts,
         canResume: true,
         isSharedJob: true,
-        originalCreator: currentIncompleteJob.userId,
+        originalCreator: currentIncompleteJob.originalCreator || currentIncompleteJob.userId,
         participants: currentIncompleteJob.participants,
         currentPattern: limitCheck.currentPattern,
         limitInfo: limitCheck
@@ -1298,9 +1298,9 @@ app.post("/start-processing", async (req, res) => {
       const currentPattern = getCurrentHumanPattern();
       existingJob = {
         jobId,
-        userId, // Original creator
-        participants: [userId], // Track all users sharing this job
-        crmUrl: normalizedCrmUrl, // Store normalized CRM URL for sharing
+        crmUrl: normalizedCrmUrl, // PRIMARY FIELD: CRM URL for job discovery and ownership
+        originalCreator: userId,   // Who created this job originally  
+        participants: [userId],    // Array of all users who can access this job
         totalContacts: contacts.length,
         contacts: contacts.map((c) => ({
           contactId: c.contactid,
@@ -1315,7 +1315,6 @@ app.post("/start-processing", async (req, res) => {
         lastProcessedAt: null,
         cancelToken: uuidv4(), // Initialize with a cancelToken for proper cancellation tracking
         errors: [],
-        crmUrl: crmUrl, // CRITICAL: Add crmUrl to job for proper stats key generation
         humanPatterns: {
           startPattern: currentPattern.name,
           startTime: new Date().toISOString(),
@@ -1327,6 +1326,8 @@ app.post("/start-processing", async (req, res) => {
           patternBreakdown: {},
           crmBased: true, // Flag to indicate CRM-based processing
         },
+        // LEGACY SUPPORT: Keep userId for backward compatibility with existing code
+        userId: userId
       };
 
       jobs[jobId] = existingJob;
