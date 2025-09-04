@@ -3119,6 +3119,66 @@ app.get("/user-job/:userId", async (req, res) => {
     }
     
     if (!normalizedCrmUrl) {
+      console.log(`⚠️ CRM-CENTRIC: No CRM URL found for user ${userId}, trying fallback job search...`);
+      
+      // FALLBACK: Look for any recent jobs that might be relevant
+      const jobs = await loadJobs();
+      let fallbackJob = null;
+      
+      for (const job of Object.values(jobs)) {
+        // Look for recent completed jobs (within 24 hours)
+        if (job.status === "completed" && job.crmUrl) {
+          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+          
+          if (jobAgeInHours <= 24) {
+            if (!fallbackJob || new Date(job.completedAt) > new Date(fallbackJob.completedAt)) {
+              fallbackJob = job;
+            }
+          }
+        }
+      }
+      
+      if (fallbackJob) {
+        console.log(`🎯 FALLBACK: Found recent completed job ${fallbackJob.jobId} for CRM ${fallbackJob.crmUrl}`);
+        
+        // Add user as participant to the job
+        if (!fallbackJob.participants) {
+          fallbackJob.participants = [fallbackJob.originalCreator || fallbackJob.userId];
+        }
+        if (!fallbackJob.participants.includes(userId)) {
+          fallbackJob.participants.push(userId);
+          await saveJobs({ ...jobs, [fallbackJob.jobId]: fallbackJob });
+          console.log(`✅ FALLBACK: Added user ${userId} to job ${fallbackJob.jobId} participants`);
+        }
+        
+        // Create user session with the CRM URL from the job
+        if (!userSessions[userId]) {
+          userSessions[userId] = {};
+        }
+        userSessions[userId].crmUrl = fallbackJob.crmUrl;
+        await saveUserSessions(userSessions);
+        console.log(`✅ FALLBACK: Created session for user ${userId} with CRM ${fallbackJob.crmUrl}`);
+        
+        // Return the completed job
+        return res.json({
+          success: true,
+          canResume: false,
+          job: {
+            jobId: fallbackJob.jobId,
+            status: fallbackJob.status,
+            processedCount: fallbackJob.processedCount || 0,
+            totalContacts: fallbackJob.totalContacts || 0,
+            contacts: fallbackJob.contacts || [],
+            createdAt: fallbackJob.createdAt || fallbackJob.startTime,
+            completedAt: fallbackJob.completedAt,
+            crmUrl: fallbackJob.crmUrl,
+            originalCreator: fallbackJob.originalCreator || fallbackJob.userId,
+            participants: fallbackJob.participants || []
+          }
+        });
+      }
+      
       console.log(`❌ CRM-CENTRIC: No CRM URL available for user ${userId} (no session, no recent jobs)`);
       return res.status(400).json({
         success: false,
