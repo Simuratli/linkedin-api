@@ -3074,37 +3074,70 @@ app.get("/user-job/:userId", async (req, res) => {
       crmUrlSource: crmUrl ? 'query' : 'session'
     });
 
-    // CRM-AWARE: Look for any incomplete job for this CRM URL
+    // CRM-AWARE: Look for any job (incomplete or recent completed) for this CRM URL
     let activeJobId = null;
+    let jobInfo = null;
     const jobs = await loadJobs();
     
     if (normalizedCrmUrl) {
+      console.log(`🔍 CRM-AWARE: Looking for jobs (incomplete OR recent completed) for CRM ${normalizedCrmUrl}...`);
+      
+      let incompleteJob = null;
+      let recentCompletedJob = null;
+      
       for (const job of Object.values(jobs)) {
-        if (job.crmUrl === normalizedCrmUrl && 
-            job.status !== "completed" && 
-            job.contacts && 
-            job.processedCount < job.totalContacts) {
-          
-          // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
+        if (job.crmUrl === normalizedCrmUrl) {
+          // Check job age - ignore jobs older than 24 hours
           const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
           const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
           
-          // Skip old jobs (older than 24 hours) to avoid conflicts with fresh starts
           if (jobAgeInHours > 24) {
             console.log(`⏭️ Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old) for CRM ${normalizedCrmUrl}`);
             continue;
           }
           
-          activeJobId = job.jobId;
-          console.log(`📋 CRM-AWARE: Found active job for CRM ${normalizedCrmUrl}:`, {
-            jobId: job.jobId,
-            originalCreator: job.userId,
-            ageInHours: Math.round(jobAgeInHours * 100) / 100,
-            processedCount: job.processedCount,
-            totalContacts: job.totalContacts
-          });
-          break;
+          // PRIORITY 1: Look for incomplete jobs
+          if (job.status !== "completed" && job.contacts && job.processedCount < job.totalContacts) {
+            console.log(`� CRM-AWARE: Found INCOMPLETE job for CRM ${normalizedCrmUrl}:`, {
+              jobId: job.jobId,
+              originalCreator: job.userId,
+              status: job.status,
+              ageInHours: Math.round(jobAgeInHours * 100) / 100,
+              processedCount: job.processedCount,
+              totalContacts: job.totalContacts
+            });
+            incompleteJob = job;
+            break; // Incomplete job takes priority
+          }
+          
+          // PRIORITY 2: Look for recent completed jobs
+          else if (job.status === "completed") {
+            console.log(`✅ CRM-AWARE: Found COMPLETED job for CRM ${normalizedCrmUrl}:`, {
+              jobId: job.jobId,
+              originalCreator: job.userId,
+              status: job.status,
+              ageInHours: Math.round(jobAgeInHours * 100) / 100,
+              processedCount: job.processedCount,
+              totalContacts: job.totalContacts,
+              completedAt: job.completedAt
+            });
+            
+            if (!recentCompletedJob || new Date(job.completedAt) > new Date(recentCompletedJob.completedAt)) {
+              recentCompletedJob = job;
+            }
+          }
         }
+      }
+      
+      // DECISION: Use incomplete job if available, otherwise use recent completed job
+      if (incompleteJob) {
+        activeJobId = incompleteJob.jobId;
+        jobInfo = { type: 'incomplete', job: incompleteJob };
+        console.log(`📋 CRM-AWARE: Using INCOMPLETE job ${activeJobId} for user ${userId}`);
+      } else if (recentCompletedJob) {
+        activeJobId = recentCompletedJob.jobId;
+        jobInfo = { type: 'completed', job: recentCompletedJob };
+        console.log(`📋 CRM-AWARE: Using COMPLETED job ${activeJobId} for user ${userId} (no incomplete jobs available)`);
       }
     }
     
@@ -3407,6 +3440,11 @@ app.get("/user-job/:userId", async (req, res) => {
     const responseObject = {
       success: true,
       canResume: job.status === "paused" || job.status === "processing",
+      // NEW: CRM-shared job information
+      crmShared: !!normalizedCrmUrl && job.userId !== userId,
+      jobAlreadyCompleted: job.status === "completed",
+      completedByDifferentUser: job.status === "completed" && job.userId !== userId,
+      originalCreator: job.userId,
       authStatus: {
         linkedinValid: !job.pauseReason?.includes("linkedin_session"),
         dataverseValid: !job.pauseReason?.includes("dataverse_session"),
@@ -3458,7 +3496,10 @@ app.get("/user-job/:userId", async (req, res) => {
         },
   // **ADD COOLDOWN OVERRIDE INFO** from job object
   cooldownOverridden: job.cooldownOverridden || false,
-  overriddenAt: job.overriddenAt || null
+  overriddenAt: job.overriddenAt || null,
+  // **ADD COMPLETION INFO** for CRM-shared completed jobs
+  completionMessage: job.status === "completed" && job.userId !== userId ? 
+    `This CRM processing was completed by ${job.userId} on ${new Date(job.completedAt).toLocaleString()}. All ${job.processedCount}/${job.totalContacts} contacts have been processed successfully.` : null
       },
       simpleClientStats: null,
       simpleClientInitialized: true
