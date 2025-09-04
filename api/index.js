@@ -40,6 +40,47 @@ const { synchronizeJobWithDailyStats } = require("../helpers/syncJobStats");
 // Track running background processes to prevent duplicates
 const runningProcesses = new Map();
 
+// Global cancellation registry for immediate background process termination
+const activeCancellations = new Set();
+
+// Helper function to add immediate cancellation
+const addImmediateCancellation = (jobId) => {
+  activeCancellations.add(jobId);
+  console.log(`🚨 IMMEDIATE CANCELLATION ADDED: ${jobId}`);
+  
+  // Auto-remove after 30 seconds to prevent memory leaks
+  setTimeout(() => {
+    activeCancellations.delete(jobId);
+    console.log(`🧹 Auto-cleaned cancellation flag for ${jobId}`);
+  }, 30000);
+};
+
+// Helper function to check immediate cancellation
+const shouldCancelImmediately = (jobId) => {
+  return activeCancellations.has(jobId);
+};
+
+// Helper function for interruptible delays
+const interruptibleDelay = async (delayMs, jobId, description = "delay") => {
+  const startTime = Date.now();
+  const checkInterval = 100; // Check every 100ms for cancellation
+  
+  while (Date.now() - startTime < delayMs) {
+    if (shouldCancelImmediately(jobId)) {
+      console.log(`🛑 IMMEDIATE CANCELLATION: Breaking ${description} after ${Date.now() - startTime}ms for job ${jobId}`);
+      throw new Error("IMMEDIATE_CANCELLATION");
+    }
+    
+    // Sleep for check interval or remaining time, whichever is smaller
+    const remainingTime = delayMs - (Date.now() - startTime);
+    const sleepTime = Math.min(checkInterval, remainingTime);
+    
+    if (sleepTime > 0) {
+      await new Promise(resolve => setTimeout(resolve, sleepTime));
+    }
+  }
+};
+
 // Professional logging system for debugging background processing
 const createProcessingLogger = (jobId) => {
   const logContext = `[JOB:${jobId.slice(-8)}]`;
@@ -1611,6 +1652,13 @@ const processJobInBackground = async (jobId) => {
       return;
     }
 
+    // IMMEDIATE CANCELLATION CHECK at start
+    if (shouldCancelImmediately(jobId)) {
+      logger.warn("IMMEDIATE_CANCELLATION_DETECTED_AT_START", { jobId });
+      console.log(`🛑 IMMEDIATE CANCELLATION: Job ${jobId} cancelled before processing started`);
+      return;
+    }
+
     logger.info("JOB_LOADED", {
       status: job.status,
       totalContacts: job.totalContacts,
@@ -1753,6 +1801,12 @@ const processJobInBackground = async (jobId) => {
         console.log(`🟥 [BATCH INDEX GUARD] currentBatchIndex (${job.currentBatchIndex}) >= contactBatches.length (${contactBatches.length}), sıfırlanıyor.`);
         job.currentBatchIndex = 0;
         await saveJobs({ ...(await loadJobs()), [jobId]: job });
+      }
+
+      // IMMEDIATE CANCELLATION CHECK at batch start
+      if (shouldCancelImmediately(jobId)) {
+        console.log(`🛑 IMMEDIATE CANCELLATION: Batch ${batchIndex + 1} cancelled for job ${jobId}`);
+        return;
       }
 
       // Her batch başında status ve cancelToken kontrolü
@@ -2328,8 +2382,17 @@ const processJobInBackground = async (jobId) => {
           jobsBeforeBreak[jobId] = job;
           await saveJobs(jobsBeforeBreak);
           
-          await new Promise((resolve) => setTimeout(resolve, breakTime));
-          console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
+          // Use interruptible delay for breaks
+          try {
+            await interruptibleDelay(breakTime, jobId, `break of ${breakMinutes} minutes`);
+            console.log(`▶️ Mola tamamlandı, devam ediliyor.`);
+          } catch (error) {
+            if (error.message === "IMMEDIATE_CANCELLATION") {
+              console.log(`🛑 Break interrupted by immediate cancellation for job ${jobId}`);
+              return; // Exit immediately
+            }
+            throw error; // Re-throw other errors
+          }
           
           // CRITICAL: Check if job completed during break
           if (await checkJobStatusAndExit(jobId, "after break", initialCancelToken)) return;
@@ -2342,8 +2405,18 @@ const processJobInBackground = async (jobId) => {
           const waitSeconds = Math.round(waitTime / 1000);
           
           console.log(`⏳ Human pattern delay (${currentPatternName}): ${waitSeconds} seconds (${waitMinutes} minutes) before next profile...`);
-          await new Promise((resolve) => setTimeout(resolve, waitTime));
-          console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
+          
+          // Use interruptible delay for wait times
+          try {
+            await interruptibleDelay(waitTime, jobId, `human pattern delay of ${waitSeconds} seconds`);
+            console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
+          } catch (error) {
+            if (error.message === "IMMEDIATE_CANCELLATION") {
+              console.log(`🛑 Wait time interrupted by immediate cancellation for job ${jobId}`);
+              return; // Exit immediately
+            }
+            throw error; // Re-throw other errors
+          }
           
           // CRITICAL: Check if job completed during delay
           if (await checkJobStatusAndExit(jobId, "after delay", initialCancelToken)) return;
@@ -4576,6 +4649,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     
     // Complete each active job (CRM-aware) with IMMEDIATE STOP
     for (const job of activeJobs) {
+      // IMMEDIATE CANCELLATION: Add to global cancellation registry
+      addImmediateCancellation(job.jobId);
+      
       // CRITICAL: Set a new cancelToken to break any running background loops IMMEDIATELY
       const newCancelToken = uuidv4();
       const oldCancelToken = job.cancelToken;
@@ -4592,23 +4668,31 @@ app.post("/cancel-processing/:userId", async (req, res) => {
             contact.status = "completed";
             contact.completedAt = now;
             contact.error = null;
+            contact.processedAt = now;
             newlyCompletedCount++;
           }
         });
       }
+      
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
+      
       // Mark job as completed
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;
       job.manualCompletion = true;
       job.lastProcessedAt = now;
+      
       // Mark cooldown as overridden to prevent unwanted restart
       job.cooldownOverridden = true;
       job.overriddenAt = now;
+      
+      // FORCE IMMEDIATE SAVE to ensure background processing sees the changes instantly
       jobs[job.jobId] = job;
+      await saveJobs(jobs); // IMMEDIATE SAVE after each job modification
+      
       cancelledJobs.push({
         jobId: job.jobId,
         originalUserId: job.userId,
@@ -4618,7 +4702,10 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         newlyCompletedCount
       });
       console.log(`✅ CRM Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
+      console.log(`💾 IMMEDIATE SAVE: Job ${job.jobId} saved with cancelToken: ${job.cancelToken}`);
     }
+    
+    // Final save to ensure all changes are persisted
     await saveJobs(jobs);
 
     // CRM-AWARE: Clear current job ID from ALL user sessions sharing the same CRM URL
@@ -4659,6 +4746,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       success: true,
       message: `Processing completed successfully for all CRM jobs. All remaining contacts marked as successful.`,
       completedJobs: cancelledJobs,
+      immediateStop: true,
+      immediateCancellation: true,
+      crmShared: !!normalizedCrmUrl,
       debugInfo: {
         crmUrl: normalizedCrmUrl,
         jobsCompleted: cancelledJobs.length,
@@ -4666,6 +4756,9 @@ app.post("/cancel-processing/:userId", async (req, res) => {
         clearedUsers: clearedUsers,
         cooldownOverridden: true,
         userSessionUpdated: clearedUsers.length > 0,
+        backgroundProcessingStopped: true,
+        immediateCancellationActive: cancelledJobs.map(job => job.jobId),
+        cancelTokensUpdated: cancelledJobs.map(job => ({ jobId: job.jobId, newCancelToken: jobs[job.jobId]?.cancelToken })),
         nextStep: "All users sharing this CRM should reload the extension to see updated status"
       }
     });
