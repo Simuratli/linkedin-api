@@ -4174,371 +4174,7 @@ app.get("/user-jobs-history/:userId", async (req, res) => {
   }
 });
 
-// Endpoint to override cooldown and allow new processing
-app.post("/override-cooldown/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { forceOverride = false, reason = "Manual override" } = req.body;
-    
-    console.log(`🔓 Cooldown override requested for user ${userId}:`, { forceOverride, reason });
-    
-    // Load jobs to check current status
-    const jobs = await loadJobs();
-    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
-    
-    if (userJobs.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No jobs found for this user"
-      });
-    }
-    
-    // Find the most recent completed job
-    const completedJobs = userJobs
-      .filter(job => job.status === "completed" && job.completedAt)
-      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-    
-    if (completedJobs.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No completed jobs found to override cooldown for"
-      });
-    }
-    
-    const lastCompletedJob = completedJobs[0];
-    const completedAt = new Date(lastCompletedJob.completedAt);
-    const now = new Date();
-    const daysSinceCompletion = Math.floor((now - completedAt) / (1000 * 60 * 60 * 24));
-    
-    // Check if already overridden
-    if (lastCompletedJob.cooldownOverridden) {
-      return res.status(200).json({
-        success: false,
-        message: "Cooldown has already been overridden for this user",
-        alreadyOverridden: true,
-        overriddenAt: lastCompletedJob.overriddenAt,
-        overrideReason: lastCompletedJob.overrideReason,
-        canStartNewJob: true
-      });
-    }
-    
-    // Check if override is needed
-    if (daysSinceCompletion >= 30) {
-      return res.status(200).json({
-        success: false,
-        message: "Cooldown period has already ended naturally. You can start new processing.",
-        daysSinceCompletion,
-        cooldownNeeded: false,
-        canStartNewJob: true
-      });
-    }
-    
-    // Perform the override
-    console.log(`🔧 Updating job ${lastCompletedJob.jobId} with override flags for user ${userId}`);
-    
-    // Add override flag to the job
-    lastCompletedJob.cooldownOverridden = true;
-    lastCompletedJob.overriddenAt = now.toISOString();
-    lastCompletedJob.overrideReason = reason;
-    lastCompletedJob.daysSinceCompletionAtOverride = daysSinceCompletion;
-    
-    console.log(`🔧 Override data:`, {
-      cooldownOverridden: lastCompletedJob.cooldownOverridden,
-      overriddenAt: lastCompletedJob.overriddenAt,
-      overrideReason: lastCompletedJob.overrideReason
-    });
-    
-    // Save the updated job with better error handling
-    try {
-      jobs[lastCompletedJob.jobId] = lastCompletedJob;
-      await saveJobs(jobs);
-      console.log(`💾 Saved override for job ${lastCompletedJob.jobId}`);
-      
-      // Add a small delay to ensure MongoDB write is complete
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Verify the save worked by reloading with retry logic
-      let verifyJob = null;
-      let retryCount = 0;
-      const maxRetries = 3;
-      
-      while (retryCount < maxRetries) {
-        const reloadedJobs = await loadJobs();
-        verifyJob = reloadedJobs[lastCompletedJob.jobId];
-        
-        if (verifyJob?.cooldownOverridden === true) {
-          console.log(`✅ Verification successful on attempt ${retryCount + 1} - Job ${lastCompletedJob.jobId} cooldownOverridden: ${verifyJob.cooldownOverridden}`);
-          break;
-        }
-        
-        retryCount++;
-        if (retryCount < maxRetries) {
-          console.log(`⏳ Verification failed on attempt ${retryCount}, retrying...`);
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-      }
-      
-      if (!verifyJob?.cooldownOverridden && retryCount >= maxRetries) {
-        console.error(`❌ Override save verification failed after ${maxRetries} attempts! Job ${lastCompletedJob.jobId} cooldownOverridden is: ${verifyJob?.cooldownOverridden}`);
-        
-        // Even if verification fails, the job was saved, so let's proceed with a warning
-        console.log(`⚠️ Proceeding with override despite verification failure - job was updated in memory`);
-      }
-      
-    } catch (saveError) {
-      console.error(`❌ Failed to save override: ${saveError.message}`);
-      return res.status(500).json({
-        success: false,
-        message: "Failed to save override to database",
-        error: saveError.message
-      });
-    }
-    
-    console.log(`✅ Cooldown overridden for user ${userId}. Job ${lastCompletedJob.jobId} marked as override.`);
-    
-    // After successful override, automatically start a new job
-    console.log(`🚀 Starting new job automatically after cooldown override for user ${userId}`);
-    
-    try {
-      // Get user session to check for CRM URL and contacts
-      const userSessions = await loadUserSessions();
-      const userSession = userSessions[userId];
-      
-      if (!userSession || !userSession.crmUrl) {
-        console.log(`⚠️ No user session or CRM URL found for ${userId}, cannot auto-start new job`);
-        return res.status(200).json({
-          success: true,
-          message: `Cooldown period overridden successfully`,
-          overriddenJob: {
-            jobId: lastCompletedJob.jobId,
-            completedAt: lastCompletedJob.completedAt,
-            overriddenAt: lastCompletedJob.overriddenAt,
-            daysRemaining: 30 - daysSinceCompletion
-          },
-          canStartNewJob: true,
-          autoStartFailed: "No user session or CRM URL found",
-          nextStep: "Please start a new job manually"
-        });
-      }
-      
-      // Create a new job with fresh contacts
-      const newJobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const now = new Date();
-      
-      // Get contacts from the previous job and FULLY reset them
-      const previousContacts = lastCompletedJob.contacts || [];
-      const freshContacts = previousContacts.map(contact => ({
-        contactId: contact.contactId,
-        linkedinUrl: contact.linkedinUrl,
-        fullName: contact.fullName,
-        status: 'pending',  // Reset ALL contacts to pending (0/12 restart)
-        error: null,
-        processedAt: null,
-        attempts: 0,
-        linkedinData: null
-      }));
-      
-      if (freshContacts.length === 0) {
-        console.log(`⚠️ No contacts found in previous job ${lastCompletedJob.jobId}, cannot auto-start`);
-        return res.status(200).json({
-          success: true,
-          message: `Cooldown period overridden successfully`,
-          overriddenJob: {
-            jobId: lastCompletedJob.jobId,
-            completedAt: lastCompletedJob.completedAt,
-            overriddenAt: lastCompletedJob.overriddenAt,
-            daysRemaining: 30 - daysSinceCompletion
-          },
-          canStartNewJob: true,
-          autoStartFailed: "No contacts found in previous job",
-          nextStep: "Please add contacts and start a new job manually"
-        });
-      }
-      
-      // Create new job with COMPLETE RESET (0/12 start)
-      const newJob = {
-        jobId: newJobId,
-        userId: userId,
-        status: 'processing',  // Start processing immediately
-        contacts: freshContacts,
-        totalContacts: freshContacts.length,
-        processedCount: 0,       // RESET: Start from 0
-        successCount: 0,         // RESET: Start from 0
-        failureCount: 0,         // RESET: Start from 0
-        currentBatchIndex: 0,    // RESET: Start from beginning
-        createdAt: now.toISOString(),
-        startTime: now.toISOString(),
-        lastProcessedAt: now.toISOString(),
-        errors: [],
-        crmUrl: userSession.crmUrl, // CRITICAL: Add crmUrl to job for proper stats key generation
-        humanPatterns: {
-          startPattern: null,
-          startTime: now.toISOString(),
-          patternHistory: []
-        },
-        dailyStats: {
-          startDate: now.toISOString().split('T')[0],
-          processedToday: 0,
-          patternBreakdown: {}
-        },
-        // Override job metadata
-        isOverrideJob: true,
-        originalJobId: lastCompletedJob.jobId,
-        overrideReason: reason
-      };
-      
-      // Save the new job
-      const allJobs = await loadJobs();
-      allJobs[newJobId] = newJob;
-      await saveJobs(allJobs);
-      
-      // Update user session with new job ID
-      userSession.currentJobId = newJobId;
-      await saveUserSessions(userSessions);
-      
-      console.log(`✅ New job ${newJobId} created automatically with ${freshContacts.length} contacts FULLY RESET to pending (0/${freshContacts.length})`);
-      
-      // Start background processing for the new job IMMEDIATELY
-      setImmediate(() => {
-        console.log(`🔄 Starting background processing for RESET job ${newJobId} - processing from 0/${freshContacts.length}`);
-        processJobInBackground(newJobId);
-      });
-      
-      res.status(200).json({
-        success: true,
-        message: `Cooldown overridden and new job started from 0/${freshContacts.length}`,
-        overriddenJob: {
-          jobId: lastCompletedJob.jobId,
-          completedAt: lastCompletedJob.completedAt,
-          overriddenAt: lastCompletedJob.overriddenAt,
-          daysRemaining: 30 - daysSinceCompletion
-        },
-        newJob: {
-          jobId: newJobId,
-          status: 'processing',
-          totalContacts: freshContacts.length,
-          processedCount: 0,  // Start from 0
-          successCount: 0,    // Start from 0
-          failureCount: 0,    // Start from 0
-          isOverrideJob: true,
-          originalJobId: lastCompletedJob.jobId
-        },
-        autoStarted: true,
-        canStartNewJob: true,
-        resetToZero: true,  // Flag indicating complete reset
-        contactSummary: {
-          totalFromCRM: freshContacts.length,
-          validLinkedInContacts: freshContacts.length,
-          allContactsResetToPending: true,
-          contactDetails: freshContacts.map(c => ({
-            name: c.fullName,
-            hasLinkedIn: !!c.linkedinUrl,
-            status: 'pending'  // All contacts are pending
-          }))
-        }
-      });
-      
-    } catch (error) {
-      console.error(`❌ Error auto-starting new job after override: ${error.message}`);
-      
-      // Still return success for the override, but mention auto-start failed
-      res.status(200).json({
-        success: true,
-        message: `Cooldown overridden successfully, but auto-start failed`,
-        overriddenJob: {
-          jobId: lastCompletedJob.jobId,
-          completedAt: lastCompletedJob.completedAt,
-          overriddenAt: lastCompletedJob.overriddenAt,
-          daysRemaining: 30 - daysSinceCompletion
-        },
-        canStartNewJob: true,
-        autoStartFailed: error.message,
-        nextStep: "Please start a new job manually"
-      });
-    }
-    
-  } catch (error) {
-    console.error(`❌ Error overriding cooldown: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Error overriding cooldown",
-      error: error.message
-    });
-  }
-});
 
-// Endpoint to check if cooldown can be overridden
-app.get("/can-override-cooldown/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    const jobs = await loadJobs();
-    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
-    
-    // Eğer aktif bir job varsa override butonu gösterilmesin
-    const activeJob = userJobs.find(job => 
-      job.status === "processing" || job.status === "pending" || job.status === "paused"
-    );
-    if (activeJob) {
-      return res.status(200).json({
-        success: true,
-        canOverride: false,
-        inCooldown: false,
-        reason: "Active job exists",
-        activeJobId: activeJob.jobId
-      });
-    }
-
-    // Find the most recent completed job
-    const completedJobs = userJobs
-      .filter(job => job.status === "completed" && job.completedAt)
-      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-
-    if (completedJobs.length === 0) {
-      return res.status(200).json({
-        success: true,
-        canOverride: false,
-        reason: "No completed jobs found",
-        inCooldown: false
-      });
-    }
-    
-    const lastCompletedJob = completedJobs[0];
-    const completedAt = new Date(lastCompletedJob.completedAt);
-    const now = new Date();
-    const daysSinceCompletion = Math.floor((now - completedAt) / (1000 * 60 * 60 * 24));
-    const daysRemaining = Math.max(0, Math.ceil(30 - daysSinceCompletion));
-
-    // Check if already overridden
-    const alreadyOverridden = lastCompletedJob.cooldownOverridden;
-
-    // Check if in cooldown period
-    const inCooldown = daysSinceCompletion < 30 && !alreadyOverridden;
-
-    res.status(200).json({
-      success: true,
-      canOverride: inCooldown,
-      inCooldown,
-      alreadyOverridden,
-      daysSinceCompletion,
-      daysRemaining,
-      lastCompletedJob: {
-        jobId: lastCompletedJob.jobId,
-        completedAt: lastCompletedJob.completedAt,
-        processedCount: lastCompletedJob.processedCount,
-        totalContacts: lastCompletedJob.totalContacts
-      }
-    });
-    
-  } catch (error) {
-    console.error(`❌ Error checking cooldown override status: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Error checking cooldown override status",
-      error: error.message
-    });
-  }
-});
 
 // Debug endpoint to manually restart a stuck job
 app.post("/debug-restart-job/:jobId", async (req, res) => {
@@ -4875,28 +4511,41 @@ app.post("/restart-processing/:userId", async (req, res) => {
     const { userId } = req.params;
     const { reason = "Manual restart", updateContacts = true } = req.body;
 
-    console.log(`🔄 Restart processing requested for user ${userId}`);
+    console.log(`🔄 CRM-aware restart processing requested for user ${userId}`);
 
-    // Load jobs
-    const jobs = await loadJobs();
-    const userJobs = Object.values(jobs).filter(job => job.userId === userId);
-
-    if (userJobs.length === 0) {
+    // Load user sessions and jobs
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    
+    if (!userSession?.crmUrl) {
       return res.status(404).json({
         success: false,
-        message: "No jobs found for this user"
+        message: "User session or CRM URL not found"
       });
     }
 
-    // Find the most recent job (completed or not)
-    const sortedJobs = userJobs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    const currentJob = sortedJobs[0];
+    const normalizedCrm = normalizeCrmUrl(userSession.crmUrl);
+    console.log(`🏢 Processing restart for CRM: ${normalizedCrm}`);
 
-    console.log(`🔧 Resetting job ${currentJob.jobId} counts to 0 and disabling cooldown`);
+    const jobs = await loadJobs();
+    
+    // Find CRM-shared jobs (not just user-specific)
+    const crmJobs = Object.values(jobs).filter(job => {
+      const jobUserSession = userSessions[job.userId];
+      const jobCrmUrl = jobUserSession?.crmUrl;
+      return jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm;
+    }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    // Get user session for CRM access
-    const userSessions = await loadUserSessions();
-    const userSession = userSessions[userId];
+    if (crmJobs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No jobs found for this CRM"
+      });
+    }
+
+    // Find the most recent job (completed or active) for the CRM
+    const currentJob = crmJobs[0];
+    console.log(`🔧 CRM-aware restart: Resetting job ${currentJob.jobId} (originally created by ${currentJob.userId}) for CRM restart`);
 
     // Update contacts from CRM if requested and session exists
     if (updateContacts && userSession && userSession.crmUrl && userSession.accessToken) {
@@ -5111,36 +4760,46 @@ app.post("/restart-processing/:userId", async (req, res) => {
       }
     }
 
-    // **CLEAR COOLDOWN AND MARK AS OVERRIDDEN**
-    if (userSession) {
-      // Clear cooldown settings and mark as overridden
-      userSession.cooldownActive = false;
-      userSession.cooldownEndDate = null;
-      userSession.lastJobCompleted = null;
-      userSession.currentJobId = null; // Clear current job reference
-      userSession.cooldownOverridden = true; // Mark as overridden
-      userSession.overriddenAt = new Date().toISOString();
-
-      userSessions[userId] = userSession;
-      await saveUserSessions(userSessions);
-      console.log(`✅ Cooldown cleared and marked as overridden for user ${userId} - ready for new processing`);
+    // **CLEAR COOLDOWN AND MARK AS OVERRIDDEN FOR ALL CRM USERS**
+    const crmUsers = Object.values(userSessions).filter(session => 
+      session.crmUrl && normalizeCrmUrl(session.crmUrl) === normalizedCrm
+    );
+    
+    for (const session of crmUsers) {
+      const sessionUserId = Object.keys(userSessions).find(uid => userSessions[uid] === session);
+      if (sessionUserId) {
+        // Clear cooldown settings and mark as overridden
+        userSessions[sessionUserId].cooldownActive = false;
+        userSessions[sessionUserId].cooldownEndDate = null;
+        userSessions[sessionUserId].lastJobCompleted = null;
+        userSessions[sessionUserId].currentJobId = null; // Clear current job reference
+        userSessions[sessionUserId].cooldownOverridden = true; // Mark as overridden
+        userSessions[sessionUserId].overriddenAt = new Date().toISOString();
+        console.log(`✅ Cooldown cleared for CRM user ${sessionUserId}`);
+      }
     }
+    await saveUserSessions(userSessions);
+    console.log(`✅ Cooldown cleared for ${crmUsers.length} CRM users - ready for new processing`);
 
-    // **ALSO MARK ALL COMPLETED JOBS AS OVERRIDDEN** - This prevents reload restart
-    const allUserJobs = Object.values(jobs).filter(job => job.userId === userId);
+    // **ALSO MARK ALL CRM COMPLETED JOBS AS OVERRIDDEN** - This prevents reload restart
+    const allCrmJobs = Object.values(jobs).filter(job => {
+      const jobUserSession = userSessions[job.userId];
+      const jobCrmUrl = jobUserSession?.crmUrl;
+      return jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm;
+    });
     let markedJobs = 0;
 
-    for (const job of allUserJobs) {
+    for (const job of allCrmJobs) {
       if (job.status === "completed") {
         job.cooldownOverridden = true;
         job.overriddenAt = new Date().toISOString();
         jobs[job.jobId] = job;
         markedJobs++;
-        console.log(`🔓 Marked job ${job.jobId} as cooldown overridden`);
+        console.log(`🔓 Marked CRM job ${job.jobId} as cooldown overridden`);
       }
     }
 
-    // Mevcut job'ı tamamen sıfırla ve yeniden başlat
+    // COMPLETE RESET of current job for CRM-shared restart (0/48 start)
     currentJob.currentBatchIndex = 0;
     currentJob.cooldownOverridden = false;
     currentJob.successCount = 0;
@@ -5168,36 +4827,44 @@ app.post("/restart-processing/:userId", async (req, res) => {
     jobs[currentJob.jobId] = currentJob;
     await saveJobs(jobs);
 
-    // User session'da currentJobId'yi güncelle
-    if (userSession) {
-      userSession.currentJobId = currentJob.jobId;
-      await saveUserSessions(userSessions);
-      console.log(`✅ User session currentJobId güncellendi: ${currentJob.jobId}`);
+    // Update ALL CRM users' sessions with the reset job ID
+    for (const session of crmUsers) {
+      const sessionUserId = Object.keys(userSessions).find(uid => userSessions[uid] === session);
+      if (sessionUserId) {
+        userSessions[sessionUserId].currentJobId = currentJob.jobId;
+        console.log(`🔄 Updated CRM user ${sessionUserId} session with reset job ${currentJob.jobId}`);
+      }
     }
+    await saveUserSessions(userSessions);
 
     if (markedJobs > 0) {
-      console.log(`✅ Marked ${markedJobs} completed jobs as overridden to prevent reload restart`);
+      console.log(`✅ Marked ${markedJobs} CRM completed jobs as overridden to prevent reload restart`);
     }
 
-    console.log(`✅ Job resetlendi ve yeniden başlatıldı: ${currentJob.jobId}`);
+    console.log(`✅ CRM-shared job resetlendi ve yeniden başlatıldı: ${currentJob.jobId}`);
     console.log(`📊 Final job state: ${currentJob.totalContacts} total contacts, ${currentJob.contacts ? currentJob.contacts.length : 0} contacts in array`);
 
     // **ADD MISSING BACKGROUND PROCESSING START**
-    console.log(`🚀 Starting background processing for restarted job: ${currentJob.jobId}`);
+    console.log(`🚀 Starting background processing for CRM-shared restarted job: ${currentJob.jobId}`);
     processJobInBackground(currentJob.jobId).catch(error => {
       console.error(`❌ Background processing failed for job ${currentJob.jobId}:`, error);
     });
 
     res.status(200).json({
       success: true,
-      message: "Job resetlendi ve yeniden başlatıldı.",
+      message: `CRM-shared job reset and restarted from 0/${currentJob.totalContacts} for ${crmUsers.length} users`,
       restarted: true,
       processingStarted: true,
       readyForNewJob: false,
+      crmShared: true,
+      affectedUsers: crmUsers.length,
+      resetToZero: true, // Flag indicating complete reset
       jobStatus: {
         totalContacts: currentJob.totalContacts,
         contactsInArray: currentJob.contacts ? currentJob.contacts.length : 0,
-        status: currentJob.status
+        status: currentJob.status,
+        processedCount: 0, // Always 0 after reset
+        successCount: 0    // Always 0 after reset
       }
     });
 
