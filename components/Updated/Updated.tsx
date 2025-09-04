@@ -1489,29 +1489,51 @@ const renderErrors = () => {
         className="job-status-wrapper"
         style={{ position: "relative", display: "inline-block" }}
       >
-        <div 
-          className="status-select-trigger" 
-          style={{ 
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            padding: "6px 12px",
-            borderRadius: "6px",
-            backgroundColor: "white",
-            minWidth: "120px",
-            justifyContent: "space-between",
-            fontSize: "14px",
-            fontWeight: "500",
-            transition: "all 0.2s ease",
-            boxShadow: dropdownOpen ? "0 0 0 2px rgba(59, 130, 246, 0.3)" : "0 1px 2px rgba(0, 0, 0, 0.05)",
-            borderColor: dropdownOpen ? "#3b82f6" : "#d1d5db"
-          }}
-          onClick={() => setDropdownOpen(!dropdownOpen)}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <UpdateIcon status={normalizedJobStatus?.status === "cancelled" ? "paused" : (normalizedJobStatus?.status || "pending")} />
-            {renderStatusBadge()}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div 
+            className="status-select-trigger" 
+            style={{ 
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "6px 12px",
+              borderRadius: "6px",
+              backgroundColor: "white",
+              minWidth: "120px",
+              justifyContent: "space-between",
+              fontSize: "14px",
+              fontWeight: "500",
+              transition: "all 0.2s ease",
+              boxShadow: dropdownOpen ? "0 0 0 2px rgba(59, 130, 246, 0.3)" : "0 1px 2px rgba(0, 0, 0, 0.05)",
+              borderColor: dropdownOpen ? "#3b82f6" : "#d1d5db"
+            }}
+            onClick={() => setDropdownOpen(!dropdownOpen)}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <UpdateIcon status={normalizedJobStatus?.status === "cancelled" ? "paused" : (normalizedJobStatus?.status || "pending")} />
+              {renderStatusBadge()}
+            </div>
           </div>
+          
+          {/* Always visible refresh button */}
+          <button 
+            className="control-button refresh-button"
+            onClick={() => window.location.reload()}
+            title="Refresh processing status"
+            style={{
+              background: "linear-gradient(45deg, #10B981, #059669)",
+              color: "white",
+              border: "1px solid #059669",
+              borderRadius: "6px",
+              padding: "8px 12px",
+              fontSize: "12px",
+              fontWeight: "bold",
+              cursor: "pointer",
+              transition: "all 0.2s ease"
+            }}
+          >
+            🔄 Refresh Status
+          </button>
         </div>
 
         {dropdownOpen && (

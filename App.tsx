@@ -659,8 +659,13 @@ function App() {
   const checkCooldownStatus = async (userId: string) => {
     try {
       console.log("🔍 Checking cooldown status for user:", userId);
-      const response = await fetch(`${API_BASE_URL}/user-cooldown/${encodeURIComponent(userId)}`);
+      
+      // Include crmUrl parameter for CRM-aware cooldown checking
+      const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
+      const response = await fetch(`${API_BASE_URL}/user-cooldown/${encodeURIComponent(userId)}${crmParam}`);
+      
       console.log("🔍 Cooldown API response status:", response.status);
+      console.log("🔍 Cooldown check with CRM URL:", crmUrl || 'none');
 
       if (response.ok) {
         const result = await response.json();
@@ -669,11 +674,15 @@ function App() {
         if (result.success && result.cooldownStatus?.hasCooldown) {
           const cooldownData = result.cooldownStatus;
           const daysLeft = cooldownData.daysRemaining || 0;
+          const isSharedJob = result.cooldownStatus.sharedJob;
+          const originalCreator = result.cooldownStatus.originalCreator;
 
           console.log("🚫 User is in cooldown period:", {
             daysLeft,
             completedAt: cooldownData.completedAt,
-            cooldownEndDate: cooldownData.cooldownEndDate
+            cooldownEndDate: cooldownData.cooldownEndDate,
+            isSharedJob,
+            originalCreator
           });
 
           setCooldownInfo({
@@ -682,16 +691,23 @@ function App() {
             lastCompleted: cooldownData.completedAt
           });
 
+          // Enhanced message for shared jobs
+          const cooldownMessage = isSharedJob 
+            ? `🚫 Cooldown Period Active (Shared CRM)\nCooldown active due to job completed by ${originalCreator}.\nDays Remaining:\n${Math.max(0, Math.ceil(daysLeft))} days\nLast Completed:\n${new Date(cooldownData.completedAt).toLocaleString()}\nThis CRM has reached its processing limit. Please wait for the cooldown period to end.`
+            : `🚫 Cooldown Period Active\nAll contacts updated.\nDays Remaining:\n${Math.max(0, Math.ceil(daysLeft))} days\nLast Completed:\n${new Date(cooldownData.completedAt).toLocaleString()}\nAll contacts have been processed. Please wait for the cooldown period to end before starting a new processing job.`;
+
           // Show info message in UI (all contacts updated)
           chrome.runtime.sendMessage({
             type: "PROCESS_STATUS",
             data: {
               status: "cooldown_active",
-              message: `🚫 Cooldown Period Active\nAll contacts updated.\nDays Remaining:\n${Math.max(0, Math.ceil(daysLeft))} days\nLast Completed:\n${new Date(cooldownData.completedAt).toLocaleString()}\nAll contacts have been processed. Please wait for the cooldown period to end before starting a new processing job.`,
+              message: cooldownMessage,
               cooldownInfo: {
                 active: true,
                 daysLeft: Math.max(0, Math.ceil(daysLeft)),
-                lastCompleted: cooldownData.completedAt
+                lastCompleted: cooldownData.completedAt,
+                isSharedJob,
+                originalCreator
               }
             },
           });

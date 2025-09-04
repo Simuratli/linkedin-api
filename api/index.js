@@ -657,17 +657,39 @@ app.post("/start-processing", async (req, res) => {
 
 
     // Check for cooldownOverridden on last completed job
+    // ENHANCED: Check both user's own jobs AND shared CRM jobs
+    const normalizedCrmUrlForCooldown = normalizeCrmUrl(crmUrl);
+    
+    // Check user's own completed jobs
     const userJobsArr = Object.values(allJobs).filter(job => job.userId === userId);
     const completedJobsArr = userJobsArr.filter(job => job.status === "completed" && job.completedAt)
       .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
     const lastCompletedJob = completedJobsArr.length > 0 ? completedJobsArr[0] : null;
-    if (lastCompletedJob && lastCompletedJob.cooldownOverridden) {
+    
+    // ENHANCED: Also check for shared CRM jobs with cooldownOverridden
+    const sharedCrmJobWithCooldown = await Job.findOne({
+      crmUrl: normalizedCrmUrlForCooldown,
+      status: "completed",
+      cooldownOverridden: true
+    }).sort({ completedAt: -1 });
+
+    console.log(`🔍 COOLDOWN OVERRIDE CHECK: User job cooldown: ${lastCompletedJob?.cooldownOverridden}, Shared CRM job cooldown: ${sharedCrmJobWithCooldown?.cooldownOverridden}`);
+
+    // Block if either user's job or shared CRM job has cooldownOverridden
+    if ((lastCompletedJob && lastCompletedJob.cooldownOverridden) || sharedCrmJobWithCooldown) {
+      const blockingJob = sharedCrmJobWithCooldown || lastCompletedJob;
+      const isSharedJob = !!sharedCrmJobWithCooldown;
+      
       return res.status(403).json({
         success: false,
-        message: "You cannot start a new job. Cooldown is overridden for this user. Please wait 1 month or contact admin.",
+        message: isSharedJob 
+          ? `You cannot start a new job. Cooldown is overridden for this CRM due to job completed by ${blockingJob.originalCreator}. Please wait 1 month or contact admin.`
+          : "You cannot start a new job. Cooldown is overridden for this user. Please wait 1 month or contact admin.",
         cooldownOverridden: true,
-        overriddenAt: lastCompletedJob.overriddenAt,
-        jobId: lastCompletedJob.jobId
+        overriddenAt: blockingJob.overriddenAt,
+        jobId: blockingJob.jobId,
+        sharedJob: isSharedJob,
+        originalCreator: blockingJob.originalCreator
       });
     }
 
@@ -4402,6 +4424,10 @@ app.get("/health", async (req, res) => {
 app.get("/user-cooldown/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    const { crmUrl } = req.query;
+    
+    console.log(`🔍 COOLDOWN CHECK: Starting for user ${userId}, CRM: ${crmUrl || 'not provided'}`);
+    
     // Aktif iş var mı kontrol et (paused jobs da dahil!)
     const activeJob = await Job.findOne({ userId, status: { $in: ["processing", "pending", "paused"] } });
     if (activeJob) {
@@ -4418,6 +4444,45 @@ app.get("/user-cooldown/:userId", async (req, res) => {
         }
       });
     }
+
+    // CRM-AWARE: Check for shared jobs with cooldownOverridden if crmUrl is provided
+    if (crmUrl) {
+      const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
+      console.log(`🔍 COOLDOWN CHECK: Looking for shared CRM jobs with URL ${normalizedCrmUrl}`);
+      
+      // Check for any completed job with this CRM URL that has cooldownOverridden
+      const sharedJobWithCooldown = await Job.findOne({
+        crmUrl: normalizedCrmUrl,
+        status: "completed",
+        cooldownOverridden: true
+      }).sort({ completedAt: -1 });
+
+      if (sharedJobWithCooldown) {
+        const completedAt = new Date(sharedJobWithCooldown.completedAt);
+        const now = new Date();
+        const diffDays = (now - completedAt) / (1000 * 60 * 60 * 24);
+        const daysRemaining = Math.max(0, Math.ceil(30 - diffDays));
+
+        console.log(`🔍 COOLDOWN CHECK: Found shared job ${sharedJobWithCooldown.jobId} with cooldownOverridden, ${daysRemaining} days remaining`);
+
+        return res.status(200).json({
+          success: true,
+          cooldownStatus: {
+            userId,
+            hasCooldown: true,
+            completedAt: sharedJobWithCooldown.completedAt,
+            cooldownEndDate: new Date(completedAt.getTime() + (30 * 24 * 60 * 60 * 1000)).toISOString(),
+            daysRemaining: daysRemaining,
+            cooldownPeriod: 30,
+            sharedJob: true,
+            originalCreator: sharedJobWithCooldown.originalCreator,
+            jobId: sharedJobWithCooldown.jobId
+          },
+          message: `Cooldown active due to shared CRM job completed by ${sharedJobWithCooldown.originalCreator}`
+        });
+      }
+    }
+
     const cooldownStatus = await getUserCooldownStatus(userId);
     if (!cooldownStatus) {
       return res.status(200).json({
