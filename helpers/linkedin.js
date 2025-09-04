@@ -59,7 +59,7 @@ const HUMAN_PATTERNS = {
     time: "9 PM-8 AM (All days)",
     pause: true,
     hourStart: 22,
-    hourEnd: 6,
+    hourEnd: 22,
   },
   weekendBurst: {
     time: "9 AM-12 PM (Weekends)",
