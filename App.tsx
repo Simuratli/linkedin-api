@@ -213,7 +213,7 @@ function App() {
         }
       }
       
-      // Check user-job endpoint with CRM awareness
+      // Check user-job endpoint
       console.log("📋 Fetching user job info...");
       const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
       const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`);
@@ -233,6 +233,45 @@ function App() {
         if (result.job.jobAge?.days > 0) {
           console.log(`⏰ Job is ${result.job.jobAge.days} days old!`);
         }
+        
+        // **🚀 SIMPLE FIX: Set job status directly from debugJobMemory!**
+        console.log("🚀 SETTING JOB STATUS from debugJobMemory!");
+        const jobObj = result.job;
+        setJobStatus(jobObj);
+        setDailyLimitInfo(jobObj.dailyLimitInfo);
+        
+        // Create status message for paused job
+        let statusMessage = "";
+        const ageInfo = jobObj.jobAge?.days > 0 ? ` (${jobObj.jobAge.days}d old)` : '';
+        
+        if (jobObj.status === "paused") {
+          if (jobObj.hourlyLimitInfo?.hourlyLimitReached) {
+            const waitTime = jobObj.hourlyLimitInfo.waitInfo?.waitMinutes || 0;
+            statusMessage = `⏸️ Job paused${ageInfo} - Hourly limit reached. Wait ${waitTime} minutes.`;
+          } else {
+            statusMessage = `⏸️ Job paused${ageInfo}. Processed: ${jobObj.processedCount}/${jobObj.totalContacts}`;
+          }
+        } else if (jobObj.status === "processing") {
+          statusMessage = `🔄 Continuing job${ageInfo}... (${jobObj.processedCount}/${jobObj.totalContacts})`;
+        } else {
+          statusMessage = `Found ${jobObj.status} job${ageInfo}. Progress: ${jobObj.processedCount}/${jobObj.totalContacts}`;
+        }
+        
+        // Send message to background script
+        chrome.runtime.sendMessage({
+          type: "PROCESS_STATUS",
+          data: {
+            status: jobObj.status,
+            message: statusMessage,
+            canResume: jobObj.status === "paused",
+            jobData: jobObj,
+            dailyLimitInfo: jobObj.dailyLimitInfo,
+            humanPattern: result.currentPatternInfo,
+            jobAge: jobObj.jobAge,
+          },
+        });
+        
+        console.log("✅ Job status set and message sent!");
       } else {
         console.log("❌ No job found or job completed");
       }
@@ -1022,8 +1061,33 @@ const handleOverrideCooldown = async () => {
 
   // **ENHANCED** Job checking with cancelled job handling
   useEffect(() => {
+    console.log("🔍 useEffect TRIGGERED with auth state:", {
+      currentUserFullname: !!currentUserFullname,
+      accessToken: !!accessToken,
+      actualValues: {
+        currentUserFullname,
+        accessToken: accessToken?.substring(0, 10) + "..."
+      }
+    });
+    
     const checkExistingJob = async () => {
-      if (!currentUserFullname || !accessToken) return;
+      console.log("🔍 checkExistingJob STARTED - condition check:", {
+        currentUserFullname: !!currentUserFullname,
+        accessToken: !!accessToken,
+        actualCurrentUserFullname: currentUserFullname,
+        actualAccessToken: accessToken?.substring(0, 10) + "..."
+      });
+      
+      if (!currentUserFullname || !accessToken) {
+        console.log("❌ checkExistingJob EARLY RETURN - missing requirements:", {
+          hasCurrentUserFullname: !!currentUserFullname,
+          hasAccessToken: !!accessToken,
+          currentUserFullnameValue: currentUserFullname,
+          currentUserFullnameType: typeof currentUserFullname,
+          isEmptyString: currentUserFullname === ""
+        });
+        return;
+      }
 
       const userId = getUserId();
       const lastRun = localStorage.getItem("lastJobRun");
@@ -1051,29 +1115,103 @@ const handleOverrideCooldown = async () => {
       }
       console.log("✅ No cooldown active, proceeding with job check...");
 
+      console.log("🔍 DEBUG: About to start pattern and limits check...");
+      console.log("🔍 DEBUG: Current state before patterns:", {
+        userId,
+        currentUserFullname,
+        accessToken,
+        sidebarOpen
+      });
+
       // Check human patterns first
-      const patternInfo = await fetchHumanPatterns();
+      console.log("🔍 BEFORE fetchHumanPatterns...");
+      let patternInfo = null;
+      try {
+        patternInfo = await fetchHumanPatterns();
+        console.log("✅ fetchHumanPatterns SUCCESS:", patternInfo);
+      } catch (patternError) {
+        console.error("❌ fetchHumanPatterns ERROR:", patternError);
+        // Continue despite pattern error
+      }
 
       // Check daily limits
-      const limits = await checkDailyLimits(userId);
+      console.log("🔍 BEFORE checkDailyLimits...");
+      let limits = null;
+      try {
+        limits = await checkDailyLimits(userId);
+        console.log("✅ checkDailyLimits SUCCESS:", limits);
+      } catch (limitsError) {
+        console.error("❌ checkDailyLimits ERROR:", limitsError);
+        // Continue despite limits error
+      }
+
+      console.log("✅ BOTH FUNCTIONS COMPLETED - Moving to Step 2...");
 
       // **FIRST: Always check for existing jobs regardless of limits**
-      console.log("� Step 2: Checking for existing jobs first...");
+      console.log("🔍 Step 2: Checking for existing jobs first...");
       try {
         const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
         const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`, {
-          cache: 'no-cache',
+          method: 'GET',
           headers: {
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
           }
         });
-        if (jobResponse.ok) {
-          const jobResult = await jobResponse.json();
+        console.log("🔍 Job response status:", jobResponse.status);
+        console.log("🔍 Job response ok:", jobResponse.ok);
+        console.log("🔍 Job response statusText:", jobResponse.statusText);
+        console.log("🔍 API URL:", `${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+        
+        // **FIX: Handle 304 Not Modified as success**
+        if (jobResponse.ok || jobResponse.status === 304) {
+          let jobResult;
+          try {
+            jobResult = await jobResponse.json();
+            console.log("🔍 Job result:", jobResult);
+          } catch (jsonError) {
+            if (jobResponse.status === 304) {
+              console.log("⚠️ 304 response with no body - treating as no job found");
+              jobResult = { success: true, canResume: false, job: null };
+            } else {
+              throw jsonError;
+            }
+          }
+          console.log("🔍 Condition checks:", {
+            success: jobResult.success,
+            canResume: jobResult.canResume,
+            hasJob: !!jobResult.job,
+            jobStatus: jobResult.job?.status,
+            jobType: typeof jobResult.job,
+            jobKeys: jobResult.job ? Object.keys(jobResult.job) : 'no job'
+          });
           
           // **PRIORITY 1: If there's an existing job, show it regardless of limits**
-          if (jobResult.success && jobResult.canResume && jobResult.job) {
+          console.log("🔍 Testing individual conditions:");
+          console.log("🔍 jobResult.success:", jobResult.success, typeof jobResult.success);
+          console.log("🔍 jobResult.canResume:", jobResult.canResume, typeof jobResult.canResume);  
+          console.log("🔍 jobResult.job:", jobResult.job, typeof jobResult.job);
+          console.log("🔍 !!jobResult.job:", !!jobResult.job);
+          
+          const conditionResult = jobResult.success && jobResult.canResume && jobResult.job;
+          console.log("🔍 Final condition result:", conditionResult);
+          console.log("🔍 DETAILED CHECK:", {
+            step1: jobResult.success,
+            step2: jobResult.success && jobResult.canResume,
+            step3: jobResult.success && jobResult.canResume && jobResult.job,
+            finalResult: conditionResult
+          });
+          
+          // **ACTUAL CONDITION CHECK - FIXED**
+          if (conditionResult) {
             console.log("✅ Found existing job - prioritizing job display over limits");
+            console.log("🔍 Job details:", {
+              status: jobResult.job.status,
+              pauseDisplayInfo: jobResult.job.pauseDisplayInfo,
+              hourlyLimitReached: jobResult.job.hourlyLimitInfo?.hourlyLimitReached,
+              waitMinutes: jobResult.job.hourlyLimitInfo?.waitInfo?.waitMinutes
+            });
             const jobObj = jobResult.job;
             
             setJobStatus(jobObj);
@@ -1125,13 +1263,31 @@ const handleOverrideCooldown = async () => {
             });
             
             setIsCheckingJob(false);
+            console.log("🚨 RETURNING EARLY - NO MORE CODE SHOULD RUN AFTER THIS");
             return; // Exit early - existing job takes priority
+          } else {
+            console.log("❌ Job condition failed:", {
+              success: jobResult.success,
+              canResume: jobResult.canResume,
+              hasJob: !!jobResult.job,
+              reason: !jobResult.success ? 'success=false' : 
+                      !jobResult.canResume ? 'canResume=false' : 
+                      !jobResult.job ? 'job missing' : 'unknown'
+            });
           }
+        } else {
+          console.log("❌ Job response NOT OK:", {
+            status: jobResponse.status,
+            statusText: jobResponse.statusText,
+            ok: jobResponse.ok,
+            url: jobResponse.url
+          });
         }
       } catch (jobCheckError) {
         console.error("Error checking for existing job:", jobCheckError);
       }
 
+      console.log("🚨 THIS SHOULD NOT RUN IF JOB WAS FOUND - Step 2 continuing...");
       // **PRIORITY 2: Only check limits if no existing job found**
       if (limits && !limits.canProcess) {
         console.log("🚫 No existing job found and processing limits reached");
@@ -1173,13 +1329,7 @@ const handleOverrideCooldown = async () => {
       try {
         console.log("🔍 Step 3: No existing job found, checking for fresh start...");
         const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
-        const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`, {
-          cache: 'no-cache',
-          headers: {
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-          }
-        });
+        const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`);
         console.log("🔍 User job API response status:", response.status);
 
         if (response.ok) {
@@ -1328,8 +1478,20 @@ const handleOverrideCooldown = async () => {
       }
     };
 
-    if (currentUserFullname && accessToken) {
+    if (currentUserFullname && currentUserFullname.trim() !== "" && accessToken) {
+      console.log("🚀 CALLING checkExistingJob - Auth state valid:", {
+        currentUserFullname,
+        hasAccessToken: !!accessToken
+      });
       checkExistingJob();
+    } else {
+      console.log("❌ NOT CALLING checkExistingJob - Auth state invalid:", {
+        currentUserFullname,
+        currentUserFullnameType: typeof currentUserFullname,
+        hasAccessToken: !!accessToken,
+        isEmptyString: currentUserFullname === "",
+        isTrimmedEmpty: currentUserFullname?.trim() === ""
+      });
     }
   }, [currentUserFullname, accessToken]);
 

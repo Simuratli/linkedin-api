@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import './Updated.css'
 import UpdateIcon from "../../assets/update-icon";
 
@@ -190,11 +190,12 @@ export function JobStatusPopover({
   onShowOverrideButton,
   onForceRun
 }: JobStatusPopoverProps) {
-  const [visible, setVisible] = useState(false);
   const [showRestartOptions, setShowRestartOptions] = useState(false);
   // Fix: Move restartLoading state to top-level to avoid hook order issues
   const [restartLoading, setRestartLoading] = useState(false);
   const [refreshingToken, setRefreshingToken] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Defensive: If jobStatus is not fully populated, try to map/fill missing fields for failed jobs
   let normalizedJobStatus = jobStatus;
@@ -434,6 +435,23 @@ export function JobStatusPopover({
       percentage: patternLimit > 0 ? Math.round((actualPatternCount / patternLimit) * 100) : 0
     };
   };
+
+  // Click outside detection for dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+
+    if (dropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [dropdownOpen]);
 
   const renderStatusBadge = () => {
     // Priority 1: Cooldown state
@@ -884,7 +902,7 @@ export function JobStatusPopover({
       isAutoResumable = jobStatus.pauseDisplayInfo.isAutoResumable;
     } else if (jobStatus.pauseReason) {
       // Fallback to old logic
-      const reasonMessages = {
+      const reasonMessages: Record<string, string> = {
         daily_limit_reached: "Daily processing limit has been reached",
         pattern_limit_reached: `${jobStatus.currentPattern} pattern limit reached`,
         pause_period: `Currently in ${jobStatus.currentPattern} pause period`,
@@ -1172,6 +1190,25 @@ const renderErrors = () => {
             >
               ✅ Complete Processing
             </button>
+            <button 
+              className="control-button refresh-button"
+              onClick={() => window.location.reload()}
+              title="Refresh processing status"
+              style={{
+                background: "linear-gradient(45deg, #10B981, #059669)",
+                color: "white",
+                border: "1px solid #059669",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+                marginRight: 8
+              }}
+            >
+              🔄 Refresh Status
+            </button>
             {/* Show Force Run button for paused jobs */}
             {jobStatus.status === "paused" && onForceRun && (
               <button 
@@ -1447,20 +1484,38 @@ const renderErrors = () => {
   }
 
   return (
-    <div>
+    <div ref={dropdownRef}>
       <div
         className="job-status-wrapper"
-        onMouseEnter={() => setVisible(true)}
-        onMouseLeave={() => setVisible(false)}
         style={{ position: "relative", display: "inline-block" }}
       >
-        <span className="update-icon" style={{ cursor: "pointer" }}>
-          <UpdateIcon status={normalizedJobStatus?.status === "cancelled" ? "paused" : (normalizedJobStatus?.status || "pending")} />
-          {renderStatusBadge()}
-        </span>
+        <div 
+          className="status-select-trigger" 
+          style={{ 
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            padding: "6px 12px",
+            borderRadius: "6px",
+            backgroundColor: "white",
+            minWidth: "120px",
+            justifyContent: "space-between",
+            fontSize: "14px",
+            fontWeight: "500",
+            transition: "all 0.2s ease",
+            boxShadow: dropdownOpen ? "0 0 0 2px rgba(59, 130, 246, 0.3)" : "0 1px 2px rgba(0, 0, 0, 0.05)",
+            borderColor: dropdownOpen ? "#3b82f6" : "#d1d5db"
+          }}
+          onClick={() => setDropdownOpen(!dropdownOpen)}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <UpdateIcon status={normalizedJobStatus?.status === "cancelled" ? "paused" : (normalizedJobStatus?.status || "pending")} />
+            {renderStatusBadge()}
+          </div>
+        </div>
 
-        {visible && (
-          <div className="popup-box enhanced-popup" style={{ 
+        {dropdownOpen && (
+          <div className={`popup-box enhanced-popup ${dropdownOpen ? 'show' : ''}`} style={{ 
             position: 'absolute',
             top: '-3px',
             zIndex: 9999 
