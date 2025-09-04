@@ -1,9 +1,14 @@
 const mongoose = require('mongoose');
 
-// MongoDB Job Schema
+// MongoDB Job Schema - CRM-CENTRIC VERSION
 const jobSchema = new mongoose.Schema({
   jobId: { type: String, required: true, unique: true },
-  userId: { type: String, required: true, index: true },
+  // CRM-CENTRIC FIELDS
+  crmUrl: { type: String, index: true }, // PRIMARY: Normalized CRM URL for job discovery
+  originalCreator: { type: String, index: true }, // Who originally created this job
+  participants: [{ type: String }], // Array of all users who can access this job
+  // LEGACY SUPPORT
+  userId: { type: String, index: true }, // Keep for backward compatibility
   status: { 
     type: String, 
     required: true,
