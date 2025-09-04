@@ -609,8 +609,9 @@ app.post("/start-processing", async (req, res) => {
     // Enhanced limit checking with CRM-based sharing
     const limitCheck = await checkDailyLimit(userId, crmUrl);
 
-    // Load jobs once at the start
+    // Load jobs and user sessions once at the start
     const allJobs = await loadJobs();
+    const userSessions = await loadUserSessions();
     const now = new Date();
 
 
@@ -844,9 +845,8 @@ app.post("/start-processing", async (req, res) => {
           }
         : null;
 
-    // Load existing jobs and user sessions
+    // Load existing jobs (user sessions already loaded at start)
     const jobs = await loadJobs();
-    const userSessions = await loadUserSessions();
     
     // Check for existing CRM-wide job (shared across all users of same CRM)
     let existingJob = null;
@@ -865,7 +865,7 @@ app.post("/start-processing", async (req, res) => {
         status: job.status,
         ageInHours: Math.round(jobAgeInHours * 100) / 100,
         isOld: jobAgeInHours > 24,
-        crmMatch: jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm
+        crmMatch: jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrmUrl
       });
       
       // Skip old jobs (older than 24 hours) to avoid conflicts with fresh starts
