@@ -789,18 +789,13 @@ app.post("/start-processing", async (req, res) => {
     if (recentCompletedJob && !resume) {
       console.log(`� CRM-AWARE: Found recent completed job for CRM ${normalizedCrmUrl}. Preventing new job creation.`);
       return res.status(200).json({
-        success: false,
-        message: `Processing for this CRM was recently completed by ${recentCompletedJob.originalCreator || recentCompletedJob.userId}. Job completed at ${new Date(recentCompletedJob.completedAt).toLocaleString()}.`,
-        jobAlreadyCompleted: true,
-        existingJobId: recentCompletedJob.jobId,
-        completedBy: recentCompletedJob.originalCreator || recentCompletedJob.userId,
-        completedAt: recentCompletedJob.completedAt,
-        processedCount: recentCompletedJob.processedCount,
-        totalContacts: recentCompletedJob.totalContacts,
-        debugInfo: {
-          crmUrl: normalizedCrmUrl,
-          recentCompletedJob: recentCompletedJob.jobId,
-          preventDuplicateProcessing: true
+        success: true,
+        jobExists: true,
+        job: {
+          ...recentCompletedJob,
+          status: 'completed',
+          message: `Job completed by ${recentCompletedJob.originalCreator || recentCompletedJob.userId}`,
+          sharedJob: recentCompletedJob.originalCreator !== userId && recentCompletedJob.userId !== userId
         }
       });
     }
@@ -3246,9 +3241,10 @@ app.get("/user-job/:userId", async (req, res) => {
     });
     
     // CRM-CENTRIC: Add current user as participant if accessing different user's job
-    if (finalJob.userId !== userId) {
+    const jobOwner = finalJob.originalCreator || finalJob.userId;
+    if (jobOwner !== userId) {
       if (!finalJob.participants) {
-        finalJob.participants = [finalJob.userId]; // Initialize with original creator
+        finalJob.participants = [jobOwner]; // Initialize with original creator
       }
       if (!finalJob.participants.includes(userId)) {
         finalJob.participants.push(userId);
