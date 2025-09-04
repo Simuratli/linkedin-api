@@ -3055,7 +3055,7 @@ app.get("/job-status/:jobId", async (req, res) => {
   }
 });
 
-// CRM-CENTRIC job endpoint - ALL logic based on CRM URL only
+// CRM-CENTRIC job endpoint - Enhanced CRM URL detection
 app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -3063,21 +3063,82 @@ app.get("/user-job/:userId", async (req, res) => {
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
     
-    // CRM URL is REQUIRED - get from query parameter or user session
-    const finalCrmUrl = crmUrl || userSession?.crmUrl;
-    const normalizedCrmUrl = finalCrmUrl ? normalizeCrmUrl(finalCrmUrl) : null;
+    // ENHANCED: Try multiple ways to get CRM URL
+    let finalCrmUrl = crmUrl || userSession?.crmUrl;
+    let normalizedCrmUrl = finalCrmUrl ? normalizeCrmUrl(finalCrmUrl) : null;
+    
+    // FALLBACK: If no CRM URL found, try to detect from recent jobs
+    if (!normalizedCrmUrl) {
+      console.log(`🔍 CRM-CENTRIC: No CRM URL in session for user ${userId}, trying to detect from jobs...`);
+      
+      const jobs = await loadJobs();
+      
+      // Look for recent jobs by this user that have crmUrl
+      for (const job of Object.values(jobs)) {
+        if (job.userId === userId && job.crmUrl) {
+          // Check job age - only use recent jobs (within 48 hours)
+          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+          
+          if (jobAgeInHours <= 48) {
+            finalCrmUrl = job.crmUrl;
+            normalizedCrmUrl = job.crmUrl;
+            console.log(`🔍 CRM-CENTRIC: Detected CRM URL from recent job ${job.jobId}: ${normalizedCrmUrl}`);
+            
+            // SAVE: Update user session with detected CRM URL for future use
+            userSessions[userId] = userSessions[userId] || {};
+            userSessions[userId].crmUrl = finalCrmUrl;
+            await saveUserSessions(userSessions);
+            console.log(`✅ CRM-CENTRIC: Updated user ${userId} session with detected CRM URL`);
+            break;
+          }
+        }
+      }
+      
+      // ANOTHER FALLBACK: Look for jobs where this user is a participant
+      if (!normalizedCrmUrl) {
+        console.log(`🔍 CRM-CENTRIC: No own jobs found, checking if user ${userId} is participant in any jobs...`);
+        
+        for (const job of Object.values(jobs)) {
+          if (job.participants && job.participants.includes(userId) && job.crmUrl) {
+            // Check job age - only use recent jobs
+            const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+            const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+            
+            if (jobAgeInHours <= 48) {
+              finalCrmUrl = job.crmUrl;
+              normalizedCrmUrl = job.crmUrl;
+              console.log(`🔍 CRM-CENTRIC: Found CRM URL from participant job ${job.jobId}: ${normalizedCrmUrl}`);
+              
+              // SAVE: Update user session
+              userSessions[userId] = userSessions[userId] || {};
+              userSessions[userId].crmUrl = finalCrmUrl;
+              await saveUserSessions(userSessions);
+              console.log(`✅ CRM-CENTRIC: Updated user ${userId} session from participant job`);
+              break;
+            }
+          }
+        }
+      }
+    }
     
     if (!normalizedCrmUrl) {
-      console.log(`❌ CRM-CENTRIC: No CRM URL provided for user ${userId}`);
+      console.log(`❌ CRM-CENTRIC: No CRM URL available for user ${userId} (no session, no recent jobs)`);
       return res.status(400).json({
         success: false,
-        message: "CRM URL is required",
+        message: "CRM URL is required. Please access through the extension with a valid CRM URL.",
         canResume: false,
-        job: null
+        job: null,
+        troubleshooting: {
+          hasSession: !!userSession,
+          sessionHasCrmUrl: !!(userSession?.crmUrl),
+          queryHasCrmUrl: !!crmUrl,
+          suggestion: "Make sure you're accessing this from a valid CRM page with the browser extension active."
+        }
       });
     }
     
-    console.log(`🎯 CRM-CENTRIC: Looking for job ONLY by CRM URL ${normalizedCrmUrl} (user ${userId})`);
+    console.log(`🎯 CRM-CENTRIC: Looking for job by CRM URL ${normalizedCrmUrl} (user ${userId})`);
 
     const jobs = await loadJobs();
     let activeJob = null;
