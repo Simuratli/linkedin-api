@@ -2949,7 +2949,7 @@ app.get("/user-job/:userId", async (req, res) => {
       }
       if (!job.participants.includes(userId)) {
         job.participants.push(userId);
-        await saveJobs({ ...jobs, [activeJobId]: job });
+        await saveJobs({ ...jobs, [job.jobId]: job });
         console.log(`✅ CRM-AWARE: Added user ${userId} to shared job participants`);
       }
     }
@@ -2981,7 +2981,7 @@ app.get("/user-job/:userId", async (req, res) => {
         limitCheck.hourlyCount === 0 && 
         limitCheck.canProcess) {
       
-      console.log(`🔍 USER-JOB PAUSE DEBUG for job ${jobId}:`, {
+      console.log(`🔍 USER-JOB PAUSE DEBUG for job ${job.jobId}:`, {
         status: job.status,
         pauseReason: job.pauseReason,
         hourlyCount: limitCheck.hourlyCount,
@@ -2991,18 +2991,18 @@ app.get("/user-job/:userId", async (req, res) => {
         patternCountFromAPI: limitCheck.patternCount
       });
       
-      console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${jobId} - hourly limit reset, resuming processing`);
+      console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${job.jobId} - hourly limit reset, resuming processing`);
       console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}`);
       
       job.status = "processing";
       delete job.pauseReason;
       delete job.pausedAt;
       job.resumedAt = new Date().toISOString();
-      await saveJobs({ ...jobs, [jobId]: job });
-      console.log(`✅ Job ${jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
-      setImmediate(() => processJobInBackground(jobId));
+      await saveJobs({ ...jobs, [job.jobId]: job });
+      console.log(`✅ Job ${job.jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+      setImmediate(() => processJobInBackground(job.jobId));
     } else if (job.status === "paused") {
-      console.log(`⏸️ Job ${jobId} remains paused in user-job. Reason: ${job.pauseReason || 'MISSING'}, hourlyCount: ${limitCheck?.hourlyCount}, canProcess: ${limitCheck?.canProcess}`);
+      console.log(`⏸️ Job ${job.jobId} remains paused in user-job. Reason: ${job.pauseReason || 'MISSING'}, hourlyCount: ${limitCheck?.hourlyCount}, canProcess: ${limitCheck?.canProcess}`);
       console.log(`📊 Limits: daily=${limitCheck?.dailyCount}/${limitCheck?.dailyLimit}, hourly=${limitCheck?.hourlyCount}/${limitCheck?.hourlyLimit}, pattern=${limitCheck?.patternCount}/${limitCheck?.patternLimit}`);
     }
 
@@ -3016,7 +3016,7 @@ app.get("/user-job/:userId", async (req, res) => {
       const now = new Date();
       const hoursSincePause = pausedAt ? (now - pausedAt) / (1000 * 60 * 60) : 0;
       
-      console.log(`🔍 Checking auto-resume for job ${jobId} in user-job endpoint:`, {
+      console.log(`🔍 Checking auto-resume for job ${job.jobId} in user-job endpoint:`, {
         pauseReason: job.pauseReason,
         pausedAt: job.pausedAt,
         hoursSincePause: Math.round(hoursSincePause * 100) / 100
@@ -3031,17 +3031,17 @@ app.get("/user-job/:userId", async (req, res) => {
         
         // Resume if it's a different hour or different day
         if (currentHour !== pausedHour || currentDate !== pausedDate) {
-          console.log(`🔄 Auto-resuming job ${jobId} in user-job - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
+          console.log(`🔄 Auto-resuming job ${job.jobId} in user-job - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
           
           // CRITICAL: Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
-          console.log(`📝 USER-JOB BEFORE RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
+          console.log(`📝 USER-JOB BEFORE RESUME: Job ${job.jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
           job.status = "processing";
           delete job.pauseReason;
           delete job.pausedAt;
           delete job.estimatedResumeTime;
           job.resumedAt = new Date().toISOString();
           job.lastProcessedAt = new Date().toISOString();
-          console.log(`📝 USER-JOB AFTER RESUME: Job ${jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
+          console.log(`📝 USER-JOB AFTER RESUME: Job ${job.jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
           
           // Add automatic resume event to history
           const resumeEvent = {
@@ -3065,17 +3065,17 @@ app.get("/user-job/:userId", async (req, res) => {
           console.log(`📝 Automatic hourly resume event logged in user-job:`, resumeEvent);
           
           // CRITICAL: Save the job with updated status IMMEDIATELY
-          await saveJobs({ ...jobs, [jobId]: job });
-          console.log(`💾 USER-JOB: Job ${jobId} saved with status: ${job.status}`);
+          await saveJobs({ ...jobs, [job.jobId]: job });
+          console.log(`💾 USER-JOB: Job ${job.jobId} saved with status: ${job.status}`);
           
           // Restart background processing
-          console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} from user-job after hourly reset`);
-          setImmediate(() => processJobInBackground(jobId));
+          console.log(`🚀 Restarting background processing for auto-resumed job ${job.jobId} from user-job after hourly reset`);
+          setImmediate(() => processJobInBackground(job.jobId));
         }
       }
       // FULL RESET AUTO-RESUME: After 1 MINUTE (test mode), reset ALL limits (for daily/pattern limits or as fallback)
       else if (hoursSincePause >= (1/60)) { // TEST: 1 minute instead of 1 hour
-        console.log(`🔄 Auto-resuming job ${jobId} in user-job - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
+        console.log(`🔄 Auto-resuming job ${job.jobId} in user-job - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
         
         // Reset ALL user stats to 0
         await resetUserStats(userId);
@@ -3107,11 +3107,11 @@ app.get("/user-job/:userId", async (req, res) => {
         job.pauseResumeHistory.push(resumeEvent);
         console.log(`📝 Automatic 1-hour resume event logged in user-job:`, resumeEvent);
         
-        await saveJobs({ ...jobs, [jobId]: job });
+        await saveJobs({ ...jobs, [job.jobId]: job });
         
         // Restart background processing
-        console.log(`🚀 Restarting background processing for auto-resumed job ${jobId} from user-job after limit reset`);
-        setImmediate(() => processJobInBackground(jobId));
+        console.log(`🚀 Restarting background processing for auto-resumed job ${job.jobId} from user-job after limit reset`);
+        setImmediate(() => processJobInBackground(job.jobId));
       }
     }
 
