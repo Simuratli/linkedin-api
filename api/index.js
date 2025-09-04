@@ -311,6 +311,13 @@ const updateUserDailyStats = async (userId, crmUrl) => {
 // Enhanced human-like behavior patterns with time awareness
 const getHumanPatternDelay = () => {
   const currentPattern = getCurrentHumanPattern();
+  
+  console.log(`🕒 Current pattern: ${currentPattern.name}`, {
+    pause: currentPattern.pause,
+    minDelay: currentPattern.minDelay,
+    maxDelay: currentPattern.maxDelay,
+    time: currentPattern.time
+  });
 
   if (currentPattern.pause) {
     // During pause periods, wait until next active period
@@ -325,15 +332,34 @@ const getHumanPatternDelay = () => {
     resumeTime.setHours(nextPattern.hourStart, 0, 0, 0);
 
     const waitTime = resumeTime.getTime() - now.getTime();
+    const waitMinutes = Math.round(waitTime / (1000 * 60));
+    
+    console.log(`⏸️ In pause period, waiting until ${nextPattern.name} starts:`, {
+      waitTimeMs: waitTime,
+      waitMinutes: waitMinutes,
+      resumeTime: resumeTime.toLocaleString()
+    });
+    
     return Math.max(waitTime, 5 * 60 * 1000); // Minimum 5 minutes
   }
 
   // During active periods, use pattern-specific delays
-  return (
-    Math.floor(
-      Math.random() * (currentPattern.maxDelay - currentPattern.minDelay + 1)
-    ) + currentPattern.minDelay
-  );
+  const delayMs = Math.floor(
+    Math.random() * (currentPattern.maxDelay - currentPattern.minDelay + 1)
+  ) + currentPattern.minDelay;
+  
+  const delayMinutes = Math.round(delayMs / (1000 * 60) * 100) / 100; // Round to 2 decimal places
+  const delaySeconds = Math.round(delayMs / 1000);
+  
+  console.log(`⏳ Active pattern delay for ${currentPattern.name}:`, {
+    minDelayMs: currentPattern.minDelay,
+    maxDelayMs: currentPattern.maxDelay,
+    selectedDelayMs: delayMs,
+    selectedDelayMinutes: delayMinutes,
+    selectedDelaySeconds: delaySeconds
+  });
+  
+  return delayMs;
 };
 
 const shouldTakeBreak = (processedInSession) => {
@@ -2203,8 +2229,9 @@ const processJobInBackground = async (jobId) => {
         // Human-like behavior: Check for pattern-aware breaks
         const breakTime = shouldTakeBreak(processedInSession);
         if (breakTime > 0) {
-          const breakMinutes = Math.round(breakTime / 1000 / 60);
-          console.log(`😴 Taking a ${breakMinutes} minute break after ${processedInSession} profiles in ${currentPatternName}...`);
+          const breakMinutes = Math.round(breakTime / (1000 * 60) * 100) / 100; // Correct calculation
+          const breakSeconds = Math.round(breakTime / 1000);
+          console.log(`😴 Taking a ${breakSeconds} seconds (${breakMinutes} minutes) break after ${processedInSession} profiles in ${currentPatternName}...`);
           
           // Initialize break history if not exists
           if (!job.breakHistory) {
@@ -2241,7 +2268,10 @@ const processJobInBackground = async (jobId) => {
         // Wait between batches with human pattern timing
         if (batchIndex < contactBatches.length - 1) {
           const waitTime = getHumanPatternDelay();
-          console.log(`⏳ Human pattern delay (${currentPatternName}): ${Math.round(waitTime / 1000 / 60)} minutes before next profile...`);
+          const waitMinutes = Math.round(waitTime / (1000 * 60) * 100) / 100; // Correct calculation
+          const waitSeconds = Math.round(waitTime / 1000);
+          
+          console.log(`⏳ Human pattern delay (${currentPatternName}): ${waitSeconds} seconds (${waitMinutes} minutes) before next profile...`);
           await new Promise((resolve) => setTimeout(resolve, waitTime));
           console.log(`▶️ Bekleme süresi tamamlandı, sonraki profile geçiliyor.`);
           
