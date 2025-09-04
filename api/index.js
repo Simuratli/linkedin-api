@@ -104,7 +104,7 @@ const PORT = process.env.PORT || 3000;
 
 // ENHANCED DAILY LIMIT CONFIGURATION WITH HUMAN PATTERNS
 const DAILY_PROFILE_LIMIT = 180; // Conservative daily limit
-const BURST_LIMIT = 20; // Max profiles in one hour (increased from 11 to 20)
+const BURST_LIMIT = 15; // Max profiles in one hour (reduced from 20 to 15)
 const HOUR_IN_MS = 60 * 60 * 1000;
 
 // CRM URL normalization for shared processing
