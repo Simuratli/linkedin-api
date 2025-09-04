@@ -3055,182 +3055,221 @@ app.get("/job-status/:jobId", async (req, res) => {
   }
 });
 
-// Enhanced user job endpoint with CRM-awareness
+// CRM-CENTRIC job endpoint - ALL logic based on CRM URL only
 app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const { crmUrl } = req.query; // Allow CRM URL to be passed as query parameter
+    const { crmUrl } = req.query;
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
     
-    // Determine CRM URL - from query parameter or user session
+    // CRM URL is REQUIRED - get from query parameter or user session
     const finalCrmUrl = crmUrl || userSession?.crmUrl;
     const normalizedCrmUrl = finalCrmUrl ? normalizeCrmUrl(finalCrmUrl) : null;
     
-    console.log(`🔍 CRM-AWARE: Checking job for user ${userId}:`, {
-      hasSession: !!userSession,
-      currentJobId: userSession?.currentJobId,
-      crmUrl: normalizedCrmUrl,
-      crmUrlSource: crmUrl ? 'query' : 'session'
-    });
-
-    // CRM-AWARE: Look for any incomplete job for this CRM URL
-    let activeJobId = null;
-    const jobs = await loadJobs();
+    if (!normalizedCrmUrl) {
+      console.log(`❌ CRM-CENTRIC: No CRM URL provided for user ${userId}`);
+      return res.status(400).json({
+        success: false,
+        message: "CRM URL is required",
+        canResume: false,
+        job: null
+      });
+    }
     
-    if (normalizedCrmUrl) {
-      for (const job of Object.values(jobs)) {
-        if (job.crmUrl === normalizedCrmUrl && 
-            job.status !== "completed" && 
-            job.contacts && 
-            job.processedCount < job.totalContacts) {
-          
-          // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
-          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
-          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
-          
-          // Skip old jobs (older than 24 hours) to avoid conflicts with fresh starts
-          if (jobAgeInHours > 24) {
-            console.log(`⏭️ Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old) for CRM ${normalizedCrmUrl}`);
-            continue;
-          }
-          
-          activeJobId = job.jobId;
-          console.log(`📋 CRM-AWARE: Found active job for CRM ${normalizedCrmUrl}:`, {
+    console.log(`🎯 CRM-CENTRIC: Looking for job ONLY by CRM URL ${normalizedCrmUrl} (user ${userId})`);
+
+    const jobs = await loadJobs();
+    let activeJob = null;
+    let completedJob = null;
+    
+    // SEARCH ALL JOBS BY CRM URL ONLY - ignore user ownership
+    for (const job of Object.values(jobs)) {
+      if (job.crmUrl === normalizedCrmUrl) {
+        // Check job age - ignore jobs older than 24 hours
+        const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+        const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+        
+        if (jobAgeInHours > 24) {
+          console.log(`⏭️ CRM-CENTRIC: Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old)`);
+          continue;
+        }
+        
+        // Priority 1: Incomplete jobs
+        if (job.status !== "completed" && job.contacts && job.processedCount < job.totalContacts) {
+          activeJob = job;
+          console.log(`📋 CRM-CENTRIC: Found ACTIVE job ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
             jobId: job.jobId,
             originalCreator: job.userId,
             ageInHours: Math.round(jobAgeInHours * 100) / 100,
             processedCount: job.processedCount,
             totalContacts: job.totalContacts
           });
-          break;
+          break; // Found incomplete job, stop searching
+        }
+        
+        // Priority 2: Most recent completed job
+        else if (job.status === "completed") {
+          if (!completedJob || new Date(job.completedAt) > new Date(completedJob.completedAt)) {
+            completedJob = job;
+          }
         }
       }
     }
     
-    // Fallback to user-specific job if no CRM job found
-    if (!activeJobId && userSession?.currentJobId) {
-      activeJobId = userSession.currentJobId;
-      console.log(`📋 Using user-specific job fallback: ${activeJobId}`);
-    }
+    // LEGACY MIGRATION: Search through user sessions if no direct CRM match
+    if (!activeJob && !completedJob) {
+      console.log(`🔍 CRM-CENTRIC: No direct CRM match found, searching user sessions for CRM ${normalizedCrmUrl}`);
       
-    if (!activeJobId) {
+      for (const [sessionUserId, session] of Object.entries(userSessions)) {
+        if (session.crmUrl && normalizeCrmUrl(session.crmUrl) === normalizedCrmUrl) {
+          // Find jobs by this user for migration
+          for (const job of Object.values(jobs)) {
+            if (job.userId === sessionUserId && !job.crmUrl) {
+              // Check job age
+              const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+              const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+              
+              if (jobAgeInHours > 24) {
+                continue;
+              }
+              
+              // MIGRATE job with CRM URL
+              job.crmUrl = normalizedCrmUrl;
+              
+              if (job.status !== "completed" && job.contacts && job.processedCount < job.totalContacts) {
+                activeJob = job;
+                console.log(`🔄 CRM-CENTRIC: MIGRATED active job ${job.jobId} with crmUrl: ${normalizedCrmUrl}`);
+                break;
+              } else if (job.status === "completed") {
+                if (!completedJob || new Date(job.completedAt) > new Date(completedJob.completedAt)) {
+                  completedJob = job;
+                  console.log(`� CRM-CENTRIC: MIGRATED completed job ${job.jobId} with crmUrl: ${normalizedCrmUrl}`);
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Save migrations
+      if (activeJob || completedJob) {
+        await saveJobs(jobs);
+      }
+    }
+    
+    // DECISION: Use active job if available, otherwise show completed job
+    const finalJob = activeJob || completedJob;
+    
+    if (!finalJob) {
       const limitCheck = await checkDailyLimit(userId, finalCrmUrl);
-      console.log(`❌ No active job found for user ${userId} and CRM ${normalizedCrmUrl}`);
+      console.log(`❌ CRM-CENTRIC: No job found for CRM ${normalizedCrmUrl}`);
         
       return res.status(200).json({
         success: false,
-        message: "No active job found for user",
+        message: "No job found for this CRM",
         canResume: false,
         job: null,
         currentPattern: getCurrentHumanPattern().name,
         limitInfo: limitCheck,
       });
     }
-    const job = jobs[activeJobId];
     
-    console.log("🔍 DEBUG: Memory Load Check for /user-job:", {
-      userId: userId,
-      totalJobsInMemory: Object.keys(jobs).length,
+    console.log("🎯 CRM-CENTRIC: Memory Load Check for /user-job:", {
       crmUrl: normalizedCrmUrl,
-      activeJobId: activeJobId,
-      jobExistsInMemory: !!jobs[activeJobId],
-      allJobIds: Object.keys(jobs).slice(0, 10) // Show first 10 job IDs
+      totalJobsInMemory: Object.keys(jobs).length,
+      jobFound: !!finalJob,
+      jobId: finalJob?.jobId,
+      jobType: activeJob ? 'ACTIVE' : 'COMPLETED'
     });
     
-    if (!job) {
-      console.error(`❌ Job ${activeJobId} not found for user ${userId}`);
-      return res.status(200).json({
-        success: false,
-        message: `Job with ID ${activeJobId} not found`,
-        canResume: false,
-        job: null,
-        currentPattern: getCurrentHumanPattern().name,
-      });
-    }
-
-    // CRM-AWARE: If this job belongs to a different user, make sure current user is added to participants
-    if (job.userId !== userId) {
-      if (!job.participants) {
-        job.participants = [job.userId]; // Initialize with original creator
+    // CRM-CENTRIC: Add current user as participant if accessing different user's job
+    if (finalJob.userId !== userId) {
+      if (!finalJob.participants) {
+        finalJob.participants = [finalJob.userId]; // Initialize with original creator
       }
-      if (!job.participants.includes(userId)) {
-        job.participants.push(userId);
-        await saveJobs({ ...jobs, [job.jobId]: job });
-        console.log(`✅ CRM-AWARE: Added user ${userId} to shared job participants`);
+      if (!finalJob.participants.includes(userId)) {
+        finalJob.participants.push(userId);
+        await saveJobs({ ...jobs, [finalJob.jobId]: finalJob });
+        console.log(`✅ CRM-CENTRIC: Added user ${userId} to CRM job ${finalJob.jobId} participants`);
       }
     }
 
     // Calculate job age
-    const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+    const jobCreatedAt = new Date(finalJob.createdAt || finalJob.startTime || Date.now());
     const jobAgeInDays = Math.floor((Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60 * 24));
     const jobAgeInHours = Math.floor((Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60));
     
-    console.log(`📊 Job age check for ${userId}:`, {
-      jobId: job.jobId,
-      status: job.status,
+    console.log(`📊 CRM-CENTRIC: Job info for ${normalizedCrmUrl}:`, {
+      jobId: finalJob.jobId,
+      status: finalJob.status,
       ageInDays: jobAgeInDays,
       ageInHours: jobAgeInHours,
-      processedCount: job.processedCount,
-      totalContacts: job.totalContacts
+      processedCount: finalJob.processedCount,
+      totalContacts: finalJob.totalContacts,
+      originalCreator: finalJob.userId,
+      currentUser: userId,
+      isSharedJob: finalJob.userId !== userId
     });
 
     // Synchronize the job stats with daily stats
-    console.log(`🔄 Synchronizing job stats for user ${userId}`);
-    await synchronizeJobWithDailyStats(userId, job);
+    console.log(`🔄 CRM-CENTRIC: Synchronizing job stats for CRM ${normalizedCrmUrl}`);
+    await synchronizeJobWithDailyStats(userId, finalJob);
 
-    const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
+    const limitCheck = await checkDailyLimit(userId, finalCrmUrl);
 
-    // SIMPLE HOURLY RESUME: Only resume if explicitly paused due to hourly limit and hourly count reset
-    if (job.status === "paused" && 
-        job.pauseReason === "hourly_limit_reached" && 
+    // CRM-CENTRIC: SIMPLE HOURLY RESUME - Only resume if explicitly paused due to hourly limit and hourly count reset
+    if (finalJob.status === "paused" && 
+        finalJob.pauseReason === "hourly_limit_reached" && 
         limitCheck && 
         limitCheck.hourlyCount === 0 && 
         limitCheck.canProcess) {
       
-      console.log(`🔍 USER-JOB PAUSE DEBUG for job ${job.jobId}:`, {
-        status: job.status,
-        pauseReason: job.pauseReason,
+      console.log(`🔍 CRM-CENTRIC: PAUSE DEBUG for job ${finalJob.jobId}:`, {
+        status: finalJob.status,
+        pauseReason: finalJob.pauseReason,
         hourlyCount: limitCheck.hourlyCount,
         canProcess: limitCheck.canProcess,
-        processedCount: job.processedCount,
-        totalContacts: job.totalContacts,
-        patternCountFromAPI: limitCheck.patternCount
+        processedCount: finalJob.processedCount,
+        totalContacts: finalJob.totalContacts,
+        patternCountFromAPI: limitCheck.patternCount,
+        crmUrl: normalizedCrmUrl
       });
       
-      console.log(`🔄 SIMPLE HOURLY RESUME (user-job): Job ${job.jobId} - hourly limit reset, resuming processing`);
+      console.log(`🔄 CRM-CENTRIC: SIMPLE HOURLY RESUME - Job ${finalJob.jobId} - hourly limit reset, resuming processing`);
       console.log(`📊 Limit check: canProcess=${limitCheck.canProcess}, hourlyCount=${limitCheck.hourlyCount}`);
       
-      job.status = "processing";
-      delete job.pauseReason;
-      delete job.pausedAt;
-      job.resumedAt = new Date().toISOString();
-      await saveJobs({ ...jobs, [job.jobId]: job });
-      console.log(`✅ Job ${job.jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
-      setImmediate(() => processJobInBackground(job.jobId));
-    } else if (job.status === "paused") {
-      console.log(`⏸️ Job ${job.jobId} remains paused in user-job. Reason: ${job.pauseReason || 'MISSING'}, hourlyCount: ${limitCheck?.hourlyCount}, canProcess: ${limitCheck?.canProcess}`);
-      console.log(`📊 Limits: daily=${limitCheck?.dailyCount}/${limitCheck?.dailyLimit}, hourly=${limitCheck?.hourlyCount}/${limitCheck?.hourlyLimit}, pattern=${limitCheck?.patternCount}/${limitCheck?.patternLimit}`);
+      finalJob.status = "processing";
+      delete finalJob.pauseReason;
+      delete finalJob.pausedAt;
+      finalJob.resumedAt = new Date().toISOString();
+      await saveJobs({ ...jobs, [finalJob.jobId]: finalJob });
+      console.log(`✅ CRM-CENTRIC: Job ${finalJob.jobId} status changed to processing (hourly count: ${limitCheck.hourlyCount})`);
+      setImmediate(() => processJobInBackground(finalJob.jobId));
+    } else if (finalJob.status === "paused") {
+      console.log(`⏸️ CRM-CENTRIC: Job ${finalJob.jobId} remains paused. Reason: ${finalJob.pauseReason || 'MISSING'}, hourlyCount: ${limitCheck?.hourlyCount}, canProcess: ${limitCheck?.canProcess}`);
+      console.log(`📊 CRM-CENTRIC: Limits: daily=${limitCheck?.dailyCount}/${limitCheck?.dailyLimit}, hourly=${limitCheck?.hourlyCount}/${limitCheck?.hourlyLimit}, pattern=${limitCheck?.patternCount}/${limitCheck?.patternLimit}`);
     }
 
-    // AUTO-RESUME LOGIC: Check if paused job can be resumed
-    if (job.status === "paused" && 
-        (job.pauseReason === "hourly_limit_reached" || 
-         job.pauseReason === "daily_limit_reached" || 
-         job.pauseReason === "pattern_limit_reached")) {
+    // CRM-CENTRIC: AUTO-RESUME LOGIC - Check if paused job can be resumed
+    if (finalJob.status === "paused" && 
+        (finalJob.pauseReason === "hourly_limit_reached" || 
+         finalJob.pauseReason === "daily_limit_reached" || 
+         finalJob.pauseReason === "pattern_limit_reached")) {
       
-      const pausedAt = job.pausedAt ? new Date(job.pausedAt) : null;
+      const pausedAt = finalJob.pausedAt ? new Date(finalJob.pausedAt) : null;
       const now = new Date();
       const hoursSincePause = pausedAt ? (now - pausedAt) / (1000 * 60 * 60) : 0;
       
-      console.log(`🔍 Checking auto-resume for job ${job.jobId} in user-job endpoint:`, {
-        pauseReason: job.pauseReason,
-        pausedAt: job.pausedAt,
-        hoursSincePause: Math.round(hoursSincePause * 100) / 100
+      console.log(`🔍 CRM-CENTRIC: Checking auto-resume for job ${finalJob.jobId}:`, {
+        pauseReason: finalJob.pauseReason,
+        pausedAt: finalJob.pausedAt,
+        hoursSincePause: Math.round(hoursSincePause * 100) / 100,
+        crmUrl: normalizedCrmUrl
       });
       
-      // HOURLY LIMIT AUTO-RESUME: Check if hour has changed (hourly count naturally resets)
-      if (job.pauseReason === "hourly_limit_reached" && pausedAt) {
+      // CRM-CENTRIC: HOURLY LIMIT AUTO-RESUME - Check if hour has changed (hourly count naturally resets)
+      if (finalJob.pauseReason === "hourly_limit_reached" && pausedAt) {
         const pausedHour = pausedAt.getHours();
         const currentHour = now.getHours();
         const pausedDate = pausedAt.toISOString().split("T")[0];
@@ -3238,17 +3277,17 @@ app.get("/user-job/:userId", async (req, res) => {
         
         // Resume if it's a different hour or different day
         if (currentHour !== pausedHour || currentDate !== pausedDate) {
-          console.log(`🔄 Auto-resuming job ${job.jobId} in user-job - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
+          console.log(`🔄 CRM-CENTRIC: Auto-resuming job ${finalJob.jobId} - Hour changed from ${pausedHour} to ${currentHour}, hourly limit naturally reset`);
           
           // CRITICAL: Resume the job (don't reset ALL stats, just resume since hourly count naturally reset)
-          console.log(`📝 USER-JOB BEFORE RESUME: Job ${job.jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
-          job.status = "processing";
-          delete job.pauseReason;
-          delete job.pausedAt;
-          delete job.estimatedResumeTime;
-          job.resumedAt = new Date().toISOString();
-          job.lastProcessedAt = new Date().toISOString();
-          console.log(`📝 USER-JOB AFTER RESUME: Job ${job.jobId} status = ${job.status}, pauseReason = ${job.pauseReason}`);
+          console.log(`📝 CRM-CENTRIC: BEFORE RESUME: Job ${finalJob.jobId} status = ${finalJob.status}, pauseReason = ${finalJob.pauseReason}`);
+          finalJob.status = "processing";
+          delete finalJob.pauseReason;
+          delete finalJob.pausedAt;
+          delete finalJob.estimatedResumeTime;
+          finalJob.resumedAt = new Date().toISOString();
+          finalJob.lastProcessedAt = new Date().toISOString();
+          console.log(`📝 CRM-CENTRIC: AFTER RESUME: Job ${finalJob.jobId} status = ${finalJob.status}, pauseReason = ${finalJob.pauseReason}`);
           
           // Add automatic resume event to history
           const resumeEvent = {
@@ -3263,38 +3302,39 @@ app.get("/user-job/:userId", async (req, res) => {
               currentHour: currentHour,
               resumeType: "natural_hourly_reset",
               statusChanged: "paused → processing",
-              endpoint: "user-job"
+              endpoint: "user-job-crm-centric",
+              crmUrl: normalizedCrmUrl
             }
           };
           
-          if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
-          job.pauseResumeHistory.push(resumeEvent);
-          console.log(`📝 Automatic hourly resume event logged in user-job:`, resumeEvent);
+          if (!finalJob.pauseResumeHistory) finalJob.pauseResumeHistory = [];
+          finalJob.pauseResumeHistory.push(resumeEvent);
+          console.log(`📝 CRM-CENTRIC: Automatic hourly resume event logged:`, resumeEvent);
           
           // CRITICAL: Save the job with updated status IMMEDIATELY
-          await saveJobs({ ...jobs, [job.jobId]: job });
-          console.log(`💾 USER-JOB: Job ${job.jobId} saved with status: ${job.status}`);
+          await saveJobs({ ...jobs, [finalJob.jobId]: finalJob });
+          console.log(`💾 CRM-CENTRIC: Job ${finalJob.jobId} saved with status: ${finalJob.status}`);
           
           // Restart background processing
-          console.log(`🚀 Restarting background processing for auto-resumed job ${job.jobId} from user-job after hourly reset`);
-          setImmediate(() => processJobInBackground(job.jobId));
+          console.log(`🚀 CRM-CENTRIC: Restarting background processing for auto-resumed job ${finalJob.jobId} after hourly reset`);
+          setImmediate(() => processJobInBackground(finalJob.jobId));
         }
       }
-      // FULL RESET AUTO-RESUME: After 1 MINUTE (test mode), reset ALL limits (for daily/pattern limits or as fallback)
+      // CRM-CENTRIC: FULL RESET AUTO-RESUME - After 1 MINUTE (test mode), reset ALL limits (for daily/pattern limits or as fallback)
       else if (hoursSincePause >= (1/60)) { // TEST: 1 minute instead of 1 hour
-        console.log(`🔄 Auto-resuming job ${job.jobId} in user-job - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
+        console.log(`🔄 CRM-CENTRIC: Auto-resuming job ${finalJob.jobId} - 1+ MINUTES passed (TEST MODE), resetting ALL limits`);
         
         // Reset ALL user stats to 0
         await resetUserStats(userId);
-        console.log(`🧹 Cleared all daily stats for user ${userId} in user-job endpoint`);
+        console.log(`🧹 CRM-CENTRIC: Cleared all daily stats for user ${userId}`);
         
         // Resume the job
-        job.status = "processing";
-        delete job.pauseReason;
-        delete job.pausedAt;
-        delete job.estimatedResumeTime;
-        job.resumedAt = new Date().toISOString();
-        job.lastProcessedAt = new Date().toISOString();
+        finalJob.status = "processing";
+        delete finalJob.pauseReason;
+        delete finalJob.pausedAt;
+        delete finalJob.estimatedResumeTime;
+        finalJob.resumedAt = new Date().toISOString();
+        finalJob.lastProcessedAt = new Date().toISOString();
         
         // Add automatic resume event to history
         const resumeEvent = {
@@ -3306,19 +3346,20 @@ app.get("/user-job/:userId", async (req, res) => {
           details: {
             waitedHours: Math.round(hoursSincePause * 100) / 100,
             resetLimits: "daily, hourly, pattern counts all reset to 0",
-            previousPauseReason: job.pauseReason
+            previousPauseReason: finalJob.pauseReason,
+            crmUrl: normalizedCrmUrl
           }
         };
         
-        if (!job.pauseResumeHistory) job.pauseResumeHistory = [];
-        job.pauseResumeHistory.push(resumeEvent);
-        console.log(`📝 Automatic 1-hour resume event logged in user-job:`, resumeEvent);
+        if (!finalJob.pauseResumeHistory) finalJob.pauseResumeHistory = [];
+        finalJob.pauseResumeHistory.push(resumeEvent);
+        console.log(`📝 CRM-CENTRIC: Automatic 1-hour resume event logged:`, resumeEvent);
         
-        await saveJobs({ ...jobs, [job.jobId]: job });
+        await saveJobs({ ...jobs, [finalJob.jobId]: finalJob });
         
         // Restart background processing
-        console.log(`🚀 Restarting background processing for auto-resumed job ${job.jobId} from user-job after limit reset`);
-        setImmediate(() => processJobInBackground(job.jobId));
+        console.log(`🚀 CRM-CENTRIC: Restarting background processing for auto-resumed job ${finalJob.jobId} after limit reset`);
+        setImmediate(() => processJobInBackground(finalJob.jobId));
       }
     }
 
@@ -3347,7 +3388,7 @@ app.get("/user-job/:userId", async (req, res) => {
     
     const hourlyWaitInfo = calculateHourlyWaitTime();
 
-    // Format dates properly
+    // CRM-CENTRIC: Format dates properly
     const formatDate = (date) => {
       if (!date) return null;
       try {
@@ -3360,22 +3401,24 @@ app.get("/user-job/:userId", async (req, res) => {
       }
     };
     
-    const createdAt = formatDate(job.createdAt) || formatDate(job.startTime) || null;
-    const lastProcessedAt = formatDate(job.lastProcessedAt) || formatDate(job.lastProcessedTime) || null;
-    const completedAt = formatDate(job.completedAt) || null;
-    const failedAt = formatDate(job.failedAt) || null;
+    const createdAt = formatDate(finalJob.createdAt) || formatDate(finalJob.startTime) || null;
+    const lastProcessedAt = formatDate(finalJob.lastProcessedAt) || formatDate(finalJob.lastProcessedTime) || null;
+    const completedAt = formatDate(finalJob.completedAt) || null;
+    const failedAt = formatDate(finalJob.failedAt) || null;
     
-    console.log("✅ Sending job data with age tracking:", { 
-      jobId: job.jobId,
+    console.log("✅ CRM-CENTRIC: Sending job data with age tracking:", { 
+      jobId: finalJob.jobId,
       ageInDays: jobAgeInDays,
-      processedCount: job.processedCount,
-      totalContacts: job.totalContacts,
+      processedCount: finalJob.processedCount,
+      totalContacts: finalJob.totalContacts,
       createdAt, 
       lastProcessedAt, 
-      completedAt 
+      completedAt,
+      crmUrl: normalizedCrmUrl,
+      isSharedJob: finalJob.userId !== userId
     });
 
-    // Function to get user-friendly pause messages
+    // CRM-CENTRIC: Function to get user-friendly pause messages
     const getPauseDisplayInfo = (pauseReason, limitCheck) => {
       if (!pauseReason) return null;
       
@@ -3401,43 +3444,43 @@ app.get("/user-job/:userId", async (req, res) => {
       };
     };
 
-    const pauseDisplayInfo = getPauseDisplayInfo(job.pauseReason, limitCheck);
+    const pauseDisplayInfo = getPauseDisplayInfo(finalJob.pauseReason, limitCheck);
 
-    // **DEBUG: Log exact response before sending**
+    // CRM-CENTRIC: DEBUG - Log exact response before sending
     const responseObject = {
       success: true,
-      canResume: job.status === "paused" || job.status === "processing",
+      canResume: finalJob.status === "paused" || finalJob.status === "processing",
       authStatus: {
-        linkedinValid: !job.pauseReason?.includes("linkedin_session"),
-        dataverseValid: !job.pauseReason?.includes("dataverse_session"),
-        lastError: job.lastError || null,
-        needsReauth: job.pauseReason?.includes("_session_invalid") || false
+        linkedinValid: !finalJob.pauseReason?.includes("linkedin_session"),
+        dataverseValid: !finalJob.pauseReason?.includes("dataverse_session"),
+        lastError: finalJob.lastError || null,
+        needsReauth: finalJob.pauseReason?.includes("_session_invalid") || false
       },
       job: {
-        jobId: job.jobId,
-        status: job.status,
-        totalContacts: job.totalContacts,
-        processedCount: job.processedCount,
-        successCount: job.successCount,
-        failureCount: job.failureCount,
+        jobId: finalJob.jobId,
+        status: finalJob.status,
+        totalContacts: finalJob.totalContacts,
+        processedCount: finalJob.processedCount,
+        successCount: finalJob.successCount,
+        failureCount: finalJob.failureCount,
         createdAt: createdAt,
         lastProcessedAt: lastProcessedAt,
         completedAt: completedAt,
         failedAt: failedAt,
-        pauseReason: job.pauseReason,
+        pauseReason: finalJob.pauseReason,
         // ENHANCED: Detailed pause information for frontend
         pauseDisplayInfo: pauseDisplayInfo,
-        pausedAt: job.pausedAt,
+        pausedAt: finalJob.pausedAt,
         // NEW: Unauthorized status flag for frontend
-        needsTokenRefresh: job.pauseReason === 'token_refresh_failed',
-        authError: job.pauseReason === 'token_refresh_failed' ? {
+        needsTokenRefresh: finalJob.pauseReason === 'token_refresh_failed',
+        authError: finalJob.pauseReason === 'token_refresh_failed' ? {
           type: 'TOKEN_REFRESH_FAILED',
           message: 'Authentication token expired. Please refresh token to continue.',
-          lastError: job.lastError
+          lastError: finalJob.lastError
         } : null,
-        lastError: job.lastError,
-        dailyStats: job.dailyStats,
-        humanPatterns: job.humanPatterns,
+        lastError: finalJob.lastError,
+        dailyStats: finalJob.dailyStats,
+        humanPatterns: finalJob.humanPatterns,
         currentPattern: currentPattern.name,
         currentPatternInfo: currentPattern,
         dailyLimitInfo: limitCheck,
@@ -3456,31 +3499,40 @@ app.get("/user-job/:userId", async (req, res) => {
           isOld: jobAgeInDays > 1, // Flag jobs older than 1 day
           isVeryOld: jobAgeInDays > 7 // Flag jobs older than 1 week
         },
-  // **ADD COOLDOWN OVERRIDE INFO** from job object
-  cooldownOverridden: job.cooldownOverridden || false,
-  overriddenAt: job.overriddenAt || null
+        // CRM-CENTRIC: Additional info
+        crmUrl: normalizedCrmUrl,
+        originalCreator: finalJob.userId,
+        isSharedJob: finalJob.userId !== userId,
+        participants: finalJob.participants || [finalJob.userId],
+        // **ADD COOLDOWN OVERRIDE INFO** from job object
+        cooldownOverridden: finalJob.cooldownOverridden || false,
+        overriddenAt: finalJob.overriddenAt || null
       },
       simpleClientStats: null,
       simpleClientInitialized: true
     };
     
-    console.log("🔍 DEBUG: Memory vs Response Debug for /user-job:", {
+    
+    console.log("🔍 CRM-CENTRIC: Memory vs Response Debug for /user-job:", {
       userId: userId,
-      memoryJobExists: !!job,
-      jobFromMemory: job ? {
-        jobId: job.jobId,
-        status: job.status,
-        processedCount: job.processedCount,
-        totalContacts: job.totalContacts
+      crmUrl: normalizedCrmUrl,
+      memoryJobExists: !!finalJob,
+      jobFromMemory: finalJob ? {
+        jobId: finalJob.jobId,
+        status: finalJob.status,
+        processedCount: finalJob.processedCount,
+        totalContacts: finalJob.totalContacts,
+        originalCreator: finalJob.userId,
+        isSharedJob: finalJob.userId !== userId
       } : null,
       responseSuccess: responseObject.success,
       responseJobExists: !!responseObject.job,
       responseJobId: responseObject.job?.jobId || 'null',
-      source: 'file_system_memory',
+      source: 'crm_centric_file_system_memory',
       timestamp: new Date().toISOString()
     });
     
-    console.log("🔍 API Response for /user-job:", JSON.stringify(responseObject, null, 2));
+    console.log("🔍 CRM-CENTRIC: API Response for /user-job:", JSON.stringify(responseObject, null, 2));
 
     // **PREVENT 304 CACHING** - Add no-cache headers to force fresh response
     res.set({
