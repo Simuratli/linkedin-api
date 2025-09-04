@@ -213,9 +213,10 @@ function App() {
         }
       }
       
-      // Check user-job endpoint
+      // Check user-job endpoint with CRM awareness
       console.log("📋 Fetching user job info...");
-      const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+      const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
+      const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`);
       const result = await response.json();
       console.log("📋 User job response:", result);
       
@@ -718,7 +719,8 @@ const handleOverrideCooldown = async () => {
       console.log("🔍 Checking for existing jobs after cooldown override...");
       
       try {
-        const jobCheckResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+        const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
+        const jobCheckResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`);
         console.log("🔍 Post-override job check status:", jobCheckResponse.status);
         
         if (jobCheckResponse.ok) {
@@ -835,7 +837,8 @@ const handleOverrideCooldown = async () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          reason: 'User completed processing from extension - all remaining contacts marked as successful'
+          reason: 'User completed processing from extension - all remaining contacts marked as successful',
+          crmUrl: crmUrl
         })
       });
 
@@ -931,7 +934,8 @@ const handleOverrideCooldown = async () => {
         // Refresh job status immediately
         const userId = getUserId();
         try {
-          const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`);
+          const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
+          const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`);
           if (response.ok) {
             const result = await response.json();
             if (result.success && result.job) {
@@ -1056,7 +1060,8 @@ const handleOverrideCooldown = async () => {
       // **FIRST: Always check for existing jobs regardless of limits**
       console.log("� Step 2: Checking for existing jobs first...");
       try {
-        const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`, {
+        const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
+        const jobResponse = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`, {
           cache: 'no-cache',
           headers: {
             'Cache-Control': 'no-cache',
@@ -1167,7 +1172,8 @@ const handleOverrideCooldown = async () => {
       setIsCheckingJob(true);
       try {
         console.log("🔍 Step 3: No existing job found, checking for fresh start...");
-        const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`, {
+        const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
+        const response = await fetch(`${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`, {
           cache: 'no-cache',
           headers: {
             'Cache-Control': 'no-cache',

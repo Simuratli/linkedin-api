@@ -603,10 +603,11 @@ app.post("/start-processing", async (req, res) => {
       });
     }
 
-    // First check if there's any existing incomplete job
+    // CRM-AWARE: Check for existing incomplete job for this CRM URL
+    const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
     let currentIncompleteJob = null;
     for (const job of Object.values(allJobs)) {
-      if (job.userId === userId && 
+      if (job.crmUrl === normalizedCrmUrl && 
           job.status !== "completed" && 
           job.contacts && 
           job.processedCount < job.totalContacts) {
@@ -615,8 +616,9 @@ app.post("/start-processing", async (req, res) => {
         const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
         const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
         
-        console.log(`🔍 Checking incomplete job ${job.jobId} for user ${userId}:`, {
+        console.log(`🔍 CRM-AWARE: Checking incomplete job ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
           jobId: job.jobId,
+          userId: job.userId,
           status: job.status,
           ageInHours: Math.round(jobAgeInHours * 100) / 100,
           isOld: jobAgeInHours > 24
@@ -2816,29 +2818,35 @@ app.get("/job-status/:jobId", async (req, res) => {
   }
 });
 
-// Enhanced user job endpoint with job age tracking and better memory
+// Enhanced user job endpoint with CRM-awareness
 app.get("/user-job/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    const { crmUrl } = req.query; // Allow CRM URL to be passed as query parameter
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
     
-    console.log(`🔍 Checking job for user ${userId}:`, 
-      userSession ? 
-      { hasSession: true, currentJobId: userSession.currentJobId, crmUrl: normalizeCrmUrl(userSession.crmUrl || '') } : 
-      { hasSession: false }
-    );
+    // Determine CRM URL - from query parameter or user session
+    const finalCrmUrl = crmUrl || userSession?.crmUrl;
+    const normalizedCrmUrl = finalCrmUrl ? normalizeCrmUrl(finalCrmUrl) : null;
+    
+    console.log(`🔍 CRM-AWARE: Checking job for user ${userId}:`, {
+      hasSession: !!userSession,
+      currentJobId: userSession?.currentJobId,
+      crmUrl: normalizedCrmUrl,
+      crmUrlSource: crmUrl ? 'query' : 'session'
+    });
 
-    // If no direct session, check for CRM-shared jobs
-    let sharedJobId = null;
-    if (!userSession || !userSession.currentJobId) {
-      if (userSession?.crmUrl) {
-        const normalizedCrm = normalizeCrmUrl(userSession.crmUrl);
-        const jobs = await loadJobs();
-        
-        // Look for any job from same CRM
-        for (const job of Object.values(jobs)) {
-          const jobUserSession = userSessions[job.userId];
+    // CRM-AWARE: Look for any incomplete job for this CRM URL
+    let activeJobId = null;
+    const jobs = await loadJobs();
+    
+    if (normalizedCrmUrl) {
+      for (const job of Object.values(jobs)) {
+        if (job.crmUrl === normalizedCrmUrl && 
+            job.status !== "completed" && 
+            job.contacts && 
+            job.processedCount < job.totalContacts) {
           
           // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
           const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
@@ -2846,87 +2854,74 @@ app.get("/user-job/:userId", async (req, res) => {
           
           // Skip old jobs (older than 24 hours) to avoid conflicts with fresh starts
           if (jobAgeInHours > 24) {
+            console.log(`⏭️ Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old) for CRM ${normalizedCrmUrl}`);
             continue;
           }
           
-          if (jobUserSession?.crmUrl && 
-              normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrm &&
-              job.status !== "completed" &&
-              job.contacts && 
-              job.processedCount < job.totalContacts) {
-            sharedJobId = job.jobId;
-            console.log(`📋 Found recent CRM-shared job for user ${userId}:`, {
-              jobId: job.jobId,
-              originalCreator: job.userId,
-              crmUrl: normalizedCrm,
-              ageInHours: Math.round(jobAgeInHours * 100) / 100
-            });
-            break;
-          }
+          activeJobId = job.jobId;
+          console.log(`📋 CRM-AWARE: Found active job for CRM ${normalizedCrmUrl}:`, {
+            jobId: job.jobId,
+            originalCreator: job.userId,
+            ageInHours: Math.round(jobAgeInHours * 100) / 100,
+            processedCount: job.processedCount,
+            totalContacts: job.totalContacts
+          });
+          break;
         }
       }
-      
-      if (!sharedJobId) {
-        const limitCheck = await checkDailyLimit(userId, userSession?.crmUrl);
-        console.log(`❌ No active job found for user ${userId}`);
-        
-        // **DEBUG: Log why no job was found**
-        console.log("🔍 DEBUG: No Job Found Analysis:", {
-          userId: userId,
-          hasUserSession: !!userSession,
-          userSessionJobId: userSession?.currentJobId || null,
-          searchedForSharedJob: true,
-          foundSharedJob: false,
-          totalJobsChecked: jobs ? Object.keys(jobs).length : 0,
-          userSessionDetails: userSession ? {
-            currentJobId: userSession.currentJobId,
-            crmUrl: userSession.crmUrl,
-            hasSession: true
-          } : { hasSession: false }
-        });
-        
-        return res.status(200).json({
-          success: false,
-          message: "No active job found for user",
-          canResume: false,
-          job: null,
-          currentPattern: getCurrentHumanPattern().name,
-          limitInfo: limitCheck,
-        });
-      }
     }
-
-    const jobs = await loadJobs();
-    const jobId = sharedJobId || userSession.currentJobId;
-    const job = jobs[jobId];
+    
+    // Fallback to user-specific job if no CRM job found
+    if (!activeJobId && userSession?.currentJobId) {
+      activeJobId = userSession.currentJobId;
+      console.log(`📋 Using user-specific job fallback: ${activeJobId}`);
+    }
+      
+    if (!activeJobId) {
+      const limitCheck = await checkDailyLimit(userId, finalCrmUrl);
+      console.log(`❌ No active job found for user ${userId} and CRM ${normalizedCrmUrl}`);
+        
+      return res.status(200).json({
+        success: false,
+        message: "No active job found for user",
+        canResume: false,
+        job: null,
+        currentPattern: getCurrentHumanPattern().name,
+        limitInfo: limitCheck,
+      });
+    }
+    const job = jobs[activeJobId];
     
     console.log("🔍 DEBUG: Memory Load Check for /user-job:", {
       userId: userId,
       totalJobsInMemory: Object.keys(jobs).length,
-      userSessionExists: !!userSession,
-      currentJobId: userSession?.currentJobId || null,
-      sharedJobId: sharedJobId || null,
-      finalJobId: jobId,
-      jobExistsInMemory: !!jobs[jobId],
+      crmUrl: normalizedCrmUrl,
+      activeJobId: activeJobId,
+      jobExistsInMemory: !!jobs[activeJobId],
       allJobIds: Object.keys(jobs).slice(0, 10) // Show first 10 job IDs
     });
     
     if (!job) {
-      console.error(`❌ Job ${jobId} not found for user ${userId}`);
+      console.error(`❌ Job ${activeJobId} not found for user ${userId}`);
       return res.status(200).json({
         success: false,
-        message: `Job with ID ${jobId} not found`,
+        message: `Job with ID ${activeJobId} not found`,
         canResume: false,
         job: null,
         currentPattern: getCurrentHumanPattern().name,
       });
     }
 
-    // If this is a shared job, make sure user is added to participants
-    if (sharedJobId && job.participants && !job.participants.includes(userId)) {
-      job.participants.push(userId);
-      await saveJobs({ ...jobs, [jobId]: job });
-      console.log(`✅ Added user ${userId} to shared job participants`);
+    // CRM-AWARE: If this job belongs to a different user, make sure current user is added to participants
+    if (job.userId !== userId) {
+      if (!job.participants) {
+        job.participants = [job.userId]; // Initialize with original creator
+      }
+      if (!job.participants.includes(userId)) {
+        job.participants.push(userId);
+        await saveJobs({ ...jobs, [activeJobId]: job });
+        console.log(`✅ CRM-AWARE: Added user ${userId} to shared job participants`);
+      }
     }
 
     // Calculate job age
@@ -3423,18 +3418,60 @@ app.post("/synchronize-job-stats/:userId", async (req, res) => {
   }
 });
 
-// Yeni endpoint: Polling işlemi için frontend tarafından kullanılacak
-// Bu endpoint hem job durumunu kontrol eder hem de gerekirse işlemi devam ettirir
+// CRM-AWARE endpoint: Polling for any job related to user's CRM
 app.get("/job-poll/:userId", async (req, res) => {
   try {
-    console.log(`🔄 Job poll request for user: ${req.params.userId}`);
+    console.log(`🔄 CRM-AWARE: Job poll request for user: ${req.params.userId}`);
     
     const userId = req.params.userId;
+    const { crmUrl } = req.query; // Allow CRM URL to be passed as query parameter
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
     
-    if (!userSession || !userSession.currentJobId) {
-      console.log(`❌ No active job found for user ${userId} during polling`);
+    // Determine CRM URL - from query parameter or user session
+    const finalCrmUrl = crmUrl || userSession?.crmUrl;
+    const normalizedCrmUrl = finalCrmUrl ? normalizeCrmUrl(finalCrmUrl) : null;
+    
+    // CRM-AWARE: Look for any active job for this CRM URL
+    let activeJobId = null;
+    const jobs = await loadJobs();
+    
+    if (normalizedCrmUrl) {
+      for (const job of Object.values(jobs)) {
+        if (job.crmUrl === normalizedCrmUrl && 
+            job.status !== "completed" && 
+            job.contacts && 
+            job.processedCount < job.totalContacts) {
+          
+          // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
+          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+          
+          if (jobAgeInHours > 24) {
+            continue;
+          }
+          
+          activeJobId = job.jobId;
+          console.log(`📋 CRM-AWARE Poll: Found active job for CRM ${normalizedCrmUrl}:`, {
+            jobId: job.jobId,
+            originalCreator: job.userId,
+            status: job.status,
+            processedCount: job.processedCount,
+            totalContacts: job.totalContacts
+          });
+          break;
+        }
+      }
+    }
+    
+    // Fallback to user-specific job if no CRM job found
+    if (!activeJobId && userSession?.currentJobId) {
+      activeJobId = userSession.currentJobId;
+      console.log(`📋 Poll fallback: Using user-specific job ${activeJobId}`);
+    }
+    
+    if (!activeJobId) {
+      console.log(`❌ No active job found for user ${userId} and CRM ${normalizedCrmUrl} during polling`);
       return res.status(200).json({
         success: false,
         message: "No active job found for user",
@@ -3444,26 +3481,26 @@ app.get("/job-poll/:userId", async (req, res) => {
       });
     }
     
-    const jobs = await loadJobs();
-    const jobId = userSession.currentJobId;
-    const job = jobs[jobId];
+    const job = jobs[activeJobId];
     
-    console.log(`🔍 Job poll check for ${userId}:`, 
+    console.log(`🔍 CRM-AWARE Poll check for ${userId}:`, 
       job ? 
       { 
         jobId: job.jobId, 
         status: job.status, 
         processedCount: job.processedCount, 
-        totalContacts: job.totalContacts 
+        totalContacts: job.totalContacts,
+        crmUrl: normalizedCrmUrl,
+        originalCreator: job.userId
       } : 
-      { jobFound: false, jobId: userSession.currentJobId }
+      { jobFound: false, activeJobId: activeJobId }
     );
     
     if (!job) {
-      console.error(`❌ Job ${userSession.currentJobId} not found for user ${userId} during polling`);
+      console.error(`❌ Job ${activeJobId} not found for user ${userId} during polling`);
       return res.status(200).json({
         success: false,
-        message: `Job with ID ${userSession.currentJobId} not found`,
+        message: `Job with ID ${activeJobId} not found`,
         canResume: false,
         job: null,
         currentPattern: getCurrentHumanPattern().name,
@@ -3529,10 +3566,10 @@ app.get("/job-poll/:userId", async (req, res) => {
           
           job.status = "processing";
           job.resumedAt = new Date().toISOString();
-          await saveJobs({...(await loadJobs()), [jobId]: job});
+          await saveJobs({...(await loadJobs()), [activeJobId]: job});
           
           // Use setImmediate to restart processing in background
-          setImmediate(() => processJobInBackground(jobId));
+          setImmediate(() => processJobInBackground(activeJobId));
         }
       }
     }
@@ -4389,25 +4426,44 @@ app.get("/admin/user-data/:userId", async (req, res) => {
   }
 });
 
-// Cancel all processing for a user - STOP button functionality
+// CRM-AWARE: Cancel all processing for CRM - STOP button functionality
 app.post("/cancel-processing/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const { reason = "User cancelled processing" } = req.body;
+    const { reason = "User cancelled processing", crmUrl } = req.body;
     
-    console.log(`🛑 CANCEL PROCESSING requested for user ${userId}`, { reason });
+    console.log(`🛑 CRM-AWARE CANCEL PROCESSING requested for user ${userId}`, { reason, crmUrl });
+    
+    // Determine CRM URL for CRM-aware cancellation
+    const userSessions = await loadUserSessions();
+    const userSession = userSessions[userId];
+    const finalCrmUrl = crmUrl || userSession?.crmUrl;
+    const normalizedCrmUrl = finalCrmUrl ? normalizeCrmUrl(finalCrmUrl) : null;
     
     // Reset daily/hourly/pattern counts to 0
     await resetUserStats(userId);
     
-    // Load jobs and find active jobs for this user
+    // Load jobs and find active jobs for this CRM (CRM-aware cancellation)
     const jobs = await loadJobs();
-    const userActiveJobs = Object.values(jobs).filter(job => 
-      job.userId === userId && 
-      (job.status === "processing" || job.status === "paused" || job.status === "pending")
-    );
+    let activeJobs = [];
     
-    if (userActiveJobs.length === 0) {
+    if (normalizedCrmUrl) {
+      // CRM-AWARE: Find all active jobs for this CRM URL
+      activeJobs = Object.values(jobs).filter(job => 
+        job.crmUrl === normalizedCrmUrl && 
+        (job.status === "processing" || job.status === "paused" || job.status === "pending")
+      );
+      console.log(`🛑 CRM-AWARE: Found ${activeJobs.length} active jobs for CRM ${normalizedCrmUrl}`);
+    } else {
+      // Fallback to user-specific jobs if no CRM URL
+      activeJobs = Object.values(jobs).filter(job => 
+        job.userId === userId && 
+        (job.status === "processing" || job.status === "paused" || job.status === "pending")
+      );
+      console.log(`🛑 FALLBACK: Found ${activeJobs.length} active jobs for user ${userId}`);
+    }
+    
+    if (activeJobs.length === 0) {
       return res.status(200).json({
         success: true,
         message: "No active jobs to cancel",
@@ -4415,13 +4471,11 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       });
     }
     
-    console.log(`🛑 Found ${userActiveJobs.length} active jobs for user ${userId}`);
-    
     const cancelledJobs = [];
     const now = new Date().toISOString();
     
-    // Complete each active job
-    for (const job of userActiveJobs) {
+    // Complete each active job (CRM-aware)
+    for (const job of activeJobs) {
       // Set a new cancelToken to break any running background loops
       const newCancelToken = uuidv4();
       const oldCancelToken = job.cancelToken;
