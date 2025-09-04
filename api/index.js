@@ -674,71 +674,135 @@ app.post("/start-processing", async (req, res) => {
     // CRM-AWARE: Check for existing incomplete job for this CRM URL
     const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
     let currentIncompleteJob = null;
+    let recentCompletedJob = null;
     
     console.log(`🔍 CRM-AWARE: Looking for existing jobs for CRM ${normalizedCrmUrl}...`);
     
     for (const job of Object.values(allJobs)) {
       // Check direct crmUrl match (new jobs)
-      if (job.crmUrl === normalizedCrmUrl && 
-          job.status !== "completed" && 
-          job.contacts && 
-          job.processedCount < job.totalContacts) {
+      if (job.crmUrl === normalizedCrmUrl) {
         
         // Check job age - ignore jobs older than 24 hours to prevent old job conflicts
         const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
         const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
         
-        console.log(`🔍 CRM-AWARE: Found job with crmUrl ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
-          jobId: job.jobId,
-          userId: job.userId,
-          status: job.status,
-          ageInHours: Math.round(jobAgeInHours * 100) / 100,
-          isOld: jobAgeInHours > 24
-        });
-        
-        // Skip old jobs (older than 24 hours) to allow fresh starts
+        // Skip old jobs (older than 24 hours)
         if (jobAgeInHours > 24) {
-          console.log(`⏭️ Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old), allowing fresh start`);
+          console.log(`⏭️ Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old) for CRM ${normalizedCrmUrl}`);
           continue;
         }
         
-        currentIncompleteJob = job;
-        break;
-      }
-      
-      // LEGACY SUPPORT: For jobs without crmUrl field, check by user sessions
-      if (!job.crmUrl && job.status !== "completed" && job.contacts && job.processedCount < job.totalContacts) {
-        const jobUserSession = userSessions[job.userId];
-        if (jobUserSession?.crmUrl && normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrmUrl) {
-          // Check job age - ignore jobs older than 24 hours
-          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
-          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+        // PRIORITY 1: Look for recent completed jobs (within last 24 hours)
+        if (job.status === "completed") {
+          console.log(`✅ CRM-AWARE: Found recent COMPLETED job ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
+            jobId: job.jobId,
+            userId: job.userId,
+            processedCount: job.processedCount,
+            totalContacts: job.totalContacts,
+            completedAt: job.completedAt,
+            ageInHours: Math.round(jobAgeInHours * 100) / 100
+          });
           
-          console.log(`🔍 CRM-AWARE: Found legacy job via user session ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
+          if (!recentCompletedJob || new Date(job.completedAt) > new Date(recentCompletedJob.completedAt)) {
+            recentCompletedJob = job;
+          }
+        }
+        
+        // PRIORITY 2: Look for incomplete jobs only if no completed job found yet
+        else if (job.status !== "completed" && 
+                 job.contacts && 
+                 job.processedCount < job.totalContacts) {
+          
+          console.log(`🔍 CRM-AWARE: Found INCOMPLETE job ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
             jobId: job.jobId,
             userId: job.userId,
             status: job.status,
-            ageInHours: Math.round(jobAgeInHours * 100) / 100,
-            isOld: jobAgeInHours > 24,
-            legacyJob: true
+            processedCount: job.processedCount,
+            totalContacts: job.totalContacts,
+            ageInHours: Math.round(jobAgeInHours * 100) / 100
           });
           
+          if (!currentIncompleteJob) {
+            currentIncompleteJob = job;
+          }
+        }
+      }
+      
+      // LEGACY SUPPORT: For jobs without crmUrl field, check by user sessions (same logic)
+      if (!job.crmUrl) {
+        const jobUserSession = userSessions[job.userId];
+        if (jobUserSession?.crmUrl && normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrmUrl) {
+          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+          
           if (jobAgeInHours > 24) {
-            console.log(`⏭️ Ignoring old legacy job ${job.jobId} (${Math.round(jobAgeInHours)}h old), allowing fresh start`);
             continue;
           }
           
-          // MIGRATE LEGACY JOB: Add crmUrl field to the job
-          job.crmUrl = normalizedCrmUrl;
-          if (!job.participants) {
-            job.participants = [job.userId];
+          // Check for completed legacy jobs too
+          if (job.status === "completed") {
+            console.log(`✅ CRM-AWARE: Found recent COMPLETED legacy job ${job.jobId} via user session for CRM ${normalizedCrmUrl}:`, {
+              jobId: job.jobId,
+              userId: job.userId,
+              processedCount: job.processedCount,
+              totalContacts: job.totalContacts,
+              completedAt: job.completedAt,
+              ageInHours: Math.round(jobAgeInHours * 100) / 100
+            });
+            
+            if (!recentCompletedJob || new Date(job.completedAt) > new Date(recentCompletedJob.completedAt)) {
+              recentCompletedJob = job;
+            }
+            
+            // MIGRATE LEGACY JOB: Add crmUrl field to the job
+            job.crmUrl = normalizedCrmUrl;
+            allJobs[job.jobId] = job;
+            await saveJobs(allJobs);
+            console.log(`🔄 Migrated completed legacy job ${job.jobId} with crmUrl: ${normalizedCrmUrl}`);
           }
-          console.log(`🔄 Migrated legacy job ${job.jobId} with crmUrl: ${normalizedCrmUrl}`);
-          
-          currentIncompleteJob = job;
-          break;
+          // Check for incomplete legacy jobs
+          else if (job.status !== "completed" && job.contacts && job.processedCount < job.totalContacts) {
+            console.log(`🔍 CRM-AWARE: Found INCOMPLETE legacy job ${job.jobId} via user session for CRM ${normalizedCrmUrl}:`, {
+              jobId: job.jobId,
+              userId: job.userId,
+              status: job.status,
+              processedCount: job.processedCount,
+              totalContacts: job.totalContacts,
+              ageInHours: Math.round(jobAgeInHours * 100) / 100
+            });
+            
+            if (!currentIncompleteJob) {
+              // MIGRATE LEGACY JOB: Add crmUrl field to the job
+              job.crmUrl = normalizedCrmUrl;
+              allJobs[job.jobId] = job;
+              await saveJobs(allJobs);
+              console.log(`🔄 Migrated incomplete legacy job ${job.jobId} with crmUrl: ${normalizedCrmUrl}`);
+              
+              currentIncompleteJob = job;
+            }
+          }
         }
       }
+    }
+    
+    // DECISION LOGIC: If there's a recent completed job, don't create a new one
+    if (recentCompletedJob && !resume) {
+      console.log(`� CRM-AWARE: Found recent completed job for CRM ${normalizedCrmUrl}. Preventing new job creation.`);
+      return res.status(200).json({
+        success: false,
+        message: `Processing for this CRM was recently completed by ${recentCompletedJob.userId}. Job completed at ${new Date(recentCompletedJob.completedAt).toLocaleString()}.`,
+        jobAlreadyCompleted: true,
+        existingJobId: recentCompletedJob.jobId,
+        completedBy: recentCompletedJob.userId,
+        completedAt: recentCompletedJob.completedAt,
+        processedCount: recentCompletedJob.processedCount,
+        totalContacts: recentCompletedJob.totalContacts,
+        debugInfo: {
+          crmUrl: normalizedCrmUrl,
+          recentCompletedJob: recentCompletedJob.jobId,
+          preventDuplicateProcessing: true
+        }
+      });
     }
 
     // If there's an incomplete CRM job, add user to participants and allow resume
