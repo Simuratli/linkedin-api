@@ -4746,11 +4746,26 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     
     console.log(`🛑 CRM-AWARE CANCEL PROCESSING requested for user ${userId}`, { reason, crmUrl });
     
+    // ENHANCED DEBUG: Log everything for troubleshooting
+    console.log(`🔍 CANCEL DEBUG: Request details`, {
+      userId,
+      requestCrmUrl: crmUrl,
+      reason
+    });
+    
     // Determine CRM URL for CRM-aware cancellation
     const userSessions = await loadUserSessions();
     const userSession = userSessions[userId];
     const finalCrmUrl = crmUrl || userSession?.crmUrl;
     const normalizedCrmUrl = finalCrmUrl ? normalizeCrmUrl(finalCrmUrl) : null;
+    
+    console.log(`🔍 CANCEL DEBUG: CRM URL resolution`, {
+      requestCrmUrl: crmUrl,
+      sessionCrmUrl: userSession?.crmUrl,
+      finalCrmUrl,
+      normalizedCrmUrl,
+      hasUserSession: !!userSession
+    });
     
     // Reset daily/hourly/pattern counts to 0
     await resetUserStats(userId);
@@ -4758,6 +4773,23 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     // Load jobs and find active jobs for this CRM (CRM-aware cancellation)
     const jobs = await loadJobs();
     let activeJobs = [];
+    
+    console.log(`🔍 CANCEL DEBUG: Loaded ${Object.keys(jobs).length} total jobs`);
+    
+    // Log all active jobs for debugging
+    const allActiveJobs = Object.values(jobs).filter(job => 
+      job.status === "processing" || job.status === "paused" || job.status === "pending"
+    );
+    console.log(`🔍 CANCEL DEBUG: Found ${allActiveJobs.length} active jobs in total:`, 
+      allActiveJobs.map(job => ({
+        jobId: job.jobId,
+        status: job.status,
+        userId: job.userId,
+        originalCreator: job.originalCreator,
+        crmUrl: job.crmUrl,
+        participants: job.participants
+      }))
+    );
     
     if (normalizedCrmUrl) {
       console.log(`🔍 CRM-AWARE CANCEL: Looking for active jobs for CRM ${normalizedCrmUrl}...`);
@@ -4826,11 +4858,48 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     console.log(`💾 Jobs saved before cancellation processing`);
     
     if (activeJobs.length === 0) {
+      console.log(`⚠️ CANCEL DEBUG: No active jobs found using complex logic, trying simple approach...`);
+      
+      // FALLBACK: Simple approach - find ANY active job related to this user
+      const fallbackJobs = Object.values(jobs).filter(job => {
+        const isActive = (job.status === "processing" || job.status === "paused" || job.status === "pending");
+        if (!isActive) return false;
+        
+        // Check all possible connections to this user
+        const isUserJob = (job.userId === userId);
+        const isUserCreator = (job.originalCreator === userId);
+        const isUserParticipant = (job.participants && job.participants.includes(userId));
+        const matchesCrm = (normalizedCrmUrl && job.crmUrl === normalizedCrmUrl);
+        
+        console.log(`🔍 CANCEL DEBUG: Checking job ${job.jobId}:`, {
+          isActive,
+          isUserJob,
+          isUserCreator, 
+          isUserParticipant,
+          matchesCrm,
+          jobCrmUrl: job.crmUrl,
+          normalizedCrmUrl
+        });
+        
+        return isUserJob || isUserCreator || isUserParticipant || matchesCrm;
+      });
+      
+      console.log(`🔍 CANCEL DEBUG: Fallback found ${fallbackJobs.length} jobs`);
+      activeJobs = fallbackJobs;
+    }
+    
+    // Final check - if still no jobs found, return early
+    if (activeJobs.length === 0) {
+      console.log(`❌ CANCEL DEBUG: No active jobs found after all methods`);
       return res.status(200).json({
         success: true,
         message: "No active jobs to cancel",
         cancelledJobs: []
       });
+    } else {
+      console.log(`✅ CANCEL DEBUG: Found ${activeJobs.length} jobs to cancel:`, 
+        activeJobs.map(job => ({ jobId: job.jobId, status: job.status }))
+      );
     }
     
     const cancelledJobs = [];
