@@ -3076,7 +3076,7 @@ app.get("/user-job/:userId", async (req, res) => {
     // Search for jobs with matching CRM URL
     let activeJob = null;
     let completedJob = null;
-            createdAt: fallbackJob.createdAt || fallbackJob.startTime,
+    
     // SEARCH ALL JOBS BY CRM URL ONLY - ignore user ownership
     for (const job of Object.values(jobs)) {
       if (job.crmUrl === normalizedCrmUrl) {
