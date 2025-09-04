@@ -632,7 +632,11 @@ app.post("/start-processing", async (req, res) => {
     // CRM-AWARE: Check for existing incomplete job for this CRM URL
     const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
     let currentIncompleteJob = null;
+    
+    console.log(`🔍 CRM-AWARE: Looking for existing jobs for CRM ${normalizedCrmUrl}...`);
+    
     for (const job of Object.values(allJobs)) {
+      // Check direct crmUrl match (new jobs)
       if (job.crmUrl === normalizedCrmUrl && 
           job.status !== "completed" && 
           job.contacts && 
@@ -642,7 +646,7 @@ app.post("/start-processing", async (req, res) => {
         const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
         const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
         
-        console.log(`🔍 CRM-AWARE: Checking incomplete job ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
+        console.log(`🔍 CRM-AWARE: Found job with crmUrl ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
           jobId: job.jobId,
           userId: job.userId,
           status: job.status,
@@ -652,25 +656,92 @@ app.post("/start-processing", async (req, res) => {
         
         // Skip old jobs (older than 24 hours) to allow fresh starts
         if (jobAgeInHours > 24) {
-          console.log(`⏭️ Ignoring old incomplete job ${job.jobId} (${Math.round(jobAgeInHours)}h old), allowing fresh start`);
+          console.log(`⏭️ Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old), allowing fresh start`);
           continue;
         }
         
         currentIncompleteJob = job;
         break;
       }
+      
+      // LEGACY SUPPORT: For jobs without crmUrl field, check by user sessions
+      if (!job.crmUrl && job.status !== "completed" && job.contacts && job.processedCount < job.totalContacts) {
+        const jobUserSession = userSessions[job.userId];
+        if (jobUserSession?.crmUrl && normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrmUrl) {
+          // Check job age - ignore jobs older than 24 hours
+          const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+          const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+          
+          console.log(`🔍 CRM-AWARE: Found legacy job via user session ${job.jobId} for CRM ${normalizedCrmUrl}:`, {
+            jobId: job.jobId,
+            userId: job.userId,
+            status: job.status,
+            ageInHours: Math.round(jobAgeInHours * 100) / 100,
+            isOld: jobAgeInHours > 24,
+            legacyJob: true
+          });
+          
+          if (jobAgeInHours > 24) {
+            console.log(`⏭️ Ignoring old legacy job ${job.jobId} (${Math.round(jobAgeInHours)}h old), allowing fresh start`);
+            continue;
+          }
+          
+          // MIGRATE LEGACY JOB: Add crmUrl field to the job
+          job.crmUrl = normalizedCrmUrl;
+          if (!job.participants) {
+            job.participants = [job.userId];
+          }
+          console.log(`🔄 Migrated legacy job ${job.jobId} with crmUrl: ${normalizedCrmUrl}`);
+          
+          currentIncompleteJob = job;
+          break;
+        }
+      }
     }
 
-    // If there's an incomplete job, force resume that one
+    // If there's an incomplete CRM job, add user to participants and allow resume
     if (currentIncompleteJob && !resume) {
+      // CRM-AWARE: Add current user to participants if not already included
+      if (!currentIncompleteJob.participants) {
+        currentIncompleteJob.participants = [currentIncompleteJob.userId];
+      }
+      if (!currentIncompleteJob.participants.includes(userId)) {
+        currentIncompleteJob.participants.push(userId);
+        console.log(`✅ CRM-AWARE: Added user ${userId} to job ${currentIncompleteJob.jobId} participants`);
+      }
+      
+      // Update user session to point to this shared job
+      userSessions[userId] = {
+        ...userSessions[userId],
+        currentJobId: currentIncompleteJob.jobId,
+        crmUrl,
+        accessToken,
+        refreshToken,
+        clientId,
+        tenantId,
+        verifier,
+        li_at,
+        jsessionid,
+        lastActivity: new Date().toISOString()
+      };
+      
+      // Save the updated job and user session
+      await saveJobs({ ...allJobs, [currentIncompleteJob.jobId]: currentIncompleteJob });
+      await saveUserSessions(userSessions);
+      
+      console.log(`🔄 CRM-AWARE: User ${userId} connected to shared job ${currentIncompleteJob.jobId} (originally created by ${currentIncompleteJob.userId})`);
+      
       return res.status(200).json({
         success: false,
-        message: `You have an incomplete job (${currentIncompleteJob.processedCount}/${currentIncompleteJob.totalContacts} contacts processed). Please resume this job first.`,
+        message: `Found shared CRM job (${currentIncompleteJob.processedCount}/${currentIncompleteJob.totalContacts} contacts processed). You can resume this shared job.`,
         jobId: currentIncompleteJob.jobId,
         status: currentIncompleteJob.status,
         processedCount: currentIncompleteJob.processedCount,
         totalContacts: currentIncompleteJob.totalContacts,
         canResume: true,
+        isSharedJob: true,
+        originalCreator: currentIncompleteJob.userId,
+        participants: currentIncompleteJob.participants,
         currentPattern: limitCheck.currentPattern,
         limitInfo: limitCheck
       });
@@ -780,7 +851,6 @@ app.post("/start-processing", async (req, res) => {
     // Check for existing CRM-wide job (shared across all users of same CRM)
     let existingJob = null;
     let jobId = null;
-    const normalizedCrm = normalizeCrmUrl(crmUrl);
 
     // First, check if there are any incomplete jobs for this CRM (not just user)
     for (const job of Object.values(jobs)) {
@@ -804,7 +874,7 @@ app.post("/start-processing", async (req, res) => {
         continue;
       }
       
-      if (jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrm && 
+      if (jobCrmUrl && normalizeCrmUrl(jobCrmUrl) === normalizedCrmUrl && 
           job.status !== "completed" && 
           job.contacts && 
           job.processedCount < job.totalContacts) {
@@ -814,7 +884,7 @@ app.post("/start-processing", async (req, res) => {
           jobId: job.jobId,
           originalUserId: job.userId,
           currentUserId: userId,
-          crmUrl: normalizedCrm,
+          crmUrl: normalizedCrmUrl,
           status: job.status,
           processed: job.processedCount,
           total: job.totalContacts,
@@ -1125,7 +1195,7 @@ app.post("/start-processing", async (req, res) => {
         jobId,
         userId, // Original creator
         participants: [userId], // Track all users sharing this job
-        crmUrl: normalizedCrm, // Store normalized CRM URL
+        crmUrl: normalizedCrmUrl, // Store normalized CRM URL for sharing
         totalContacts: contacts.length,
         contacts: contacts.map((c) => ({
           contactId: c.contactid,
@@ -4504,15 +4574,16 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     const cancelledJobs = [];
     const now = new Date().toISOString();
     
-    // Complete each active job (CRM-aware)
+    // Complete each active job (CRM-aware) with IMMEDIATE STOP
     for (const job of activeJobs) {
-      // Set a new cancelToken to break any running background loops
+      // CRITICAL: Set a new cancelToken to break any running background loops IMMEDIATELY
       const newCancelToken = uuidv4();
       const oldCancelToken = job.cancelToken;
       job.cancelToken = newCancelToken;
       
-      console.log(`🛑 Setting new cancelToken for job ${job.jobId}: ${oldCancelToken} -> ${newCancelToken}`);
-      console.log(`✅ Completing job ${job.jobId} (via cancel-processing)`);
+      console.log(`🛑 IMMEDIATE STOP: Setting new cancelToken for job ${job.jobId}: ${oldCancelToken} -> ${newCancelToken}`);
+      console.log(`✅ Completing CRM job ${job.jobId} created by ${job.userId} (via cancel-processing)`);
+      
       // Mark all remaining pending/processing contacts as completed
       let newlyCompletedCount = 0;
       if (job.contacts) {
@@ -4528,7 +4599,7 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       // Update job counts
       job.successCount = (job.successCount || 0) + newlyCompletedCount;
       job.processedCount = job.successCount + (job.failureCount || 0);
-      // Mark job as complet
+      // Mark job as completed
       job.status = "completed";
       job.completedAt = now;
       job.completionReason = reason;
@@ -4540,21 +4611,38 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       jobs[job.jobId] = job;
       cancelledJobs.push({
         jobId: job.jobId,
+        originalUserId: job.userId,
         status: job.status,
         processedCount: job.processedCount,
         totalContacts: job.totalContacts,
         newlyCompletedCount
       });
-      console.log(`✅ Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
+      console.log(`✅ CRM Job ${job.jobId} completed: ${newlyCompletedCount} contacts marked as successful, cooldown overridden`);
     }
     await saveJobs(jobs);
 
-    // Clear current job ID from user session and set cooldownOverridden
-    if (userSessions[userId]) {
-      userSessions[userId].currentJobId = null;
-      userSessions[userId].lastActivity = now;
-      userSessions[userId].cooldownOverridden = true;
-      userSessions[userId].overriddenAt = now;
+    // CRM-AWARE: Clear current job ID from ALL user sessions sharing the same CRM URL
+    const clearedUsers = [];
+    if (normalizedCrmUrl) {
+      for (const [sessionUserId, session] of Object.entries(userSessions)) {
+        if (session.crmUrl && normalizeCrmUrl(session.crmUrl) === normalizedCrmUrl) {
+          session.currentJobId = null;
+          session.lastActivity = now;
+          session.cooldownOverridden = true;
+          session.overriddenAt = now;
+          clearedUsers.push(sessionUserId);
+          console.log(`🧹 CRM-AWARE: Cleared session for user ${sessionUserId} sharing CRM ${normalizedCrmUrl}`);
+        }
+      }
+    } else {
+      // Fallback: only clear requesting user's session
+      if (userSessions[userId]) {
+        userSessions[userId].currentJobId = null;
+        userSessions[userId].lastActivity = now;
+        userSessions[userId].cooldownOverridden = true;
+        userSessions[userId].overriddenAt = now;
+        clearedUsers.push(userId);
+      }
     }
     await saveUserSessions(userSessions);
 
@@ -4569,13 +4657,16 @@ app.post("/cancel-processing/:userId", async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Processing completed successfully. All remaining contacts marked as successful.",
+      message: `Processing completed successfully for all CRM jobs. All remaining contacts marked as successful.`,
       completedJobs: cancelledJobs,
       debugInfo: {
+        crmUrl: normalizedCrmUrl,
         jobsCompleted: cancelledJobs.length,
+        usersAffected: clearedUsers.length,
+        clearedUsers: clearedUsers,
         cooldownOverridden: true,
-        userSessionUpdated: !!userSessions[userId],
-        nextStep: "Reload the extension to see updated status"
+        userSessionUpdated: clearedUsers.length > 0,
+        nextStep: "All users sharing this CRM should reload the extension to see updated status"
       }
     });
     
