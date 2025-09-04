@@ -4520,7 +4520,6 @@ app.post("/cancel-processing/:userId", async (req, res) => {
     await saveJobs(jobs);
 
     // Clear current job ID from user session and set cooldownOverridden
-    const userSessions = await loadUserSessions();
     if (userSessions[userId]) {
       userSessions[userId].currentJobId = null;
       userSessions[userId].lastActivity = now;
