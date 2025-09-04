@@ -3141,10 +3141,89 @@ app.get("/user-job/:userId", async (req, res) => {
       }
     }
     
-    // Fallback to user-specific job if no CRM job found
+    // ENHANCED FALLBACK: If no direct CRM job found, search through ALL jobs for CRM match
+    if (!activeJobId && normalizedCrmUrl) {
+      console.log(`🔍 FALLBACK: No direct CRM match found, searching through ALL jobs for CRM ${normalizedCrmUrl}...`);
+      
+      let fallbackIncompleteJob = null;
+      let fallbackCompletedJob = null;
+      
+      // Search through ALL jobs to find any job that matches this CRM (even without crmUrl field)
+      for (const job of Object.values(jobs)) {
+        if (!job.crmUrl) {
+          // Check if this job belongs to a user with the same CRM URL
+          const jobUserSession = userSessions[job.userId];
+          if (jobUserSession?.crmUrl && normalizeCrmUrl(jobUserSession.crmUrl) === normalizedCrmUrl) {
+            
+            // Check job age - ignore jobs older than 24 hours
+            const jobCreatedAt = new Date(job.createdAt || job.startTime || Date.now());
+            const jobAgeInHours = (Date.now() - jobCreatedAt.getTime()) / (1000 * 60 * 60);
+            
+            if (jobAgeInHours > 24) {
+              console.log(`⏭️ FALLBACK: Ignoring old job ${job.jobId} (${Math.round(jobAgeInHours)}h old)`);
+              continue;
+            }
+            
+            // Priority 1: Incomplete jobs
+            if (job.status !== "completed" && job.contacts && job.processedCount < job.totalContacts) {
+              console.log(`🔍 FALLBACK: Found INCOMPLETE job ${job.jobId} via user session for CRM ${normalizedCrmUrl}:`, {
+                jobId: job.jobId,
+                originalCreator: job.userId,
+                status: job.status,
+                processedCount: job.processedCount,
+                totalContacts: job.totalContacts
+              });
+              fallbackIncompleteJob = job;
+              break; // Incomplete job takes priority
+            }
+            
+            // Priority 2: Completed jobs
+            else if (job.status === "completed") {
+              console.log(`✅ FALLBACK: Found COMPLETED job ${job.jobId} via user session for CRM ${normalizedCrmUrl}:`, {
+                jobId: job.jobId,
+                originalCreator: job.userId,
+                processedCount: job.processedCount,
+                totalContacts: job.totalContacts,
+                completedAt: job.completedAt
+              });
+              
+              if (!fallbackCompletedJob || new Date(job.completedAt) > new Date(fallbackCompletedJob.completedAt)) {
+                fallbackCompletedJob = job;
+              }
+            }
+          }
+        }
+      }
+      
+      // DECISION: Use incomplete job if available, otherwise use recent completed job
+      if (fallbackIncompleteJob) {
+        activeJobId = fallbackIncompleteJob.jobId;
+        jobInfo = { type: 'incomplete', job: fallbackIncompleteJob };
+        console.log(`📋 FALLBACK: Using INCOMPLETE job ${activeJobId} for user ${userId}`);
+        
+        // MIGRATE: Add crmUrl to this job
+        fallbackIncompleteJob.crmUrl = normalizedCrmUrl;
+        jobs[fallbackIncompleteJob.jobId] = fallbackIncompleteJob;
+        await saveJobs(jobs);
+        console.log(`🔄 FALLBACK: Migrated job ${fallbackIncompleteJob.jobId} with crmUrl: ${normalizedCrmUrl}`);
+        
+      } else if (fallbackCompletedJob) {
+        activeJobId = fallbackCompletedJob.jobId;
+        jobInfo = { type: 'completed', job: fallbackCompletedJob };
+        console.log(`📋 FALLBACK: Using COMPLETED job ${activeJobId} for user ${userId} (no incomplete jobs available)`);
+        
+        // MIGRATE: Add crmUrl to this job too
+        fallbackCompletedJob.crmUrl = normalizedCrmUrl;
+        jobs[fallbackCompletedJob.jobId] = fallbackCompletedJob;
+        await saveJobs(jobs);
+        console.log(`🔄 FALLBACK: Migrated completed job ${fallbackCompletedJob.jobId} with crmUrl: ${normalizedCrmUrl}`);
+      }
+    }
+    
+    // FINAL FALLBACK: User-specific job if still no CRM job found
     if (!activeJobId && userSession?.currentJobId) {
       activeJobId = userSession.currentJobId;
-      console.log(`📋 Using user-specific job fallback: ${activeJobId}`);
+      console.log(`📋 FINAL FALLBACK: Using user-specific job: ${activeJobId}`);
     }
       
     if (!activeJobId) {
