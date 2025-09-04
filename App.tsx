@@ -1395,8 +1395,9 @@ const handleOverrideCooldown = async () => {
 
           // Check for existing job with enhanced logging
           console.log("🔍 Checking for existing job before starting new one...");
+          const crmParam = crmUrl ? `?crmUrl=${encodeURIComponent(crmUrl)}` : '';
           const existingJobResponse = await fetch(
-            `${API_BASE_URL}/user-job/${encodeURIComponent(userId)}`
+            `${API_BASE_URL}/user-job/${encodeURIComponent(userId)}${crmParam}`
           );
           
           let shouldResume = false;

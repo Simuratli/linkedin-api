@@ -3059,16 +3059,44 @@ app.get("/user-job/:userId", async (req, res) => {
     
     console.log(`🎯 CRM-CENTRIC: Looking for job by CRM URL ${crmUrl} (user ${userId})`);
     
-    // CRM URL must be provided as query parameter
-    if (!crmUrl) {
-      console.log(`❌ CRM-CENTRIC: No CRM URL provided for user ${userId}`);
-      return res.status(400).json({ 
-        success: false, 
-        message: 'CRM URL is required as query parameter' 
-      });
+    let normalizedCrmUrl = null;
+    
+    // Method 1: CRM URL from query parameter (preferred)
+    if (crmUrl) {
+      normalizedCrmUrl = normalizeCrmUrl(crmUrl);
+      console.log(`✅ CRM URL from query parameter: ${normalizedCrmUrl}`);
+    } else {
+      // Method 2: Fallback - try to find CRM URL from user sessions or recent jobs
+      console.log(`⚠️ No CRM URL in query, trying fallback methods...`);
+      
+      const userSessions = await loadUserSessions();
+      const userSession = userSessions[userId];
+      
+      if (userSession?.crmUrl) {
+        normalizedCrmUrl = normalizeCrmUrl(userSession.crmUrl);
+        console.log(`✅ CRM URL from user session: ${normalizedCrmUrl}`);
+      } else {
+        // Try to find from recent jobs
+        const jobs = await loadJobs();
+        for (const job of Object.values(jobs)) {
+          if ((job.userId === userId || job.originalCreator === userId || 
+               (job.participants && job.participants.includes(userId))) && job.crmUrl) {
+            normalizedCrmUrl = job.crmUrl;
+            console.log(`✅ CRM URL from recent job: ${normalizedCrmUrl}`);
+            break;
+          }
+        }
+      }
     }
     
-    const normalizedCrmUrl = normalizeCrmUrl(crmUrl);
+    // If still no CRM URL found, return error
+    if (!normalizedCrmUrl) {
+      console.log(`❌ CRM-CENTRIC: No CRM URL available for user ${userId}`);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'CRM URL is required. Please access from a valid CRM page or provide crmUrl parameter.' 
+      });
+    }
     const jobs = await loadJobs();
     
     console.log(`🔍 CRM-CENTRIC: No direct CRM match found, searching user sessions for CRM ${normalizedCrmUrl}`);
