@@ -4654,12 +4654,32 @@ app.post("/cancel-processing/:userId", async (req, res) => {
       console.log(`�🛑 CRM-AWARE CANCEL: Total found ${activeJobs.length} active jobs for CRM ${normalizedCrmUrl} (${directCrmJobs.length} direct + ${legacyJobs.length} legacy)`);
       
     } else {
-      // Fallback to user-specific jobs if no CRM URL
-      activeJobs = Object.values(jobs).filter(job => 
+      console.log(`🔍 FALLBACK CANCEL: No CRM URL available, looking for user-specific jobs for ${userId}...`);
+      
+      // ENHANCED FALLBACK: Find any active jobs for this user AND migrate them with CRM info
+      const userJobs = Object.values(jobs).filter(job => 
         job.userId === userId && 
         (job.status === "processing" || job.status === "paused" || job.status === "pending")
       );
-      console.log(`🛑 FALLBACK: Found ${activeJobs.length} active jobs for user ${userId}`);
+      
+      console.log(`� FALLBACK CANCEL: Found ${userJobs.length} user jobs`);
+      
+      // Try to add CRM URL to user jobs if user session has it
+      if (userSession?.crmUrl && userJobs.length > 0) {
+        const userCrmUrl = normalizeCrmUrl(userSession.crmUrl);
+        console.log(`🔄 FALLBACK CANCEL: Adding CRM URL ${userCrmUrl} to ${userJobs.length} user jobs`);
+        
+        userJobs.forEach(job => {
+          if (!job.crmUrl) {
+            job.crmUrl = userCrmUrl;
+            jobs[job.jobId] = job;
+            console.log(`🔄 FALLBACK CANCEL: Migrated job ${job.jobId} with crmUrl: ${userCrmUrl}`);
+          }
+        });
+      }
+      
+      activeJobs = userJobs;
+      console.log(`�🛑 FALLBACK CANCEL: Total found ${activeJobs.length} active jobs for user ${userId}`);
     }
     
     // Save any migrated jobs before proceeding with cancellation
